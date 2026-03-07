@@ -1,3 +1,5 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { truncate } = require('./utils');
 
 function buildTranscriptExcerpt(manifest, limit = 18) {
@@ -19,6 +21,20 @@ function buildTranscriptExcerpt(manifest, limit = 18) {
     }
   }
   return requestLines.slice(-limit);
+}
+
+function loadCcManagerMd(repoRoot) {
+  if (!repoRoot) return null;
+  const filePath = path.join(repoRoot, 'CCMANAGER.md');
+  try {
+    const content = fs.readFileSync(filePath, 'utf8').trim();
+    if (content) {
+      return `Project instructions from CCMANAGER.md:\n${content}`;
+    }
+  } catch {
+    // File doesn't exist — that's fine
+  }
+  return null;
 }
 
 function buildControllerPrompt(manifest, request) {
@@ -85,6 +101,7 @@ function buildControllerPrompt(manifest, request) {
     manifest.controller.extraInstructions
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
+    loadCcManagerMd(manifest.repoRoot),
     '',
     'Now decide the next step. Return JSON only.',
   ].filter(Boolean).join('\n');

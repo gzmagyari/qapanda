@@ -151,6 +151,10 @@ cc-manager doctor                  Verify codex and claude binaries
 
 Plain text starts a new run (if none attached) or sends a message to the current run.
 
+## Project-level customization (CCMANAGER.md)
+
+Place a `CCMANAGER.md` file in your project root to customize the controller's behavior — similar to how `CLAUDE.md` customizes Claude Code. Its contents are automatically appended to the controller's system prompt as "Project instructions from CCMANAGER.md". This works in both the CLI and the VSCode extension. If the file doesn't exist, nothing is appended.
+
 ## Prerequisites
 
 - Node.js >= 18.17
