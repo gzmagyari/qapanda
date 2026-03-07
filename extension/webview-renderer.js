@@ -1,5 +1,5 @@
-const { truncate } = require('../src/utils');
-const { summarizeClaudeEvent, summarizeCodexEvent } = require('../src/events');
+const { truncate } = require('./src/utils');
+const { summarizeClaudeEvent, summarizeCodexEvent } = require('./src/events');
 
 class WebviewRenderer {
   constructor(panel, options = {}) {

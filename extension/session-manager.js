@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { runManagerLoop, printRunSummary, printEventTail } = require('../src/orchestrator');
+const { runManagerLoop, printRunSummary, printEventTail } = require('./src/orchestrator');
 const {
   defaultStateRoot,
   listRunManifests,
@@ -7,8 +7,8 @@ const {
   prepareNewRun,
   resolveRunDir,
   saveManifest,
-} = require('../src/state');
-const { summarizeError } = require('../src/utils');
+} = require('./src/state');
+const { summarizeError } = require('./src/utils');
 
 class SessionManager {
   constructor(renderer, options = {}) {
