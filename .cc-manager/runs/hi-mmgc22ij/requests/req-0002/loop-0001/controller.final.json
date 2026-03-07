@@ -1,0 +1,1 @@
+{"action":"delegate","controller_messages":["I’m asking Claude to read the repository README and summarize it."],"claude_message":"Read the README file in the repository root and provide a concise summary of its purpose, setup, and main usage details. Do not make any file changes.","stop_reason":null}

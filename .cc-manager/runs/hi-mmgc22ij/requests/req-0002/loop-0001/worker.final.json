@@ -1,0 +1,52 @@
+{
+  "prompt": "Read the README file in the repository root and provide a concise summary of its purpose, setup, and main usage details. Do not make any file changes.",
+  "exitCode": 0,
+  "signal": null,
+  "sessionId": "076ed951-b233-4f01-9f84-929dcf77822b",
+  "hadTextDelta": true,
+  "resultText": "Here's a concise summary of **cc-manager**:\n\n**Purpose:** An interactive terminal app that places a **controller agent** (Codex CLI) in front of **Claude Code**. The controller acts like a developer managing Claude Code on behalf of the user — it decides whether to answer directly or delegate work to Claude Code, then reviews results before continuing.\n\n**Control loop:** User → Controller (Codex) decides → optionally launches Claude Code → Controller reviews output & repo state → repeats or emits STOP → shell stays open for the next instruction.\n\n**Setup:**\n- Requires Node 18.17+\n- `npm install && npm link`\n\n**Usage modes:**\n1. **Interactive shell** — run `cc-manager` in a repo directory. Supports commands like `/new`, `/resume`, `/status`, `/list`, `/logs`, `/detach`, `/quit`.\n2. **One-shot** — `cc-manager run \"<message>\"` processes until STOP then exits. Also supports `resume`, `status`, `logs`, `list`, and `doctor` subcommands.\n\n**Key design:**\n- Controller (Codex) only inspects/verifies — never edits files directly.\n- Worker (Claude Code) performs actual repo changes using allowed tools (`Bash`, `Read`, `Edit`).\n- Same Claude session is reused across worker turns within a run.\n- Runs are persisted under `.cc-manager/runs/<run-id>/` with manifests, events, transcripts, and per-request logs.\n- Tests use fake Codex/Claude binaries to verify the control loop end-to-end (`npm test`).",
+  "finalEvent": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 13344,
+    "duration_api_ms": 13152,
+    "num_turns": 2,
+    "result": "Here's a concise summary of **cc-manager**:\n\n**Purpose:** An interactive terminal app that places a **controller agent** (Codex CLI) in front of **Claude Code**. The controller acts like a developer managing Claude Code on behalf of the user — it decides whether to answer directly or delegate work to Claude Code, then reviews results before continuing.\n\n**Control loop:** User → Controller (Codex) decides → optionally launches Claude Code → Controller reviews output & repo state → repeats or emits STOP → shell stays open for the next instruction.\n\n**Setup:**\n- Requires Node 18.17+\n- `npm install && npm link`\n\n**Usage modes:**\n1. **Interactive shell** — run `cc-manager` in a repo directory. Supports commands like `/new`, `/resume`, `/status`, `/list`, `/logs`, `/detach`, `/quit`.\n2. **One-shot** — `cc-manager run \"<message>\"` processes until STOP then exits. Also supports `resume`, `status`, `logs`, `list`, and `doctor` subcommands.\n\n**Key design:**\n- Controller (Codex) only inspects/verifies — never edits files directly.\n- Worker (Claude Code) performs actual repo changes using allowed tools (`Bash`, `Read`, `Edit`).\n- Same Claude session is reused across worker turns within a run.\n- Runs are persisted under `.cc-manager/runs/<run-id>/` with manifests, events, transcripts, and per-request logs.\n- Tests use fake Codex/Claude binaries to verify the control loop end-to-end (`npm test`).",
+    "stop_reason": null,
+    "session_id": "076ed951-b233-4f01-9f84-929dcf77822b",
+    "total_cost_usd": 0.16870475000000001,
+    "usage": {
+      "input_tokens": 4,
+      "cache_creation_input_tokens": 23399,
+      "cache_read_input_tokens": 21182,
+      "output_tokens": 474,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 23399,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "claude-opus-4-6": {
+        "inputTokens": 4,
+        "outputTokens": 474,
+        "cacheReadInputTokens": 21182,
+        "cacheCreationInputTokens": 23399,
+        "webSearchRequests": 0,
+        "costUSD": 0.16870475000000001,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "uuid": "05fe4e2a-9042-425e-aece-2766ff93d965"
+  }
+}

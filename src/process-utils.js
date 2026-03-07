@@ -1,13 +1,35 @@
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 
+/**
+ * On Windows, npm-installed binaries are .cmd shims that need a shell.
+ * We use execFile-style quoting by letting Node handle it via
+ * spawn with shell:true + windowsVerbatimArguments:false (default).
+ * To avoid argument mangling we escape each arg for cmd.exe.
+ */
+function winEscapeArg(arg) {
+  // Wrap in double quotes, escape internal double quotes and special cmd chars
+  // Replace " with \"  and escape shell metacharacters inside quotes
+  const escaped = arg.replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+function spawnArgs(command, args, options) {
+  if (process.platform === 'win32') {
+    // Build the full command line with proper escaping for cmd.exe
+    const escapedArgs = args.map(winEscapeArg);
+    const cmdLine = `"${command}" ${escapedArgs.join(' ')}`;
+    return spawn(cmdLine, [], { ...options, shell: true });
+  }
+  return spawn(command, args, options);
+}
+
 function execForText(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnArgs(command, args, {
       cwd: options.cwd,
       env: options.env || process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
     });
 
     const stdoutChunks = [];
@@ -38,11 +60,10 @@ function spawnStreamingProcess({
   onStderrLine,
 }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnArgs(command, args, {
       cwd,
       env: env || process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
     });
 
     let aborted = false;

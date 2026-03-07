@@ -6,7 +6,6 @@ const { buildDefaultWorkerAppendSystemPrompt } = require('./prompts');
 function buildClaudeArgs(manifest, prompt) {
   const args = [
     '-p',
-    prompt,
     '--output-format',
     'stream-json',
     '--verbose',
@@ -55,6 +54,9 @@ function buildClaudeArgs(manifest, prompt) {
   if (appendSystemPrompt) {
     args.push('--append-system-prompt', appendSystemPrompt);
   }
+
+  // Prompt must be the last positional argument to avoid shell escaping issues
+  args.push(prompt);
 
   return args;
 }

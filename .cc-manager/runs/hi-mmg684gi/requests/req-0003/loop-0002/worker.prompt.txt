@@ -1,0 +1,1 @@
+Open the file README.md at the repository root, read it, and reply with a concise summary of what it contains. Do not ask clarifying questions. Do not edit files, run tests, or do anything else.

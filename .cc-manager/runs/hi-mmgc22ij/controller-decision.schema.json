@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "delegate",
+        "stop"
+      ]
+    },
+    "controller_messages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "claude_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stop_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "action",
+    "controller_messages",
+    "claude_message",
+    "stop_reason"
+  ],
+  "additionalProperties": false
+}
