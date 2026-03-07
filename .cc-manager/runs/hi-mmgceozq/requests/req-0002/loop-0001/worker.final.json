@@ -1,0 +1,52 @@
+{
+  "prompt": "Hi",
+  "exitCode": 0,
+  "signal": null,
+  "sessionId": "74fdf0f3-504c-4546-ac05-b76456c87769",
+  "hadTextDelta": true,
+  "resultText": "\n\nHi! How can I help you today?",
+  "finalEvent": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 2217,
+    "duration_api_ms": 1907,
+    "num_turns": 1,
+    "result": "\n\nHi! How can I help you today?",
+    "stop_reason": null,
+    "session_id": "74fdf0f3-504c-4546-ac05-b76456c87769",
+    "total_cost_usd": 0.020902,
+    "usage": {
+      "input_tokens": 3,
+      "cache_creation_input_tokens": 1746,
+      "cache_read_input_tokens": 19299,
+      "output_tokens": 13,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 1746,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "claude-opus-4-6": {
+        "inputTokens": 3,
+        "outputTokens": 13,
+        "cacheReadInputTokens": 19299,
+        "cacheCreationInputTokens": 1746,
+        "webSearchRequests": 0,
+        "costUSD": 0.020902,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "uuid": "aed18632-edb1-470c-ae80-9139317a45c7"
+  }
+}
