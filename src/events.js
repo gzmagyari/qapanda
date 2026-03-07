@@ -149,30 +149,16 @@ function summarizeClaudeEvent(raw) {
     if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
       return { source: 'worker', kind: 'text-delta', text: event.delta.text || '' };
     }
+    if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+      return { source: 'worker', kind: 'tool-input-delta', text: event.delta.partial_json || '', index: event.index };
+    }
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       const block = event.content_block;
       const name = block.name || 'tool';
-      const input = block.input || {};
-      if (name === 'Bash' && input.command) {
-        return {
-          source: 'worker',
-          kind: 'status',
-          text: `Running command: ${truncate(input.command, 200)}`,
-        };
-      }
-      const filePath = input.file_path || input.path || input.target_file || input.filename;
-      if (filePath) {
-        return {
-          source: 'worker',
-          kind: 'status',
-          text: `${name} on ${filePath}`,
-        };
-      }
-      return {
-        source: 'worker',
-        kind: 'status',
-        text: `Using ${name}.`,
-      };
+      return { source: 'worker', kind: 'tool-start', toolName: name, index: event.index };
+    }
+    if (event.type === 'content_block_stop') {
+      return { source: 'worker', kind: 'block-stop', index: event.index };
     }
   }
 
