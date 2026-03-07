@@ -355,7 +355,10 @@ class SessionManager {
     this._postMessage({ type: 'running', value: true });
 
     try {
-      this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, options);
+      this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
+        ...options,
+        abortSignal: this._abortController.signal,
+      });
       await saveManifest(this._activeManifest);
     } finally {
       this._running = false;

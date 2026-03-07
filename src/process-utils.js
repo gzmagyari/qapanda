@@ -1,4 +1,4 @@
-const { spawn } = require('node:child_process');
+const { spawn, execSync } = require('node:child_process');
 const readline = require('node:readline');
 
 /**
@@ -14,8 +14,44 @@ function winEscapeArg(arg) {
   return `"${escaped}"`;
 }
 
+/**
+ * Kill a process and its entire process tree.
+ * On Windows, child.kill() doesn't kill grandchildren, so we use taskkill /F /T.
+ * On Unix, we send SIGTERM then SIGKILL after a short delay.
+ */
+function killProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 10000 });
+    } catch {
+      // Process may already be dead
+    }
+  } else {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // ignore
+      }
+    }, 250).unref();
+  }
+}
+
 function spawnArgs(command, args, options) {
   if (process.platform === 'win32') {
+    // .js/.mjs files must be explicitly run with node on Windows because the
+    // default .js file association (WScript.exe) cannot execute Node scripts.
+    if (command.endsWith('.js') || command.endsWith('.mjs')) {
+      const escapedArgs = [command, ...args].map(winEscapeArg);
+      const cmdLine = `"${process.execPath}" ${escapedArgs.join(' ')}`;
+      return spawn(cmdLine, [], { ...options, shell: true });
+    }
     // Build the full command line with proper escaping for cmd.exe
     const escapedArgs = args.map(winEscapeArg);
     const cmdLine = `"${command}" ${escapedArgs.join(' ')}`;
@@ -91,20 +127,7 @@ function spawnStreamingProcess({
 
     const onAbort = () => {
       aborted = true;
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-      setTimeout(() => {
-        if (!child.killed) {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
-        }
-      }, 250).unref();
+      killProcessTree(child.pid);
     };
 
     if (abortSignal) {
@@ -130,5 +153,6 @@ function spawnStreamingProcess({
 
 module.exports = {
   execForText,
+  killProcessTree,
   spawnStreamingProcess,
 };

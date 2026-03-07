@@ -561,7 +561,11 @@
       sendInput();
     }
     if (e.key === 'Escape') {
-      suggestionsEl.style.display = 'none';
+      if (suggestionsEl.style.display !== 'none') {
+        suggestionsEl.style.display = 'none';
+      } else if (isRunning) {
+        vscode.postMessage({ type: 'abort' });
+      }
     }
   });
 

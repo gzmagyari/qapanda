@@ -78,6 +78,16 @@ async function runManagerLoop(manifest, renderer, options = {}) {
   const onSigInt = () => onSignal('SIGINT');
   const onSigTerm = () => onSignal('SIGTERM');
 
+  // Allow external abort (e.g. from VSCode extension stop button)
+  if (options.abortSignal) {
+    const onExternalAbort = () => onSignal('external-abort');
+    if (options.abortSignal.aborted) {
+      onExternalAbort();
+    } else {
+      options.abortSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
   process.on('SIGINT', onSigInt);
   process.on('SIGTERM', onSigTerm);
 

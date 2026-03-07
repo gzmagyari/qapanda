@@ -10,6 +10,7 @@ function buildClaudeArgs(manifest, prompt) {
     'stream-json',
     '--verbose',
     '--include-partial-messages',
+    '--dangerously-skip-permissions',
   ];
 
   if (manifest.worker.hasStarted) {
