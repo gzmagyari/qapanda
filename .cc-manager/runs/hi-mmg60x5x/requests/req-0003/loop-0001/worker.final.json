@@ -1,0 +1,9 @@
+{
+  "prompt": "Hi. This is just a delegation test from the controller. No repository work is needed; respond briefly and stop.",
+  "exitCode": 0,
+  "signal": null,
+  "sessionId": "215f887f-c5ec-4b52-9675-be29fce970f0",
+  "hadTextDelta": true,
+  "resultText": "\n\nHi! How can I help you today?",
+  "finalEvent": null
+}
