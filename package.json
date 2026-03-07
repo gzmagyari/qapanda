@@ -1,0 +1,16 @@
+{
+  "name": "cc-manager",
+  "version": "0.2.0",
+  "description": "Interactive manager CLI that uses Codex to control Claude Code",
+  "bin": {
+    "cc-manager": "./bin/cc-manager.js"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT"
+}
