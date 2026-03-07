@@ -31,9 +31,7 @@ async function startUserRequest(manifest, renderer, userMessage) {
   manifest.stopReason = null;
   manifest.error = null;
 
-  if (!manifest._skipUserEcho) {
-    renderer.user(userMessage);
-  }
+  renderer.user(userMessage);
   await appendTranscript(manifest, { ts: nowIso(), role: 'user', text: userMessage, requestId: request.id });
   await emitEvent(
     manifest,

@@ -20,6 +20,10 @@ const color = {
   codeBlock: '\x1b[90m',   // gray for code blocks
   heading: '\x1b[1;36m',   // bold cyan for headings
   bullet: '\x1b[33m',      // yellow for bullets
+  // Background colors for message blocks
+  bgUser: '\x1b[48;5;236m',       // dark gray background
+  bgController: '\x1b[48;5;17m',  // dark blue background
+  bgTool: '\x1b[48;5;235m',       // slightly darker gray for tool lines
 };
 
 /**
@@ -84,110 +88,80 @@ class Renderer {
     this.rawEvents = Boolean(options.rawEvents);
     this.quiet = Boolean(options.quiet);
     this.out = options.out || process.stdout;
-    this.streamLabel = null;
     this.useColor = options.color != null ? Boolean(options.color) : (this.out.isTTY !== false);
     // Markdown streaming state
     this._mdBuffer = '';
     this._mdInCodeBlock = false;
-    this._mdLabel = null;
-    this._mdColor = null;
+    this._streaming = false;
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
-    // Active label tracking — only print label when it changes
-    this._activeLabel = null;
+    // Track current actor to avoid duplicate headers
+    this._currentActor = null;
   }
 
   write(text) {
     this.out.write(text);
   }
 
-  _colorLabel(label, c) {
-    if (!this.useColor) {
-      return `${label}:`;
+  /**
+   * Print a section header line for an actor. Only prints if the actor changed.
+   */
+  _ensureHeader(label, labelColor) {
+    if (this._currentActor === label) return;
+    this.flushStream();
+    this._currentActor = label;
+    if (this.useColor) {
+      this.write(`${labelColor}${color.bold}${label}${color.reset}\n`);
+    } else {
+      this.write(`${label}\n`);
     }
-    return `${c}${color.bold}${label}:${color.reset}`;
   }
 
   /**
-   * Returns the label prefix or equivalent padding.
-   * Only prints the actual label when the actor changes.
+   * Write a line of text with optional background color.
    */
-  _labelOrPad(label, c) {
-    const labelStr = this._colorLabel(label, c);
-    if (this._activeLabel !== label) {
-      this._activeLabel = label;
-      return labelStr;
+  _bgLine(text, bg) {
+    if (!this.useColor || !bg) {
+      this.write(`${text}\n`);
+      return;
     }
-    // Pad with spaces to match label width (label + colon)
-    const padLen = label.length + 1;
-    return ' '.repeat(padLen);
+    this.write(`${bg}${text}${color.reset}\n`);
   }
 
   flushStream() {
-    // Flush any remaining markdown buffer (partial last line)
     if (this._mdBuffer) {
-      // Write label prefix if we haven't started this line yet
-      if (!this.streamLabel && this._mdLabel) {
-        this.write(`${this._labelOrPad(this._mdLabel, this._mdColor)} `);
-        this.streamLabel = this._mdLabel;
-      }
       const { text } = renderMarkdownLine(this._mdBuffer, this.useColor, this._mdInCodeBlock);
-      this.write(text);
+      this.write(`${text}\n`);
       this._mdBuffer = '';
     }
-    if (this.streamLabel) {
+    if (this._streaming) {
       this.write('\n');
-      this.streamLabel = null;
+      this._streaming = false;
     }
-    this._mdLabel = null;
-    this._mdColor = null;
     this._mdInCodeBlock = false;
   }
 
-  line(label, text, c) {
+  /**
+   * Print a plain text line under the given actor header.
+   */
+  line(label, text, labelColor, bg) {
     this.flushStream();
-    this.write(`${this._labelOrPad(label, c)} ${text}\n`);
+    this._ensureHeader(label, labelColor);
+    this._bgLine(text, bg);
   }
 
   /**
-   * Like line() but renders the text through the markdown formatter.
+   * Print text with markdown rendering under the given actor header.
    */
-  mdLine(label, text, c) {
+  mdLine(label, text, labelColor, bg) {
     this.flushStream();
+    this._ensureHeader(label, labelColor);
     const lines = String(text).replace(/\r/g, '').split('\n');
     let inCodeBlock = false;
     for (const rawLine of lines) {
       const { text: rendered, inCodeBlock: newState } = renderMarkdownLine(rawLine, this.useColor, inCodeBlock);
       inCodeBlock = newState;
-      this.write(`${this._labelOrPad(label, c)} ${rendered}\n`);
-    }
-  }
-
-  stream(label, text, c) {
-    if (!text) {
-      return;
-    }
-    const normalized = String(text).replace(/\r/g, '');
-    const parts = normalized.split('\n');
-    for (let index = 0; index < parts.length; index += 1) {
-      const part = parts[index];
-      const isLast = index === parts.length - 1;
-      if (isLast && part === '') {
-        continue;
-      }
-      if (!this.streamLabel) {
-        this.write(`${this._labelOrPad(label, c)} `);
-        this.streamLabel = label;
-      } else if (this.streamLabel !== label) {
-        this.flushStream();
-        this.write(`${this._labelOrPad(label, c)} `);
-        this.streamLabel = label;
-      }
-      this.write(part);
-      if (!isLast) {
-        this.write('\n');
-        this.streamLabel = null;
-      }
+      this._bgLine(rendered, bg);
     }
   }
 
@@ -195,44 +169,26 @@ class Renderer {
    * Stream text with markdown rendering. Buffers partial lines and renders
    * complete lines through the markdown formatter.
    */
-  streamMarkdown(label, text, c) {
+  streamMarkdown(label, text, labelColor) {
     if (!text) return;
+    this._ensureHeader(label, labelColor);
     const normalized = String(text).replace(/\r/g, '');
-
-    // If label changed, flush previous
-    if (this._mdLabel && this._mdLabel !== label) {
-      this.flushStream();
-    }
-    this._mdLabel = label;
-    this._mdColor = c;
-
     this._mdBuffer += normalized;
 
-    // Process all complete lines in the buffer
     let nlIndex;
     while ((nlIndex = this._mdBuffer.indexOf('\n')) !== -1) {
       const completeLine = this._mdBuffer.slice(0, nlIndex);
       this._mdBuffer = this._mdBuffer.slice(nlIndex + 1);
-
-      // Write label prefix if we're starting a new line
-      if (!this.streamLabel) {
-        this.write(`${this._labelOrPad(label, c)} `);
-        this.streamLabel = label;
-      }
-
       const { text: rendered, inCodeBlock } = renderMarkdownLine(completeLine, this.useColor, this._mdInCodeBlock);
       this._mdInCodeBlock = inCodeBlock;
       this.write(`${rendered}\n`);
-      this.streamLabel = null; // next line needs a new label
+      this._streaming = false;
     }
-
-    // If there's remaining partial text, write it (unformatted, will be completed later)
-    // But don't write it yet — keep buffering until we get a newline or flush
   }
 
   banner(text) {
     this.flushStream();
-    this._activeLabel = null;
+    this._currentActor = null;
     if (this.useColor) {
       this.write(`${color.banner}${text}${color.reset}\n`);
     } else {
@@ -241,13 +197,15 @@ class Renderer {
   }
 
   /**
-   * Returns a colored "User: " string suitable for use as a readline prompt.
+   * Returns a colored prompt string for readline.
    */
   userPrompt() {
+    this.flushStream();
+    this._currentActor = null;
     if (!this.useColor) {
-      return 'User: ';
+      return '> ';
     }
-    return `${color.user}${color.bold}User:${color.reset} `;
+    return `${color.dim}>${color.reset} `;
   }
 
   shell(text) {
@@ -255,12 +213,22 @@ class Renderer {
   }
 
   user(text) {
-    this._activeLabel = null;
-    this.line('User', text, color.user);
+    this.flushStream();
+    this._currentActor = null; // always show User header
+    // Move up one line and clear it to overwrite the readline echo
+    if (this.out.isTTY) {
+      this.write('\x1b[A\x1b[2K');
+    }
+    if (this.useColor) {
+      this.write(`${color.user}${color.bold}User${color.reset}\n`);
+      this.write(`${color.bgUser}${text}${color.reset}\n`);
+    } else {
+      this.write(`User\n${text}\n`);
+    }
   }
 
   controller(text) {
-    this.line('Controller', text, color.controller);
+    this.line('Controller', text, color.controller, color.bgController);
   }
 
   claude(text) {
@@ -318,7 +286,6 @@ class Renderer {
     if (filePath) {
       return `${name}: ${filePath}`;
     }
-    // Show raw input for unknown tools
     const keys = Object.keys(input);
     if (keys.length > 0) {
       const brief = keys.map(k => `${k}=${truncate(String(input[k]), 80)}`).join(', ');
@@ -359,7 +326,8 @@ class Renderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this.line('Claude code', desc, color.claude);
+        this._ensureHeader('Claude code', color.claude);
+        this._bgLine(`${color.dim}${desc}${color.reset}`, color.bgTool);
         this._toolCalls.delete(summary.index);
       }
       return;
