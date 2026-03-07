@@ -93,6 +93,8 @@ class Renderer {
     this._mdColor = null;
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
+    // Active label tracking — only print label when it changes
+    this._activeLabel = null;
   }
 
   write(text) {
@@ -106,12 +108,27 @@ class Renderer {
     return `${c}${color.bold}${label}:${color.reset}`;
   }
 
+  /**
+   * Returns the label prefix or equivalent padding.
+   * Only prints the actual label when the actor changes.
+   */
+  _labelOrPad(label, c) {
+    const labelStr = this._colorLabel(label, c);
+    if (this._activeLabel !== label) {
+      this._activeLabel = label;
+      return labelStr;
+    }
+    // Pad with spaces to match label width (label + colon)
+    const padLen = label.length + 1;
+    return ' '.repeat(padLen);
+  }
+
   flushStream() {
     // Flush any remaining markdown buffer (partial last line)
     if (this._mdBuffer) {
       // Write label prefix if we haven't started this line yet
       if (!this.streamLabel && this._mdLabel) {
-        this.write(`${this._colorLabel(this._mdLabel, this._mdColor)} `);
+        this.write(`${this._labelOrPad(this._mdLabel, this._mdColor)} `);
         this.streamLabel = this._mdLabel;
       }
       const { text } = renderMarkdownLine(this._mdBuffer, this.useColor, this._mdInCodeBlock);
@@ -129,7 +146,7 @@ class Renderer {
 
   line(label, text, c) {
     this.flushStream();
-    this.write(`${this._colorLabel(label, c)} ${text}\n`);
+    this.write(`${this._labelOrPad(label, c)} ${text}\n`);
   }
 
   /**
@@ -142,7 +159,7 @@ class Renderer {
     for (const rawLine of lines) {
       const { text: rendered, inCodeBlock: newState } = renderMarkdownLine(rawLine, this.useColor, inCodeBlock);
       inCodeBlock = newState;
-      this.write(`${this._colorLabel(label, c)} ${rendered}\n`);
+      this.write(`${this._labelOrPad(label, c)} ${rendered}\n`);
     }
   }
 
@@ -159,11 +176,11 @@ class Renderer {
         continue;
       }
       if (!this.streamLabel) {
-        this.write(`${this._colorLabel(label, c)} `);
+        this.write(`${this._labelOrPad(label, c)} `);
         this.streamLabel = label;
       } else if (this.streamLabel !== label) {
         this.flushStream();
-        this.write(`${this._colorLabel(label, c)} `);
+        this.write(`${this._labelOrPad(label, c)} `);
         this.streamLabel = label;
       }
       this.write(part);
@@ -199,7 +216,7 @@ class Renderer {
 
       // Write label prefix if we're starting a new line
       if (!this.streamLabel) {
-        this.write(`${this._colorLabel(label, c)} `);
+        this.write(`${this._labelOrPad(label, c)} `);
         this.streamLabel = label;
       }
 
@@ -215,6 +232,7 @@ class Renderer {
 
   banner(text) {
     this.flushStream();
+    this._activeLabel = null;
     if (this.useColor) {
       this.write(`${color.banner}${text}${color.reset}\n`);
     } else {
@@ -237,6 +255,7 @@ class Renderer {
   }
 
   user(text) {
+    this._activeLabel = null;
     this.line('User', text, color.user);
   }
 
@@ -340,7 +359,7 @@ class Renderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this.line('Claude code', desc, color.shell);
+        this.line('Claude code', desc, color.claude);
         this._toolCalls.delete(summary.index);
       }
       return;
