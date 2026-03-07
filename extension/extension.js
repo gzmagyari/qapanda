@@ -3,7 +3,7 @@ const path = require('node:path');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 
-let panelCount = 0;
+const activePanels = new Set();
 
 function getWebviewHtml(panel, extensionUri) {
   const webviewDir = vscode.Uri.joinPath(extensionUri, 'webview');
@@ -55,10 +55,10 @@ function getRepoRoot(extensionUri) {
 
 function activate(context) {
   const openCommand = vscode.commands.registerCommand('ccManager.open', () => {
-    panelCount++;
+    const title = activePanels.size === 0 ? 'CC Manager' : `CC Manager (${activePanels.size + 1})`;
     const panel = vscode.window.createWebviewPanel(
       'ccManagerPanel',
-      `CC Manager${panelCount > 1 ? ` (${panelCount})` : ''}`,
+      title,
       vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -92,8 +92,11 @@ function activate(context) {
       context.subscriptions
     );
 
+    activePanels.add(panel);
+
     panel.onDidDispose(
       () => {
+        activePanels.delete(panel);
         session.dispose();
       },
       null,
