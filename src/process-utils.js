@@ -7,6 +7,7 @@ function execForText(command, args = [], options = {}) {
       cwd: options.cwd,
       env: options.env || process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
     });
 
     const stdoutChunks = [];
@@ -41,6 +42,7 @@ function spawnStreamingProcess({
       cwd,
       env: env || process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
     });
 
     let aborted = false;

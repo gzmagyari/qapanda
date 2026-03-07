@@ -14,8 +14,7 @@ function buildCodexArgs(manifest, loop) {
   args.push(
     '--cd',
     manifest.repoRoot,
-    '--ask-for-approval',
-    'never',
+    '--full-auto',
     '--color',
     'never',
     '--json',
@@ -23,8 +22,6 @@ function buildCodexArgs(manifest, loop) {
     manifest.controller.schemaFile,
     '--output-last-message',
     loop.controller.finalFile,
-    '--sandbox',
-    manifest.controller.sandbox,
   );
 
   if (manifest.controller.model) {

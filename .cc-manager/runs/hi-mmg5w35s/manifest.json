@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "runId": "hi-mmg5w35s",
+  "repoRoot": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager",
+  "stateRoot": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager",
+  "runDir": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s",
+  "files": {
+    "manifest": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\manifest.json",
+    "events": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\events.jsonl",
+    "transcript": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\transcript.jsonl",
+    "schema": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\controller-decision.schema.json",
+    "requestsDir": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests"
+  },
+  "createdAt": "2026-03-07T10:09:35.491Z",
+  "updatedAt": "2026-03-07T10:11:11.828Z",
+  "status": "interrupted",
+  "phase": "idle",
+  "error": "Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)",
+  "stopReason": null,
+  "controller": {
+    "bin": "codex",
+    "model": null,
+    "profile": null,
+    "sandbox": "workspace-write",
+    "config": [],
+    "skipGitRepoCheck": false,
+    "extraInstructions": null,
+    "sessionId": null,
+    "schemaFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\controller-decision.schema.json"
+  },
+  "worker": {
+    "bin": "claude",
+    "model": null,
+    "sessionId": "5c0295b8-db37-42d7-9c4b-e22ff1735161",
+    "allowedTools": "Bash,Read,Edit",
+    "tools": null,
+    "disallowedTools": null,
+    "permissionPromptTool": null,
+    "maxTurns": null,
+    "maxBudgetUsd": null,
+    "addDirs": [],
+    "appendSystemPrompt": null,
+    "hasStarted": false
+  },
+  "settings": {
+    "rawEvents": false,
+    "quiet": false,
+    "color": true
+  },
+  "counters": {
+    "request": 3,
+    "loop": 3,
+    "controllerTurn": 3,
+    "workerTurn": 0
+  },
+  "activeRequestId": "req-0003",
+  "requests": [
+    {
+      "id": "req-0001",
+      "userMessage": "Hi",
+      "startedAt": "2026-03-07T10:09:35.494Z",
+      "finishedAt": null,
+      "status": "interrupted",
+      "stopReason": "Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)",
+      "loops": [
+        {
+          "id": "loop-0001",
+          "index": 1,
+          "startedAt": "2026-03-07T10:09:35.497Z",
+          "finishedAt": null,
+          "controller": {
+            "promptFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0001\\loop-0001\\controller.prompt.txt",
+            "stdoutFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0001\\loop-0001\\controller.stdout.log",
+            "stderrFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0001\\loop-0001\\controller.stderr.log",
+            "finalFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0001\\loop-0001\\controller.final.json",
+            "exitCode": null,
+            "decision": null,
+            "sessionId": null
+          },
+          "worker": null
+        }
+      ],
+      "requestsDir": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0001",
+      "latestControllerDecision": null,
+      "latestWorkerResult": null
+    },
+    {
+      "id": "req-0002",
+      "userMessage": "cc-manager",
+      "startedAt": "2026-03-07T10:11:09.160Z",
+      "finishedAt": null,
+      "status": "interrupted",
+      "stopReason": "Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)",
+      "loops": [
+        {
+          "id": "loop-0001",
+          "index": 1,
+          "startedAt": "2026-03-07T10:11:09.163Z",
+          "finishedAt": null,
+          "controller": {
+            "promptFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0002\\loop-0001\\controller.prompt.txt",
+            "stdoutFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0002\\loop-0001\\controller.stdout.log",
+            "stderrFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0002\\loop-0001\\controller.stderr.log",
+            "finalFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0002\\loop-0001\\controller.final.json",
+            "exitCode": null,
+            "decision": null,
+            "sessionId": null
+          },
+          "worker": null
+        }
+      ],
+      "requestsDir": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0002",
+      "latestControllerDecision": null,
+      "latestWorkerResult": null
+    },
+    {
+      "id": "req-0003",
+      "userMessage": "clear",
+      "startedAt": "2026-03-07T10:11:11.817Z",
+      "finishedAt": null,
+      "status": "interrupted",
+      "stopReason": "Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)",
+      "loops": [
+        {
+          "id": "loop-0001",
+          "index": 1,
+          "startedAt": "2026-03-07T10:11:11.822Z",
+          "finishedAt": null,
+          "controller": {
+            "promptFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0003\\loop-0001\\controller.prompt.txt",
+            "stdoutFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0003\\loop-0001\\controller.stdout.log",
+            "stderrFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0003\\loop-0001\\controller.stderr.log",
+            "finalFile": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0003\\loop-0001\\controller.final.json",
+            "exitCode": null,
+            "decision": null,
+            "sessionId": null
+          },
+          "worker": null
+        }
+      ],
+      "requestsDir": "C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\runs\\hi-mmg5w35s\\requests\\req-0003",
+      "latestControllerDecision": null,
+      "latestWorkerResult": null
+    }
+  ],
+  "transcriptSummary": "Hi"
+}
