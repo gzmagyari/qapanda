@@ -12,6 +12,48 @@
   let hasContent = false;
   let streamingEntry = null;
 
+  // ── Thinking indicator ────────────────────────────────────────────
+  const thinkingChars = '\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588\u2587\u2586\u2585\u2584\u2583\u2582';
+  let thinkingEl = null;
+  let thinkingInterval = null;
+  let thinkingTick = 0;
+
+  function showThinking(label) {
+    hideThinking();
+    ensureSection(label);
+    thinkingEl = document.createElement('div');
+    thinkingEl.className = `entry ${roleClass(label)} thinking-indicator`;
+    const content = document.createElement('div');
+    content.className = 'entry-content thinking-content';
+    thinkingEl.appendChild(content);
+    currentSection.appendChild(thinkingEl);
+    thinkingTick = 0;
+    updateThinkingText(content);
+    thinkingInterval = setInterval(() => updateThinkingText(content), 120);
+    autoScroll();
+  }
+
+  function updateThinkingText(el) {
+    const len = thinkingChars.length;
+    let s = '';
+    for (let i = 0; i < 5; i++) {
+      s += thinkingChars[(thinkingTick + i) % len];
+    }
+    thinkingTick++;
+    el.textContent = s;
+  }
+
+  function hideThinking() {
+    if (thinkingInterval) {
+      clearInterval(thinkingInterval);
+      thinkingInterval = null;
+    }
+    if (thinkingEl && thinkingEl.parentNode) {
+      thinkingEl.parentNode.removeChild(thinkingEl);
+    }
+    thinkingEl = null;
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────
 
   function roleClass(label) {
@@ -158,6 +200,7 @@
   }
 
   function addEntry(role, html, extraClass) {
+    hideThinking();
     ensureSection(role);
     if (hasContent) {
       addPipe(role);
@@ -189,6 +232,7 @@
   // ── Streaming support ──────────────────────────────────────────────
 
   function streamLine(label, text) {
+    hideThinking();
     const role = label || 'Claude code';
     ensureSection(role);
 
@@ -288,7 +332,9 @@
         btnSend.style.display = 'none';
         btnStop.style.display = 'inline-block';
         textarea.disabled = true;
+        showThinking('Controller');
       } else {
+        hideThinking();
         btnSend.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;

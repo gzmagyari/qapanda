@@ -91,6 +91,23 @@ html, body {
 .pipe.role-claude::before { color: #6a9955; }
 .pipe.role-shell::before { color: #c586c0; }
 
+/* Thinking indicator */
+.thinking-indicator::before {
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+
+.thinking-content {
+  color: var(--vscode-descriptionForeground, #888);
+  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  letter-spacing: 2px;
+  font-size: 14px;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 /* Content inside entries */
 .entry-content {
   flex: 1;
