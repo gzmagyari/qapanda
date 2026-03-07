@@ -24,6 +24,7 @@ function getWebviewHtml(panel, extensionUri) {
 <body>
   <div id="app">
     <div id="messages"></div>
+    <div id="suggestions"></div>
     <div id="input-area">
       <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
       <button id="btn-send">Send</button>

@@ -187,6 +187,57 @@ html, body {
   margin: 1px 0;
 }
 
+/* Suggestions / autocomplete */
+#suggestions {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 24px 4px;
+  border-top: 1px solid var(--vscode-panel-border, #333);
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-editor-foreground, #ccc);
+  border: 1px solid var(--vscode-input-border, #555);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  line-height: 1.4;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.suggestion-chip:hover {
+  background: var(--vscode-list-hoverBackground, #2a2d2e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.suggestion-chip .chip-cmd {
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.suggestion-chip .chip-desc {
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.suggestion-chip.suboption {
+  background: rgba(55, 148, 255, 0.1);
+  border-color: rgba(55, 148, 255, 0.3);
+}
+
+.suggestion-chip.suboption:hover {
+  background: rgba(55, 148, 255, 0.2);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 /* Input area */
 #input-area {
   border-top: 1px solid var(--vscode-panel-border, #333);

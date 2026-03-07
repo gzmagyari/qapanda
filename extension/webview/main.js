@@ -334,6 +334,12 @@
       }
     },
 
+    clear() {
+      streamingEntry = null;
+      closeSection();
+      messagesEl.innerHTML = '';
+    },
+
     close() {
       streamingEntry = null;
       closeSection();
@@ -370,6 +376,128 @@
     }
   });
 
+  // ── Suggestions / Autocomplete ────────────────────────────────────
+
+  const suggestionsEl = document.getElementById('suggestions');
+
+  const COMMANDS = [
+    { cmd: '/help', desc: 'Show help' },
+    { cmd: '/new', desc: 'Start a new run' },
+    { cmd: '/resume', desc: 'Attach to an existing run' },
+    { cmd: '/run', desc: 'Continue interrupted request' },
+    { cmd: '/status', desc: 'Show run status' },
+    { cmd: '/list', desc: 'List saved runs' },
+    { cmd: '/logs', desc: 'Show recent events' },
+    { cmd: '/clear', desc: 'Clear chat and start fresh' },
+    { cmd: '/detach', desc: 'Detach from current run' },
+    { cmd: '/controller-model', desc: 'Set Codex model' },
+    { cmd: '/worker-model', desc: 'Set Claude model' },
+    { cmd: '/controller-thinking', desc: 'Set Codex thinking' },
+    { cmd: '/worker-thinking', desc: 'Set Claude thinking' },
+    { cmd: '/config', desc: 'Show current config' },
+  ];
+
+  const SUBOPTIONS = {
+    '/controller-model': [
+      { value: 'gpt-5.4', label: 'GPT-5.4' },
+      { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+      { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
+      { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+    ],
+    '/worker-model': [
+      { value: 'sonnet', label: 'Sonnet (latest)' },
+      { value: 'opus', label: 'Opus (latest)' },
+      { value: 'haiku', label: 'Haiku' },
+    ],
+    '/controller-thinking': [
+      { value: 'minimal', label: 'Minimal' },
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'Extra High' },
+    ],
+    '/worker-thinking': [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+    ],
+  };
+
+  function updateSuggestions() {
+    const text = textarea.value;
+    suggestionsEl.innerHTML = '';
+
+    // Only show suggestions when text starts with /
+    if (!text.startsWith('/')) {
+      suggestionsEl.style.display = 'none';
+      return;
+    }
+
+    // Check if user typed a command with a trailing space -> show suboptions
+    const spaceIdx = text.indexOf(' ');
+    if (spaceIdx !== -1) {
+      const cmd = text.slice(0, spaceIdx);
+      const sub = text.slice(spaceIdx + 1);
+      const options = SUBOPTIONS[cmd];
+      if (options) {
+        const filtered = sub
+          ? options.filter(o => o.value.toLowerCase().includes(sub.toLowerCase()) || o.label.toLowerCase().includes(sub.toLowerCase()))
+          : options;
+        if (filtered.length > 0) {
+          suggestionsEl.style.display = 'flex';
+          for (const opt of filtered) {
+            const chip = document.createElement('button');
+            chip.className = 'suggestion-chip suboption';
+            chip.textContent = opt.label;
+            chip.title = opt.value;
+            chip.addEventListener('click', () => {
+              textarea.value = '';
+              textarea.style.height = 'auto';
+              suggestionsEl.style.display = 'none';
+              vscode.postMessage({ type: 'userInput', text: `${cmd} ${opt.value}` });
+              textarea.focus();
+            });
+            suggestionsEl.appendChild(chip);
+          }
+          return;
+        }
+      }
+      suggestionsEl.style.display = 'none';
+      return;
+    }
+
+    // Show matching commands
+    const query = text.toLowerCase();
+    const filtered = COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+    if (filtered.length === 0) {
+      suggestionsEl.style.display = 'none';
+      return;
+    }
+
+    suggestionsEl.style.display = 'flex';
+    for (const item of filtered) {
+      const chip = document.createElement('button');
+      chip.className = 'suggestion-chip';
+      chip.innerHTML = `<span class="chip-cmd">${escapeHtml(item.cmd)}</span> <span class="chip-desc">${escapeHtml(item.desc)}</span>`;
+      chip.addEventListener('click', () => {
+        if (SUBOPTIONS[item.cmd]) {
+          // Has suboptions — fill command + space to show them
+          textarea.value = item.cmd + ' ';
+          textarea.focus();
+          updateSuggestions();
+        } else {
+          // No suboptions — execute immediately
+          textarea.value = '';
+          textarea.style.height = 'auto';
+          suggestionsEl.style.display = 'none';
+          vscode.postMessage({ type: 'userInput', text: item.cmd });
+          textarea.focus();
+        }
+      });
+      suggestionsEl.appendChild(chip);
+    }
+  }
+
   // ── Input handling ─────────────────────────────────────────────────
 
   function sendInput() {
@@ -377,6 +505,7 @@
     if (!text) return;
     textarea.value = '';
     textarea.style.height = 'auto';
+    suggestionsEl.style.display = 'none';
     vscode.postMessage({ type: 'userInput', text });
   }
 
@@ -391,12 +520,16 @@
       e.preventDefault();
       sendInput();
     }
+    if (e.key === 'Escape') {
+      suggestionsEl.style.display = 'none';
+    }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea + update suggestions
   textarea.addEventListener('input', () => {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
+    updateSuggestions();
   });
 
   // Focus input on load
