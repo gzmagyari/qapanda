@@ -124,7 +124,7 @@ function summarizeClaudeEvent(raw) {
     return null;
   }
 
-  if (raw.type === 'result_message') {
+  if (raw.type === 'result_message' || raw.type === 'result') {
     const text =
       typeof raw.result === 'string'
         ? raw.result
@@ -137,7 +137,7 @@ function summarizeClaudeEvent(raw) {
     return { source: 'worker', kind: 'status', text: 'Claude Code finished.' };
   }
 
-  if (raw.type === 'assistant_message') {
+  if (raw.type === 'assistant_message' || raw.type === 'assistant') {
     const text = extractTextFromClaudeContent(raw.message?.content || raw.content);
     if (text) {
       return { source: 'worker', kind: 'assistant-text', text };

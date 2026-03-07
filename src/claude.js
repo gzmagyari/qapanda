@@ -95,17 +95,20 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       if (raw.type === 'stream_event') {
         const event = raw.event || {};
         if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          if (!sawTextDelta && event.delta.text) {
+            event.delta.text = event.delta.text.replace(/^\n+/, '');
+          }
           accumulatedText += event.delta.text || '';
           sawTextDelta = true;
         }
       }
-      if (raw.type === 'assistant_message') {
+      if (raw.type === 'assistant_message' || raw.type === 'assistant') {
         const text = extractTextFromClaudeContent(raw.message?.content || raw.content);
         if (text) {
           lastAssistantMessage = text;
         }
       }
-      if (raw.type === 'result_message') {
+      if (raw.type === 'result_message' || raw.type === 'result') {
         finalEvent = raw;
         if (typeof raw.result === 'string') {
           finalResultText = raw.result;
@@ -116,10 +119,10 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
         }
       }
 
-      if (raw.type === 'assistant_message' && sawTextDelta) {
+      if ((raw.type === 'assistant_message' || raw.type === 'assistant') && sawTextDelta) {
         return;
       }
-      if (raw.type === 'result_message' && sawTextDelta) {
+      if ((raw.type === 'result_message' || raw.type === 'result') && sawTextDelta) {
         renderer.flushStream();
         return;
       }
