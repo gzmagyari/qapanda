@@ -20,10 +20,8 @@ const color = {
   codeBlock: '\x1b[90m',   // gray for code blocks
   heading: '\x1b[1;36m',   // bold cyan for headings
   bullet: '\x1b[33m',      // yellow for bullets
-  // Background colors for message blocks
+  // Background color for user messages
   bgUser: '\x1b[48;5;236m',       // dark gray background
-  bgController: '\x1b[48;5;17m',  // dark blue background
-  bgTool: '\x1b[48;5;235m',       // slightly darker gray for tool lines
 };
 
 /**
@@ -83,6 +81,12 @@ function renderMarkdownLine(line, useColor, inCodeBlock) {
   return { text: renderInlineMarkdown(line, useColor), inCodeBlock };
 }
 
+// Unicode timeline characters
+const glyph = {
+  circle: '\u25cf',   // ●
+  pipe: '\u2502',     // │
+};
+
 class Renderer {
   constructor(options = {}) {
     this.rawEvents = Boolean(options.rawEvents);
@@ -92,11 +96,13 @@ class Renderer {
     // Markdown streaming state
     this._mdBuffer = '';
     this._mdInCodeBlock = false;
-    this._streaming = false;
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
     // Track current actor to avoid duplicate headers
     this._currentActor = null;
+    this._currentColor = null;
+    // Whether we've written at least one content line in the current section
+    this._hasContent = false;
   }
 
   write(text) {
@@ -104,12 +110,46 @@ class Renderer {
   }
 
   /**
-   * Print a section header line for an actor. Only prints if the actor changed.
+   * Colored circle prefix for a content line.
+   */
+  _circlePfx() {
+    const c = this._currentColor;
+    if (!this.useColor || !c) return `  ${glyph.circle} `;
+    return `  ${c}${glyph.circle}${color.reset} `;
+  }
+
+  /**
+   * Colored pipe connector between content lines.
+   */
+  _pipePfx() {
+    const c = this._currentColor;
+    if (!this.useColor || !c) return `  ${glyph.pipe}`;
+    return `  ${c}${glyph.pipe}${color.reset}`;
+  }
+
+  /**
+   * End the current section with a blank line.
+   */
+  _closeSection() {
+    if (!this._currentActor) return;
+    this.write('\n');
+    this._currentActor = null;
+    this._currentColor = null;
+    this._hasContent = false;
+  }
+
+  /**
+   * Print a section header for an actor. Only prints if the actor changed.
    */
   _ensureHeader(label, labelColor) {
     if (this._currentActor === label) return;
     this.flushStream();
+    if (this._currentActor) {
+      this._closeSection();
+    }
     this._currentActor = label;
+    this._currentColor = labelColor;
+    this._hasContent = false;
     if (this.useColor) {
       this.write(`${labelColor}${color.bold}${label}${color.reset}\n`);
     } else {
@@ -118,25 +158,30 @@ class Renderer {
   }
 
   /**
-   * Write a line of text with optional background color.
+   * Write a content line with a circle bullet. Adds a pipe connector
+   * between consecutive content lines.
    */
-  _bgLine(text, bg) {
-    if (!this.useColor || !bg) {
-      this.write(`${text}\n`);
-      return;
+  _contentLine(text) {
+    if (this._hasContent) {
+      this.write(`${this._pipePfx()}\n`);
     }
-    this.write(`${bg}${text}${color.reset}\n`);
+    this.write(`${this._circlePfx()}${text}\n`);
+    this._hasContent = true;
+  }
+
+  /**
+   * Write a continuation line (multi-line text within the same bullet).
+   * Uses pipe prefix with padding to align with the circle text.
+   */
+  _continueLine(text) {
+    this.write(`${this._pipePfx()} ${text}\n`);
   }
 
   flushStream() {
     if (this._mdBuffer) {
       const { text } = renderMarkdownLine(this._mdBuffer, this.useColor, this._mdInCodeBlock);
-      this.write(`${text}\n`);
+      this._continueLine(text);
       this._mdBuffer = '';
-    }
-    if (this._streaming) {
-      this.write('\n');
-      this._streaming = false;
     }
     this._mdInCodeBlock = false;
   }
@@ -144,24 +189,29 @@ class Renderer {
   /**
    * Print a plain text line under the given actor header.
    */
-  line(label, text, labelColor, bg) {
+  line(label, text, labelColor) {
     this.flushStream();
     this._ensureHeader(label, labelColor);
-    this._bgLine(text, bg);
+    this._contentLine(text);
   }
 
   /**
    * Print text with markdown rendering under the given actor header.
+   * Multi-line text shares one circle bullet; extra lines use pipe continuation.
    */
-  mdLine(label, text, labelColor, bg) {
+  mdLine(label, text, labelColor) {
     this.flushStream();
     this._ensureHeader(label, labelColor);
     const lines = String(text).replace(/\r/g, '').split('\n');
     let inCodeBlock = false;
-    for (const rawLine of lines) {
-      const { text: rendered, inCodeBlock: newState } = renderMarkdownLine(rawLine, this.useColor, inCodeBlock);
+    for (let i = 0; i < lines.length; i++) {
+      const { text: rendered, inCodeBlock: newState } = renderMarkdownLine(lines[i], this.useColor, inCodeBlock);
       inCodeBlock = newState;
-      this._bgLine(rendered, bg);
+      if (i === 0) {
+        this._contentLine(rendered);
+      } else {
+        this._continueLine(rendered);
+      }
     }
   }
 
@@ -175,20 +225,28 @@ class Renderer {
     const normalized = String(text).replace(/\r/g, '');
     this._mdBuffer += normalized;
 
+    let first = true;
     let nlIndex;
     while ((nlIndex = this._mdBuffer.indexOf('\n')) !== -1) {
       const completeLine = this._mdBuffer.slice(0, nlIndex);
       this._mdBuffer = this._mdBuffer.slice(nlIndex + 1);
       const { text: rendered, inCodeBlock } = renderMarkdownLine(completeLine, this.useColor, this._mdInCodeBlock);
       this._mdInCodeBlock = inCodeBlock;
-      this.write(`${rendered}\n`);
-      this._streaming = false;
+      // First streamed line in this section gets a circle; rest get pipe continuation
+      if (!this._hasContent && first) {
+        this._contentLine(rendered);
+        first = false;
+      } else {
+        this._continueLine(rendered);
+      }
     }
   }
 
   banner(text) {
     this.flushStream();
-    this._currentActor = null;
+    if (this._currentActor) {
+      this._closeSection();
+    }
     if (this.useColor) {
       this.write(`${color.banner}${text}${color.reset}\n`);
     } else {
@@ -201,7 +259,9 @@ class Renderer {
    */
   userPrompt() {
     this.flushStream();
-    this._currentActor = null;
+    if (this._currentActor) {
+      this._closeSection();
+    }
     if (!this.useColor) {
       return '> ';
     }
@@ -214,21 +274,28 @@ class Renderer {
 
   user(text) {
     this.flushStream();
-    this._currentActor = null; // always show User header
+    if (this._currentActor) {
+      this._closeSection();
+    }
+    this._currentActor = 'User';
+    this._currentColor = color.user;
+    this._hasContent = false;
     // Move up one line and clear it to overwrite the readline echo
     if (this.out.isTTY) {
       this.write('\x1b[A\x1b[2K');
     }
     if (this.useColor) {
       this.write(`${color.user}${color.bold}User${color.reset}\n`);
-      this.write(`${color.bgUser}${text}${color.reset}\n`);
+      this.write(`${this._circlePfx()}${color.bgUser}${text}${color.reset}\n`);
     } else {
-      this.write(`User\n${text}\n`);
+      this.write(`User\n`);
+      this.write(`${this._circlePfx()}${text}\n`);
     }
+    this._hasContent = true;
   }
 
   controller(text) {
-    this.line('Controller', text, color.controller, color.bgController);
+    this.line('Controller', text, color.controller);
   }
 
   claude(text) {
@@ -327,7 +394,7 @@ class Renderer {
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
         this._ensureHeader('Claude code', color.claude);
-        this._bgLine(`${color.dim}${desc}${color.reset}`, color.bgTool);
+        this._contentLine(`${color.dim}${desc}${color.reset}`);
         this._toolCalls.delete(summary.index);
       }
       return;
