@@ -84,6 +84,16 @@ class Renderer {
     }
   }
 
+  /**
+   * Returns a colored "User: " string suitable for use as a readline prompt.
+   */
+  userPrompt() {
+    if (!this.useColor) {
+      return 'User: ';
+    }
+    return `${color.user}${color.bold}User:${color.reset} `;
+  }
+
   shell(text) {
     this.line('Shell', text, color.shell);
   }

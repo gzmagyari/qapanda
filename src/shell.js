@@ -59,7 +59,7 @@ async function runInteractiveShell(options = {}) {
 
   try {
     while (true) {
-      const prompt = activeManifest ? `cc-manager:${activeManifest.runId}> ` : 'cc-manager> ';
+      const prompt = renderer.userPrompt();
       let line;
       try {
         line = await rl.question(prompt);
@@ -147,6 +147,7 @@ async function runInteractiveShell(options = {}) {
             continue;
           }
           activeManifest = await prepareNewRun(rest, { ...options, repoRoot: cwd, stateRoot });
+          activeManifest._skipUserEcho = true;
           renderer.requestStarted(activeManifest.runId);
           try {
             activeManifest = await runManagerLoop(activeManifest, renderer, { userMessage: rest });
@@ -165,8 +166,8 @@ async function runInteractiveShell(options = {}) {
       try {
         if (!activeManifest) {
           activeManifest = await prepareNewRun(trimmed, { ...options, repoRoot: cwd, stateRoot });
-          renderer.requestStarted(activeManifest.runId);
         }
+        activeManifest._skipUserEcho = true;
         activeManifest = await runManagerLoop(activeManifest, renderer, { userMessage: trimmed });
       } catch (error) {
         renderer.banner(`Run error: ${summarizeError(error)}`);
