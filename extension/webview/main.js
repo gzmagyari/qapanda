@@ -11,6 +11,7 @@
   let currentSection = null;
   let hasContent = false;
   let streamingEntry = null;
+  let isRunning = false;
 
   // ── Thinking indicator ────────────────────────────────────────────
   const thinkingChars = '\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588\u2587\u2586\u2585\u2584\u2583\u2582';
@@ -18,15 +19,15 @@
   let thinkingInterval = null;
   let thinkingTick = 0;
 
-  function showThinking(label) {
+  function showThinking() {
     hideThinking();
-    ensureSection(label);
+    // Create a standalone thinking element at the bottom of messages
     thinkingEl = document.createElement('div');
-    thinkingEl.className = `entry ${roleClass(label)} thinking-indicator`;
+    thinkingEl.className = 'thinking-standalone';
     const content = document.createElement('div');
-    content.className = 'entry-content thinking-content';
+    content.className = 'thinking-content';
     thinkingEl.appendChild(content);
-    currentSection.appendChild(thinkingEl);
+    messagesEl.appendChild(thinkingEl);
     thinkingTick = 0;
     updateThinkingText(content);
     thinkingInterval = setInterval(() => updateThinkingText(content), 120);
@@ -52,6 +53,12 @@
       thinkingEl.parentNode.removeChild(thinkingEl);
     }
     thinkingEl = null;
+  }
+
+  function maybeShowThinking() {
+    if (isRunning) {
+      showThinking();
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────
@@ -217,6 +224,7 @@
     currentSection.appendChild(entry);
     hasContent = true;
     autoScroll();
+    maybeShowThinking();
     return entry;
   }
 
@@ -237,8 +245,11 @@
     ensureSection(role);
 
     if (!streamingEntry) {
-      // First streamed line — create a new entry
+      // First streamed line — create a new entry (skip maybeShowThinking via addEntry)
+      const savedRunning = isRunning;
+      isRunning = false;
       streamingEntry = addEntry(role, renderInlineMarkdown(text));
+      isRunning = savedRunning;
     } else {
       // Append to existing streaming entry
       const content = streamingEntry.querySelector('.entry-content');
@@ -298,6 +309,7 @@
 
     flushStream() {
       streamingEntry = null;
+      maybeShowThinking();
     },
 
     toolCall(msg) {
@@ -329,11 +341,13 @@
 
     running(msg) {
       if (msg.value) {
+        isRunning = true;
         btnSend.style.display = 'none';
         btnStop.style.display = 'inline-block';
         textarea.disabled = true;
-        showThinking('Controller');
+        showThinking();
       } else {
+        isRunning = false;
         hideThinking();
         btnSend.style.display = 'inline-block';
         btnStop.style.display = 'none';

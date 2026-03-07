@@ -92,8 +92,8 @@ html, body {
 .pipe.role-shell::before { color: #c586c0; }
 
 /* Thinking indicator */
-.thinking-indicator::before {
-  animation: thinking-pulse 1.2s ease-in-out infinite;
+.thinking-standalone {
+  padding: 8px 24px 4px;
 }
 
 .thinking-content {
@@ -101,6 +101,7 @@ html, body {
   font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
   letter-spacing: 2px;
   font-size: 14px;
+  animation: thinking-pulse 1.2s ease-in-out infinite;
 }
 
 @keyframes thinking-pulse {
