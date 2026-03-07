@@ -47,11 +47,20 @@ class SessionManager {
     this._abortController = null;
     this._running = false;
     this._postMessage = options.postMessage || (() => {});
-    // Model/thinking overrides
-    this._controllerModel = null;
-    this._workerModel = null;
-    this._controllerThinking = null;
-    this._workerThinking = null;
+    // Model/thinking overrides (load from persisted config if available)
+    const init = options.initialConfig || {};
+    this._controllerModel = init.controllerModel || null;
+    this._workerModel = init.workerModel || null;
+    this._controllerThinking = init.controllerThinking || null;
+    this._workerThinking = init.workerThinking || null;
+  }
+
+  applyConfig(config) {
+    if (!config) return;
+    this._controllerModel = config.controllerModel || null;
+    this._workerModel = config.workerModel || null;
+    this._controllerThinking = config.controllerThinking || null;
+    this._workerThinking = config.workerThinking || null;
   }
 
   get running() {
@@ -257,6 +266,7 @@ class SessionManager {
         this._activeManifest.controller.model = rest;
       }
       this._renderer.banner(`Controller model set to: ${rest}`);
+      this._syncConfig();
       return;
     }
 
@@ -272,6 +282,7 @@ class SessionManager {
         this._activeManifest.worker.model = rest;
       }
       this._renderer.banner(`Worker model set to: ${rest}`);
+      this._syncConfig();
       return;
     }
 
@@ -290,6 +301,7 @@ class SessionManager {
         this._activeManifest.controller.config.push(`model_reasoning_effort="${rest}"`);
       }
       this._renderer.banner(`Controller thinking set to: ${rest}`);
+      this._syncConfig();
       return;
     }
 
@@ -302,6 +314,7 @@ class SessionManager {
       }
       this._workerThinking = rest;
       this._renderer.banner(`Worker thinking set to: ${rest}`);
+      this._syncConfig();
       return;
     }
 
@@ -321,6 +334,19 @@ class SessionManager {
     }
 
     this._renderer.banner(`Unknown command: ${command}`);
+  }
+
+  _getConfig() {
+    return {
+      controllerModel: this._controllerModel || '',
+      workerModel: this._workerModel || '',
+      controllerThinking: this._controllerThinking || '',
+      workerThinking: this._workerThinking || '',
+    };
+  }
+
+  _syncConfig() {
+    this._postMessage({ type: 'syncConfig', config: this._getConfig() });
   }
 
   async _runLoop(options) {

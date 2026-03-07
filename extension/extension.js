@@ -30,6 +30,41 @@ function getWebviewHtml(panel, extensionUri) {
       <button id="btn-send">Send</button>
       <button id="btn-stop">Stop</button>
     </div>
+    <div id="config-bar">
+      <div class="config-group">
+        <label>Controller</label>
+        <select id="cfg-controller-model">
+          <option value="">Model: default</option>
+          <option value="gpt-5.4">GPT-5.4</option>
+          <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+          <option value="gpt-5.3-codex-spark">GPT-5.3 Spark</option>
+          <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
+        </select>
+        <select id="cfg-controller-thinking">
+          <option value="">Thinking: default</option>
+          <option value="minimal">Minimal</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="xhigh">Extra High</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>Worker</label>
+        <select id="cfg-worker-model">
+          <option value="">Model: default</option>
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+        </select>
+        <select id="cfg-worker-thinking">
+          <option value="">Thinking: default</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -76,6 +111,9 @@ function activate(context) {
     const renderer = new WebviewRenderer(panel);
     const repoRoot = getRepoRoot(context.extensionUri);
 
+    // Load persisted config
+    const savedConfig = context.workspaceState.get('ccManagerConfig', {});
+
     const session = new SessionManager(renderer, {
       repoRoot,
       postMessage: (msg) => {
@@ -85,10 +123,24 @@ function activate(context) {
           // Panel disposed
         }
       },
+      initialConfig: savedConfig,
     });
 
     panel.webview.onDidReceiveMessage(
-      (msg) => session.handleMessage(msg),
+      (msg) => {
+        if (msg.type === 'configChanged') {
+          // Update session manager and persist
+          session.applyConfig(msg.config);
+          context.workspaceState.update('ccManagerConfig', msg.config);
+          return;
+        }
+        if (msg.type === 'ready') {
+          // Send saved config to webview on load
+          panel.webview.postMessage({ type: 'initConfig', config: savedConfig });
+          return;
+        }
+        session.handleMessage(msg);
+      },
       undefined,
       context.subscriptions
     );
@@ -118,6 +170,7 @@ function activate(context) {
 
       const renderer = new WebviewRenderer(panel);
       const repoRoot = getRepoRoot(context.extensionUri);
+      const savedConfig = context.workspaceState.get('ccManagerConfig', {});
 
       const session = new SessionManager(renderer, {
         repoRoot,
@@ -126,10 +179,22 @@ function activate(context) {
             panel.webview.postMessage(msg);
           } catch {}
         },
+        initialConfig: savedConfig,
       });
 
       panel.webview.onDidReceiveMessage(
-        (msg) => session.handleMessage(msg),
+        (msg) => {
+          if (msg.type === 'configChanged') {
+            session.applyConfig(msg.config);
+            context.workspaceState.update('ccManagerConfig', msg.config);
+            return;
+          }
+          if (msg.type === 'ready') {
+            panel.webview.postMessage({ type: 'initConfig', config: savedConfig });
+            return;
+          }
+          session.handleMessage(msg);
+        },
         undefined,
         context.subscriptions
       );

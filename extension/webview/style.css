@@ -292,3 +292,43 @@ html, body {
 #btn-stop:hover {
   opacity: 0.85;
 }
+
+/* Config bar below input */
+#config-bar {
+  display: flex;
+  gap: 16px;
+  padding: 6px 24px 10px;
+  background: var(--vscode-editor-background, #1e1e1e);
+  flex-wrap: wrap;
+}
+
+.config-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-group label {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.config-group select {
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #ccc);
+  border: 1px solid var(--vscode-input-border, #555);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+
+.config-group select:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}

@@ -7,6 +7,38 @@
   const btnSend = document.getElementById('btn-send');
   const btnStop = document.getElementById('btn-stop');
 
+  // Config dropdowns
+  const cfgControllerModel = document.getElementById('cfg-controller-model');
+  const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
+  const cfgWorkerModel = document.getElementById('cfg-worker-model');
+  const cfgWorkerThinking = document.getElementById('cfg-worker-thinking');
+
+  function getConfig() {
+    return {
+      controllerModel: cfgControllerModel.value,
+      workerModel: cfgWorkerModel.value,
+      controllerThinking: cfgControllerThinking.value,
+      workerThinking: cfgWorkerThinking.value,
+    };
+  }
+
+  function setConfig(config) {
+    if (!config) return;
+    if (config.controllerModel !== undefined) cfgControllerModel.value = config.controllerModel;
+    if (config.workerModel !== undefined) cfgWorkerModel.value = config.workerModel;
+    if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
+    if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
+  }
+
+  function onConfigChange() {
+    vscode.postMessage({ type: 'configChanged', config: getConfig() });
+  }
+
+  cfgControllerModel.addEventListener('change', onConfigChange);
+  cfgControllerThinking.addEventListener('change', onConfigChange);
+  cfgWorkerModel.addEventListener('change', onConfigChange);
+  cfgWorkerThinking.addEventListener('change', onConfigChange);
+
   let currentActor = null;
   let currentSection = null;
   let hasContent = false;
@@ -362,6 +394,14 @@
       }
     },
 
+    initConfig(msg) {
+      setConfig(msg.config);
+    },
+
+    syncConfig(msg) {
+      setConfig(msg.config);
+    },
+
     rawEvent() {
       // Ignored in UI
     },
@@ -534,4 +574,7 @@
 
   // Focus input on load
   textarea.focus();
+
+  // Request persisted config from extension host
+  vscode.postMessage({ type: 'ready' });
 })();
