@@ -1,1 +1,0 @@
-Hi. This is just a delegation test from the controller. No repository work is needed; respond briefly and stop.

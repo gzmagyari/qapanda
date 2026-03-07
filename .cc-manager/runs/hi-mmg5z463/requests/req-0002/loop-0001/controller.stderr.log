@@ -1,7 +1,0 @@
-{"text":"error: unexpected argument '--cd' found"}
-{"text":""}
-{"text":""}
-{"text":"  tip: to pass '--cd' as a value, use '-- --cd'"}
-{"text":""}
-{"text":"Usage: codex exec resume <SESSION_ID> [PROMPT]"}
-{"text":"For more information, try '--help'."}

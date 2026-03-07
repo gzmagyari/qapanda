@@ -1,6 +1,0 @@
-{"ts":"2026-03-07T10:09:35.495Z","source":"user-message","requestId":"req-0001","text":"Hi"}
-{"ts":"2026-03-07T10:09:35.503Z","source":"run-error","requestId":"req-0001","text":"Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)"}
-{"ts":"2026-03-07T10:11:09.161Z","source":"user-message","requestId":"req-0002","text":"cc-manager"}
-{"ts":"2026-03-07T10:11:09.166Z","source":"run-error","requestId":"req-0002","text":"Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)"}
-{"ts":"2026-03-07T10:11:11.819Z","source":"user-message","requestId":"req-0003","text":"clear"}
-{"ts":"2026-03-07T10:11:11.827Z","source":"run-error","requestId":"req-0003","text":"Error: spawn codex ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:286:19)\n    at onErrorNT (node:internal/child_process:507:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)"}
