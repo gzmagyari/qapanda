@@ -1,0 +1,38 @@
+{
+  "name": "cc-manager-vscode",
+  "displayName": "CC Manager",
+  "description": "Interactive manager that uses Codex to control Claude Code — as a VSCode tab",
+  "version": "0.2.0",
+  "publisher": "cc-manager",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ccManager.open",
+        "title": "CC Manager: Open",
+        "icon": {
+          "light": "./resources/icon.svg",
+          "dark": "./resources/icon.svg"
+        }
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "ccManager.open",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0"
+  }
+}
