@@ -1,3 +1,4 @@
 {"ts":"2026-03-07T10:11:56.770Z","role":"user","text":"Hi","requestId":"req-0001"}
 {"ts":"2026-03-07T10:12:17.755Z","role":"controller","text":"Hi, how can I help you?","requestId":"req-0001","loopIndex":1}
 {"ts":"2026-03-07T10:12:17.757Z","role":"controller","text":"[STOP]","requestId":"req-0001","loopIndex":1}
+{"ts":"2026-03-07T10:12:35.422Z","role":"user","text":"I don't know","requestId":"req-0002"}

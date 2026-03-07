@@ -6,20 +6,30 @@ const { validateControllerDecision } = require('./schema');
 
 function buildCodexArgs(manifest, loop) {
   const args = ['exec'];
+  const isResume = !!manifest.controller.sessionId;
 
-  if (manifest.controller.sessionId) {
+  if (isResume) {
     args.push('resume', manifest.controller.sessionId);
   }
 
+  if (!isResume) {
+    args.push(
+      '--cd',
+      manifest.repoRoot,
+      '--color',
+      'never',
+      '--output-schema',
+      manifest.controller.schemaFile,
+    );
+
+    if (manifest.controller.profile) {
+      args.push('--profile', manifest.controller.profile);
+    }
+  }
+
   args.push(
-    '--cd',
-    manifest.repoRoot,
     '--full-auto',
-    '--color',
-    'never',
     '--json',
-    '--output-schema',
-    manifest.controller.schemaFile,
     '--output-last-message',
     loop.controller.finalFile,
   );
@@ -28,11 +38,7 @@ function buildCodexArgs(manifest, loop) {
     args.push('--model', manifest.controller.model);
   }
 
-  if (manifest.controller.profile) {
-    args.push('--profile', manifest.controller.profile);
-  }
-
-  if (manifest.controller.skipGitRepoCheck) {
+  if (!isResume && manifest.controller.skipGitRepoCheck) {
     args.push('--skip-git-repo-check');
   }
 
