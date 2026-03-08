@@ -3,7 +3,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt } = require('./prompts');
 
-function buildClaudeArgs(manifest, prompt) {
+function buildClaudeArgs(manifest) {
   const args = [
     '-p',
     '--output-format',
@@ -56,13 +56,13 @@ function buildClaudeArgs(manifest, prompt) {
     args.push('--append-system-prompt', appendSystemPrompt);
   }
 
-  // Prompt is passed via stdin to avoid shell escaping issues on Windows
+  // Prompt is passed via stdin to avoid Windows cmd.exe command-line length limits
   return args;
 }
 
 async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal }) {
   await writeText(workerRecord.promptFile, `${prompt}\n`);
-  const args = buildClaudeArgs(manifest, prompt);
+  const args = buildClaudeArgs(manifest);
 
   let accumulatedText = '';
   let lastAssistantMessage = '';

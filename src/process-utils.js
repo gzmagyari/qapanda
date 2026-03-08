@@ -139,9 +139,10 @@ function spawnStreamingProcess({
     }
 
     if (stdinText != null) {
-      child.stdin.write(stdinText);
+      child.stdin.write(stdinText, () => child.stdin.end());
+    } else {
+      child.stdin.end();
     }
-    child.stdin.end();
 
     child.on('close', (code, signal) => {
       stdoutReader.close();
