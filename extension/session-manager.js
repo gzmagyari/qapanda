@@ -10,6 +10,18 @@ const {
 } = require('./src/state');
 const { summarizeError } = require('./src/utils');
 
+function isAbortError(error) {
+  const msg = error && (error.message || String(error));
+  return msg && (msg.includes('was interrupted') || msg.includes('external-abort'));
+}
+
+function formatRunError(error) {
+  if (isAbortError(error)) return 'Run stopped by user.';
+  // Show just the message, not the full stack trace
+  if (error instanceof Error) return error.message;
+  return summarizeError(error);
+}
+
 const CODEX_MODELS = [
   { value: 'gpt-5.4', label: 'GPT-5.4' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
@@ -123,7 +135,7 @@ class SessionManager {
       }
       await this._runLoop({ userMessage: text });
     } catch (error) {
-      this._renderer.banner(`Run error: ${summarizeError(error)}`);
+      this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
     } finally {
       this._renderer.close();
     }
@@ -226,7 +238,7 @@ class SessionManager {
       try {
         await this._runLoop({});
       } catch (error) {
-        this._renderer.banner(`Run error: ${summarizeError(error)}`);
+        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
       } finally {
         this._renderer.close();
       }
@@ -247,7 +259,7 @@ class SessionManager {
       try {
         await this._runLoop({ userMessage: rest });
       } catch (error) {
-        this._renderer.banner(`Run error: ${summarizeError(error)}`);
+        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
       } finally {
         this._renderer.close();
       }
