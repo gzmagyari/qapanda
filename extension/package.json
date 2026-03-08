@@ -9,7 +9,8 @@
   },
   "categories": ["Other"],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:ccManagerPanel"
   ],
   "main": "./extension.js",
   "contributes": {

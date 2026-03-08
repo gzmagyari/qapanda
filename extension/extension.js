@@ -23,6 +23,10 @@ function getWebviewHtml(panel, extensionUri) {
 </head>
 <body>
   <div id="app">
+    <div id="progress-bubble" class="progress-bubble hidden">
+      <div class="progress-header">Progress</div>
+      <div class="progress-body"></div>
+    </div>
     <div id="messages"></div>
     <div id="suggestions"></div>
     <div id="input-area">
@@ -62,6 +66,32 @@ function getWebviewHtml(panel, extensionUri) {
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>Wait</label>
+        <select id="cfg-wait-delay">
+          <option value="">None</option>
+          <option value="1m">1 min</option>
+          <option value="2m">2 min</option>
+          <option value="3m">3 min</option>
+          <option value="5m">5 min</option>
+          <option value="10m">10 min</option>
+          <option value="15m">15 min</option>
+          <option value="30m">30 min</option>
+          <option value="1h">1 hour</option>
+          <option value="2h">2 hours</option>
+          <option value="3h">3 hours</option>
+          <option value="5h">5 hours</option>
+          <option value="6h">6 hours</option>
+          <option value="12h">12 hours</option>
+          <option value="1d">1 day</option>
+          <option value="2d">2 days</option>
+          <option value="3d">3 days</option>
+          <option value="4d">4 days</option>
+          <option value="5d">5 days</option>
+          <option value="6d">6 days</option>
+          <option value="7d">7 days</option>
         </select>
       </div>
     </div>
@@ -165,12 +195,14 @@ function activate(context) {
 
   // Register serializer for panel restoration
   vscode.window.registerWebviewPanelSerializer('ccManagerPanel', {
-    async deserializeWebviewPanel(panel, _state) {
+    async deserializeWebviewPanel(panel, state) {
       panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
       const renderer = new WebviewRenderer(panel);
       const repoRoot = getRepoRoot(context.extensionUri);
       const savedConfig = context.workspaceState.get('ccManagerConfig', {});
+      // Extract the saved run ID from the webview state (set by vscode.setState in main.js)
+      const savedRunId = (state && state.runId) || null;
 
       const session = new SessionManager(renderer, {
         repoRoot,
@@ -183,7 +215,7 @@ function activate(context) {
       });
 
       panel.webview.onDidReceiveMessage(
-        (msg) => {
+        async (msg) => {
           if (msg.type === 'configChanged') {
             session.applyConfig(msg.config);
             context.workspaceState.update('ccManagerConfig', msg.config);
@@ -191,6 +223,19 @@ function activate(context) {
           }
           if (msg.type === 'ready') {
             panel.webview.postMessage({ type: 'initConfig', config: savedConfig });
+            // Reattach to saved run if the webview had one before reload
+            const runId = msg.runId || savedRunId;
+            if (runId) {
+              const ok = await session.reattachRun(runId);
+              if (ok) {
+                await session.sendTranscript();
+                renderer.banner(`Reattached to run ${session.getRunId()}`);
+                await session.sendProgress();
+                session._restoreWaitTimer();
+              } else {
+                renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
+              }
+            }
             return;
           }
           session.handleMessage(msg);
@@ -199,15 +244,16 @@ function activate(context) {
         context.subscriptions
       );
 
+      activePanels.add(panel);
+
       panel.onDidDispose(
-        () => session.dispose(),
+        () => {
+          activePanels.delete(panel);
+          session.dispose();
+        },
         null,
         context.subscriptions
       );
-
-      renderer.banner('cc-manager session restored');
-      renderer.banner(`Repo root: ${repoRoot}`);
-      renderer.banner('Type /help for commands, or type a message to start.');
     },
   });
 }

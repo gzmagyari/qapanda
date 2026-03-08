@@ -32,6 +32,69 @@ function transcriptPath(runDir) {
   return path.join(runDir, 'transcript.jsonl');
 }
 
+function progressPath(runDir) {
+  return path.join(runDir, 'progress.md');
+}
+
+// ── Wait delay options ──────────────────────────────────────────────────────
+
+const WAIT_OPTIONS = [
+  { value: '', label: 'None', ms: 0 },
+  { value: '1m', label: '1 min', ms: 60_000 },
+  { value: '2m', label: '2 min', ms: 120_000 },
+  { value: '3m', label: '3 min', ms: 180_000 },
+  { value: '5m', label: '5 min', ms: 300_000 },
+  { value: '10m', label: '10 min', ms: 600_000 },
+  { value: '15m', label: '15 min', ms: 900_000 },
+  { value: '30m', label: '30 min', ms: 1_800_000 },
+  { value: '1h', label: '1 hour', ms: 3_600_000 },
+  { value: '2h', label: '2 hours', ms: 7_200_000 },
+  { value: '3h', label: '3 hours', ms: 10_800_000 },
+  { value: '5h', label: '5 hours', ms: 18_000_000 },
+  { value: '6h', label: '6 hours', ms: 21_600_000 },
+  { value: '12h', label: '12 hours', ms: 43_200_000 },
+  { value: '1d', label: '1 day', ms: 86_400_000 },
+  { value: '2d', label: '2 days', ms: 172_800_000 },
+  { value: '3d', label: '3 days', ms: 259_200_000 },
+  { value: '4d', label: '4 days', ms: 345_600_000 },
+  { value: '5d', label: '5 days', ms: 432_000_000 },
+  { value: '6d', label: '6 days', ms: 518_400_000 },
+  { value: '7d', label: '7 days', ms: 604_800_000 },
+];
+
+/**
+ * Parse a wait delay string (e.g. '5m', '2h', '1d') and return milliseconds.
+ * Returns 0 for empty/unknown values (means no delay).
+ */
+function parseWaitDelay(value) {
+  if (!value) return 0;
+  const option = WAIT_OPTIONS.find(o => o.value === value);
+  if (option) return option.ms;
+  // Try numeric parse: "5m", "2h", "1d"
+  const match = String(value).match(/^(\d+)\s*(m|h|d)$/i);
+  if (match) {
+    const n = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    if (unit === 'm') return n * 60_000;
+    if (unit === 'h') return n * 3_600_000;
+    if (unit === 'd') return n * 86_400_000;
+  }
+  return 0;
+}
+
+/**
+ * Format milliseconds as a human-readable wait label.
+ */
+function formatWaitDelay(ms) {
+  if (!ms || ms <= 0) return 'none';
+  const option = WAIT_OPTIONS.find(o => o.ms === ms);
+  if (option) return option.label;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
 function normalizeRunOptions(options = {}) {
   return {
     repoRoot: path.resolve(options.repoRoot || process.cwd()),
@@ -74,6 +137,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     manifest: manifestPath(runDir),
     events: eventsPath(runDir),
     transcript: transcriptPath(runDir),
+    progress: progressPath(runDir),
     schema: defaultSchemaPath(runDir),
     requestsDir: path.join(runDir, 'requests'),
   };
@@ -113,6 +177,9 @@ async function prepareNewRun(initialMessage, options = {}) {
     activeRequestId: null,
     requests: [],
     transcriptSummary: truncate(initialMessage, 120),
+    waitDelay: null,
+    nextWakeAt: null,
+    errorRetry: false,
   };
 
   await saveManifest(manifest);
@@ -248,16 +315,20 @@ function attachWorkerRecord(manifest, loop) {
 }
 
 module.exports = {
+  WAIT_OPTIONS,
   attachWorkerRecord,
   createLoopRecord,
   createRequest,
   defaultStateRoot,
+  formatWaitDelay,
   getActiveRequest,
   listRunManifests,
   loadManifestFromDir,
   manifestPath,
   normalizeRunOptions,
+  parseWaitDelay,
   prepareNewRun,
+  progressPath,
   resolveRunDir,
   runDirFromId,
   saveManifest,

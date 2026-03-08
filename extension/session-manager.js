@@ -3,14 +3,19 @@ const path = require('node:path');
 const { runManagerLoop, printRunSummary, printEventTail } = require('./src/orchestrator');
 const { loadWorkflows } = require('./src/prompts');
 const {
+  WAIT_OPTIONS,
   defaultStateRoot,
+  formatWaitDelay,
   listRunManifests,
   loadManifestFromDir,
+  parseWaitDelay,
   prepareNewRun,
   resolveRunDir,
   saveManifest,
 } = require('./src/state');
-const { summarizeError } = require('./src/utils');
+const { readText, summarizeError } = require('./src/utils');
+
+const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 
 function isAbortError(error) {
   const msg = error && (error.message || String(error));
@@ -61,12 +66,14 @@ class SessionManager {
     this._abortController = null;
     this._running = false;
     this._postMessage = options.postMessage || (() => {});
+    this._waitTimer = null;
     // Model/thinking overrides (load from persisted config if available)
     const init = options.initialConfig || {};
     this._controllerModel = init.controllerModel || null;
     this._workerModel = init.workerModel || null;
     this._controllerThinking = init.controllerThinking || null;
     this._workerThinking = init.workerThinking || null;
+    this._waitDelay = init.waitDelay || '';
   }
 
   applyConfig(config) {
@@ -75,10 +82,262 @@ class SessionManager {
     this._workerModel = config.workerModel || null;
     this._controllerThinking = config.controllerThinking || null;
     this._workerThinking = config.workerThinking || null;
+    if (config.waitDelay !== undefined) {
+      this._waitDelay = config.waitDelay || '';
+      // Persist to manifest if attached
+      if (this._activeManifest) {
+        this._activeManifest.waitDelay = this._waitDelay || null;
+        // Reschedule or clear the active timer (persists nextWakeAt)
+        if (this._waitDelay && this._activeManifest.status === 'running') {
+          this._scheduleNextPass();
+        } else {
+          this._clearWaitTimer();
+        }
+      }
+    }
   }
 
   get running() {
     return this._running;
+  }
+
+  /** Return the currently attached run ID, or null. */
+  getRunId() {
+    return this._activeManifest ? this._activeManifest.runId : null;
+  }
+
+  /**
+   * Try to reattach to a previously saved run by ID.
+   * Returns true if successful, false if the run no longer exists.
+   */
+  async reattachRun(runId) {
+    if (!runId) return false;
+    try {
+      const runDir = await resolveRunDir(runId, this._stateRoot);
+      this._activeManifest = await loadManifestFromDir(runDir);
+      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      return true;
+    } catch {
+      // Run no longer exists or is unreadable
+      this._postMessage({ type: 'clearRunId' });
+      return false;
+    }
+  }
+
+  /**
+   * Read the transcript file and send it to the webview for chat history rebuild.
+   * Maps transcript roles to webview message types.
+   */
+  async sendTranscript() {
+    if (!this._activeManifest || !this._activeManifest.files || !this._activeManifest.files.transcript) {
+      return;
+    }
+    try {
+      const raw = await readText(this._activeManifest.files.transcript, '');
+      if (!raw.trim()) return;
+      const entries = raw.trim().split('\n').map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).filter(Boolean);
+      if (entries.length === 0) return;
+
+      // Map transcript entries to webview message types
+      const messages = [];
+      for (const entry of entries) {
+        if (entry.role === 'user') {
+          messages.push({ type: 'user', text: entry.text || '' });
+        } else if (entry.role === 'controller') {
+          if (entry.text === '[STOP]') {
+            messages.push({ type: 'stop' });
+          } else {
+            messages.push({ type: 'controller', text: entry.text || '' });
+          }
+        } else if (entry.role === 'claude') {
+          messages.push({ type: 'claude', text: entry.text || '' });
+        }
+      }
+      if (messages.length > 0) {
+        this._postMessage({ type: 'transcriptHistory', messages });
+      }
+    } catch {
+      // Transcript unreadable — not fatal
+    }
+  }
+
+  /** Read the progress file for the attached run and send full contents to webview. */
+  async sendProgress() {
+    if (!this._activeManifest || !this._activeManifest.files || !this._activeManifest.files.progress) {
+      this._postMessage({ type: 'progressFull', text: '' });
+      return;
+    }
+    try {
+      const text = await readText(this._activeManifest.files.progress, '');
+      this._postMessage({ type: 'progressFull', text });
+    } catch {
+      this._postMessage({ type: 'progressFull', text: '' });
+    }
+  }
+
+  /** Stop the in-memory timer without touching disk. Used for shutdown/dispose. */
+  _stopWaitTimer() {
+    if (this._waitTimer) {
+      clearTimeout(this._waitTimer);
+      this._waitTimer = null;
+    }
+    this._postMessage({ type: 'waitStatus', active: false });
+  }
+
+  /** Durably cancel the timer: null nextWakeAt and errorRetry in memory AND on disk. */
+  _clearWaitTimer() {
+    this._stopWaitTimer();
+    if (this._activeManifest) {
+      this._activeManifest.nextWakeAt = null;
+      this._activeManifest.errorRetry = false;
+      saveManifest(this._activeManifest).catch(() => {});
+    }
+  }
+
+  _scheduleNextPass() {
+    this._clearWaitTimer();
+    if (!this._activeManifest || this._activeManifest.status !== 'running') return;
+    if (this._running) return; // Don't schedule if already running
+    const delayMs = parseWaitDelay(this._waitDelay);
+    if (!delayMs) return;
+
+    const wakeAt = new Date(Date.now() + delayMs).toISOString();
+    this._activeManifest.nextWakeAt = wakeAt;
+    saveManifest(this._activeManifest).catch(() => {});
+
+    this._renderer.banner(`Next auto-pass in ${formatWaitDelay(delayMs)} (at ${wakeAt.slice(11, 19)})`);
+    this._postMessage({ type: 'waitStatus', active: true, wakeAt });
+
+    this._waitTimer = setTimeout(async () => {
+      this._waitTimer = null;
+      if (!this._activeManifest || this._activeManifest.status !== 'running') return;
+      if (this._running) return;
+      this._activeManifest.nextWakeAt = null;
+      this._renderer.banner('Auto-pass starting...');
+      try {
+        await this._runLoop({ singlePass: true });
+        this._scheduleNextPass();
+      } catch (error) {
+        if (!isAbortError(error)) {
+          this._renderer.banner(`Run error: ${formatRunError(error)}`);
+          this._scheduleErrorRetry();
+        } else {
+          this._renderer.banner('Run stopped by user.');
+        }
+      } finally {
+        this._renderer.close();
+      }
+    }, delayMs);
+  }
+
+  _scheduleErrorRetry() {
+    this._stopWaitTimer();
+    if (!this._activeManifest) return;
+    // Accept both 'running' and 'interrupted' (genuine errors leave status='interrupted')
+    if (this._activeManifest.status !== 'running' && this._activeManifest.status !== 'interrupted') return;
+
+    const wakeAt = new Date(Date.now() + ERROR_RETRY_DELAY_MS).toISOString();
+    this._activeManifest.nextWakeAt = wakeAt;
+    this._activeManifest.errorRetry = true;
+    saveManifest(this._activeManifest).catch(() => {});
+
+    this._renderer.banner(`Error backoff: retrying in 30 min (at ${wakeAt.slice(11, 19)})`);
+    this._postMessage({ type: 'waitStatus', active: true, wakeAt });
+
+    this._waitTimer = setTimeout(async () => {
+      this._waitTimer = null;
+      if (!this._activeManifest) return;
+      if (this._running) return;
+      // Reset status so runManagerLoop can proceed
+      this._activeManifest.status = 'running';
+      this._activeManifest.nextWakeAt = null;
+      this._activeManifest.errorRetry = false;
+      this._renderer.banner('Error-retry auto-pass starting...');
+      try {
+        await this._runLoop({ singlePass: true });
+        this._scheduleNextPass();
+      } catch (error) {
+        if (!isAbortError(error)) {
+          this._renderer.banner(`Run error: ${formatRunError(error)}`);
+          this._scheduleErrorRetry();
+        } else {
+          this._renderer.banner('Run stopped by user.');
+        }
+      } finally {
+        this._renderer.close();
+      }
+    }, ERROR_RETRY_DELAY_MS);
+  }
+
+  /**
+   * Restore a pending wait timer from the manifest's nextWakeAt.
+   * Called after reattach/resume.
+   */
+  _restoreWaitTimer() {
+    if (!this._activeManifest) return;
+    // Restore waitDelay from manifest
+    if (this._activeManifest.waitDelay) {
+      this._waitDelay = this._activeManifest.waitDelay;
+    }
+    if (!this._activeManifest.nextWakeAt) return;
+    // Accept 'interrupted' status for error retries (genuine errors leave status='interrupted')
+    const canRestore = this._activeManifest.status === 'running' ||
+      (this._activeManifest.errorRetry && this._activeManifest.status === 'interrupted');
+    if (!canRestore) return;
+    // Don't restore a stale timer if wait is disabled AND this isn't an error retry
+    if (!parseWaitDelay(this._waitDelay) && !this._activeManifest.errorRetry) return;
+    const remaining = new Date(this._activeManifest.nextWakeAt).getTime() - Date.now();
+    if (remaining > 0) {
+      const label = this._activeManifest.errorRetry ? 'Pending error-retry' : 'Pending auto-pass';
+      this._renderer.banner(`${label} at ${this._activeManifest.nextWakeAt.slice(11, 19)}`);
+      this._postMessage({ type: 'waitStatus', active: true, wakeAt: this._activeManifest.nextWakeAt });
+      this._waitTimer = setTimeout(async () => {
+        this._waitTimer = null;
+        if (!this._activeManifest) return;
+        if (this._running) return;
+        // Reset status so runManagerLoop can proceed
+        this._activeManifest.status = 'running';
+        this._activeManifest.nextWakeAt = null;
+        this._activeManifest.errorRetry = false;
+        this._renderer.banner('Auto-pass starting...');
+        try {
+          await this._runLoop({ singlePass: true });
+          this._scheduleNextPass();
+        } catch (error) {
+          if (!isAbortError(error)) {
+            this._renderer.banner(`Run error: ${formatRunError(error)}`);
+            this._scheduleErrorRetry();
+          } else {
+            this._renderer.banner('Run stopped by user.');
+          }
+        } finally {
+          this._renderer.close();
+        }
+      }, remaining);
+    } else {
+      // Wake time passed — run immediately
+      this._activeManifest.status = 'running';
+      this._activeManifest.nextWakeAt = null;
+      this._activeManifest.errorRetry = false;
+      this._renderer.banner('Pending auto-pass overdue, starting now...');
+      (async () => {
+        try {
+          await this._runLoop({ singlePass: true });
+          this._scheduleNextPass();
+        } catch (error) {
+          if (!isAbortError(error)) {
+            this._renderer.banner(`Run error: ${formatRunError(error)}`);
+            this._scheduleErrorRetry();
+          } else {
+            this._renderer.banner('Run stopped by user.');
+          }
+        } finally {
+          this._renderer.close();
+        }
+      })();
+    }
   }
 
   async handleMessage(msg) {
@@ -113,15 +372,23 @@ class SessionManager {
       return;
     }
 
-    // Plain text: start or continue a run
+    // Plain text: start or continue a run — cancel any pending timer
+    this._clearWaitTimer();
     try {
       if (!this._activeManifest) {
         this._activeManifest = await prepareNewRun(text, this._buildNewRunOpts());
+        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       }
       this._applyWorkerThinking();
       await this._runLoop({ userMessage: text });
+      this._scheduleNextPass();
     } catch (error) {
-      this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
+      if (!isAbortError(error)) {
+        this._renderer.banner(`Run error: ${formatRunError(error)}`);
+        this._scheduleErrorRetry();
+      } else {
+        this._renderer.banner('Run stopped by user.');
+      }
     } finally {
       this._renderer.close();
     }
@@ -148,6 +415,7 @@ class SessionManager {
         '  /worker-model [name]           Set/show Claude model\n' +
         '  /controller-thinking [level]   Set/show Codex thinking tier\n' +
         '  /worker-thinking [level]       Set/show Claude thinking level\n' +
+        '  /wait [delay]                  Set auto-pass delay (e.g. 5m, 1h, none)\n' +
         '  /config                        Show current model/thinking config\n' +
         '  /workflow [name]               List or run a workflow\n' +
         '\nPlain text starts a new run or continues the current one.'
@@ -156,14 +424,20 @@ class SessionManager {
     }
 
     if (command === '/clear') {
+      this._clearWaitTimer();
       this._activeManifest = null;
       this._postMessage({ type: 'clear' });
+      this._postMessage({ type: 'clearRunId' });
+      this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Session cleared.');
       return;
     }
 
     if (command === '/detach') {
+      this._clearWaitTimer();
       this._activeManifest = null;
+      this._postMessage({ type: 'clearRunId' });
+      this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Detached from the current run.');
       return;
     }
@@ -185,9 +459,14 @@ class SessionManager {
         this._renderer.banner('Usage: /resume <run-id>');
         return;
       }
+      this._clearWaitTimer();
       const runDir = await resolveRunDir(rest, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
+      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      await this.sendTranscript();
       this._renderer.requestStarted(this._activeManifest.runId);
+      await this.sendProgress();
+      this._restoreWaitTimer();
       return;
     }
 
@@ -222,10 +501,17 @@ class SessionManager {
         this._renderer.banner('No run is attached.');
         return;
       }
+      this._clearWaitTimer();
       try {
         await this._runLoop({});
+        this._scheduleNextPass();
       } catch (error) {
-        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
+        if (!isAbortError(error)) {
+          this._renderer.banner(`Run error: ${formatRunError(error)}`);
+          this._scheduleErrorRetry();
+        } else {
+          this._renderer.banner('Run stopped by user.');
+        }
       } finally {
         this._renderer.close();
       }
@@ -237,13 +523,21 @@ class SessionManager {
         this._renderer.banner('Usage: /new <message>');
         return;
       }
+      this._clearWaitTimer();
       this._activeManifest = await prepareNewRun(rest, this._buildNewRunOpts());
+      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       this._renderer.requestStarted(this._activeManifest.runId);
       this._applyWorkerThinking();
       try {
         await this._runLoop({ userMessage: rest });
+        this._scheduleNextPass();
       } catch (error) {
-        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
+        if (!isAbortError(error)) {
+          this._renderer.banner(`Run error: ${formatRunError(error)}`);
+          this._scheduleErrorRetry();
+        } else {
+          this._renderer.banner('Run stopped by user.');
+        }
       } finally {
         this._renderer.close();
       }
@@ -314,6 +608,34 @@ class SessionManager {
       return;
     }
 
+    if (command === '/wait') {
+      if (!rest) {
+        const current = this._waitDelay || 'none';
+        const opts = WAIT_OPTIONS.map(o => `  ${o.value || 'none'} — ${o.label}`).join('\n');
+        this._renderer.banner(`Wait delay: ${current}\n\nAvailable:\n${opts}`);
+        return;
+      }
+      const val = rest === 'none' || rest === 'off' || rest === '0' ? '' : rest;
+      const ms = parseWaitDelay(val);
+      if (val && !ms) {
+        this._renderer.banner(`Unknown delay: ${rest}. Use /wait for options.`);
+        return;
+      }
+      this._waitDelay = val;
+      if (this._activeManifest) {
+        this._activeManifest.waitDelay = val || null;
+        // Reschedule or clear timer (persists nextWakeAt)
+        if (val && this._activeManifest.status === 'running') {
+          this._scheduleNextPass();
+        } else {
+          this._clearWaitTimer();
+        }
+      }
+      this._renderer.banner(`Wait delay set to: ${val ? formatWaitDelay(ms) : 'none'}`);
+      this._syncConfig();
+      return;
+    }
+
     if (command === '/config') {
       const cm = this._controllerModel || (this._activeManifest && this._activeManifest.controller.model) || '(default)';
       const wm = this._workerModel || (this._activeManifest && this._activeManifest.worker.model) || '(default)';
@@ -359,14 +681,22 @@ class SessionManager {
         return;
       }
       const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}\n\nFull workflow instructions:\n${content}`;
+      this._clearWaitTimer();
       try {
         if (!this._activeManifest) {
           this._activeManifest = await prepareNewRun(message, this._buildNewRunOpts());
+          this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
         }
         this._applyWorkerThinking();
         await this._runLoop({ userMessage: message });
+        this._scheduleNextPass();
       } catch (error) {
-        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
+        if (!isAbortError(error)) {
+          this._renderer.banner(`Run error: ${formatRunError(error)}`);
+          this._scheduleErrorRetry();
+        } else {
+          this._renderer.banner('Run stopped by user.');
+        }
       } finally {
         this._renderer.close();
       }
@@ -409,6 +739,7 @@ class SessionManager {
       workerModel: this._workerModel || '',
       controllerThinking: this._controllerThinking || '',
       workerThinking: this._workerThinking || '',
+      waitDelay: this._waitDelay || '',
     };
   }
 
@@ -421,11 +752,18 @@ class SessionManager {
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
 
+    const delayMs = parseWaitDelay(this._waitDelay);
+    const useSinglePass = Boolean(delayMs && options.singlePass !== false);
+
     try {
       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
         ...options,
+        singlePass: useSinglePass || options.singlePass,
         abortSignal: this._abortController.signal,
       });
+      if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
+        this._activeManifest.waitDelay = this._waitDelay || null;
+      }
       await saveManifest(this._activeManifest);
     } finally {
       this._running = false;
@@ -435,6 +773,7 @@ class SessionManager {
   }
 
   dispose() {
+    this._stopWaitTimer();
     this.abort();
   }
 }

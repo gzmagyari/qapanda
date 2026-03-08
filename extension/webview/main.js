@@ -6,12 +6,68 @@
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
   const btnStop = document.getElementById('btn-stop');
+  const progressBubble = document.getElementById('progress-bubble');
+  const progressBody = progressBubble ? progressBubble.querySelector('.progress-body') : null;
 
   // Config dropdowns
   const cfgControllerModel = document.getElementById('cfg-controller-model');
   const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
   const cfgWorkerModel = document.getElementById('cfg-worker-model');
   const cfgWorkerThinking = document.getElementById('cfg-worker-thinking');
+  const cfgWaitDelay = document.getElementById('cfg-wait-delay');
+
+  // ── Persisted state ─────────────────────────────────────────────────
+  // messageLog: array of message objects replayed on restore
+  // runId: currently attached run id
+  let messageLog = [];
+  let currentRunId = null;
+
+  function saveState() {
+    // Only persist the run ID — chat history is restored from transcript.jsonl on disk.
+    // Keeping messageLog out of persisted state avoids bloat and stale-data failures.
+    vscode.setState({ runId: currentRunId });
+  }
+
+  function logMessage(msg) {
+    // Only log messages that produce visible UI (skip transient/meta types).
+    // messageLog is kept in memory for the current session but NOT persisted —
+    // chat history survives reloads via transcript.jsonl on disk.
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory'];
+    if (skipped.includes(msg.type)) return;
+    messageLog.push(msg);
+  }
+
+  // ── Progress bubble helpers ───────────────────────────────────────
+  function showProgressBubble() {
+    if (progressBubble) progressBubble.classList.remove('hidden');
+  }
+
+  function hideProgressBubble() {
+    if (progressBubble) progressBubble.classList.add('hidden');
+    if (progressBody) progressBody.textContent = '';
+  }
+
+  function setProgressContent(text) {
+    if (!progressBody) return;
+    if (!text) {
+      hideProgressBubble();
+      return;
+    }
+    progressBody.textContent = text;
+    showProgressBubble();
+    progressBody.scrollTop = progressBody.scrollHeight;
+  }
+
+  function appendProgressLine(line) {
+    if (!progressBody) return;
+    if (progressBody.textContent) {
+      progressBody.textContent += '\n' + line;
+    } else {
+      progressBody.textContent = line;
+    }
+    showProgressBubble();
+    progressBody.scrollTop = progressBody.scrollHeight;
+  }
 
   function getConfig() {
     return {
@@ -19,6 +75,7 @@
       workerModel: cfgWorkerModel.value,
       controllerThinking: cfgControllerThinking.value,
       workerThinking: cfgWorkerThinking.value,
+      waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
     };
   }
 
@@ -28,6 +85,7 @@
     if (config.workerModel !== undefined) cfgWorkerModel.value = config.workerModel;
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
+    if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
   }
 
   function onConfigChange() {
@@ -38,6 +96,7 @@
   cfgControllerThinking.addEventListener('change', onConfigChange);
   cfgWorkerModel.addEventListener('change', onConfigChange);
   cfgWorkerThinking.addEventListener('change', onConfigChange);
+  if (cfgWaitDelay) cfgWaitDelay.addEventListener('change', onConfigChange);
 
   let currentActor = null;
   let currentSection = null;
@@ -370,6 +429,10 @@
       streamingEntry = null;
       closeSection();
       messagesEl.innerHTML = '';
+      messageLog = [];
+      currentRunId = null;
+      hideProgressBubble();
+      saveState();
     },
 
     close() {
@@ -402,6 +465,49 @@
       setConfig(msg.config);
     },
 
+    setRunId(msg) {
+      currentRunId = msg.runId || null;
+      saveState();
+    },
+
+    clearRunId() {
+      currentRunId = null;
+      hideProgressBubble();
+      saveState();
+    },
+
+    progressFull(msg) {
+      setProgressContent(msg.text || '');
+    },
+
+    progressLine(msg) {
+      appendProgressLine(msg.text || '');
+    },
+
+    transcriptHistory(msg) {
+      // Rebuild chat from transcript on disk — clear existing UI and messageLog.
+      // Do NOT call saveState() here: the transcript is authoritative on disk,
+      // so there is nothing to persist back into webview state.
+      streamingEntry = null;
+      closeSection();
+      messagesEl.innerHTML = '';
+      messageLog = [];
+
+      if (Array.isArray(msg.messages)) {
+        for (const entry of msg.messages) {
+          const handler = handlers[entry.type];
+          if (handler) {
+            handler(entry);
+            messageLog.push(entry);
+          }
+        }
+      }
+    },
+
+    waitStatus() {
+      // Handled via banners; no additional UI needed
+    },
+
     rawEvent() {
       // Ignored in UI
     },
@@ -413,8 +519,18 @@
     const handler = handlers[msg.type];
     if (handler) {
       handler(msg);
+      logMessage(msg);
     }
   });
+
+  // ── Restore persisted state on startup ────────────────────────────
+  // Only the run ID is persisted. Chat history is rebuilt from transcript.jsonl
+  // on disk when the extension host processes the 'ready' message and calls
+  // sendTranscript(). This avoids bloating webview state with the full history.
+  const savedState = vscode.getState();
+  if (savedState) {
+    currentRunId = savedState.runId || null;
+  }
 
   // ── Suggestions / Autocomplete ────────────────────────────────────
 
@@ -434,6 +550,7 @@
     { cmd: '/worker-model', desc: 'Set Claude model' },
     { cmd: '/controller-thinking', desc: 'Set Codex thinking' },
     { cmd: '/worker-thinking', desc: 'Set Claude thinking' },
+    { cmd: '/wait', desc: 'Set auto-pass delay' },
     { cmd: '/config', desc: 'Show current config' },
     { cmd: '/workflow', desc: 'List or run a workflow' },
   ];
@@ -461,6 +578,29 @@
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
+    ],
+    '/wait': [
+      { value: 'none', label: 'None (disabled)' },
+      { value: '1m', label: '1 min' },
+      { value: '2m', label: '2 min' },
+      { value: '3m', label: '3 min' },
+      { value: '5m', label: '5 min' },
+      { value: '10m', label: '10 min' },
+      { value: '15m', label: '15 min' },
+      { value: '30m', label: '30 min' },
+      { value: '1h', label: '1 hour' },
+      { value: '2h', label: '2 hours' },
+      { value: '3h', label: '3 hours' },
+      { value: '5h', label: '5 hours' },
+      { value: '6h', label: '6 hours' },
+      { value: '12h', label: '12 hours' },
+      { value: '1d', label: '1 day' },
+      { value: '2d', label: '2 days' },
+      { value: '3d', label: '3 days' },
+      { value: '4d', label: '4 days' },
+      { value: '5d', label: '5 days' },
+      { value: '6d', label: '6 days' },
+      { value: '7d', label: '7 days' },
     ],
   };
 
@@ -583,6 +723,6 @@
   // Focus input on load
   textarea.focus();
 
-  // Request persisted config from extension host
-  vscode.postMessage({ type: 'ready' });
+  // Request persisted config from extension host, include saved runId for reattach
+  vscode.postMessage({ type: 'ready', runId: currentRunId });
 })();

@@ -114,6 +114,10 @@ class WebviewRenderer {
     this._post({ type: 'close' });
   }
 
+  progress(line) {
+    this._post({ type: 'progressLine', text: line });
+  }
+
   _formatToolCall(name, input) {
     if (name === 'Bash' && input.command) {
       return `Running command: ${input.command}`;

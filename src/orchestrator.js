@@ -1,7 +1,28 @@
-const { appendJsonl, nowIso, readText, summarizeError, truncate } = require('./utils');
+const { appendJsonl, appendText, nowIso, readText, summarizeError, truncate } = require('./utils');
 const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, saveManifest } = require('./state');
 const { runControllerTurn } = require('./codex');
 const { runWorkerTurn } = require('./claude');
+
+function progressTimestamp() {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+async function appendProgress(manifest, line, renderer) {
+  if (!manifest.files || !manifest.files.progress) return;
+  const entry = `[${progressTimestamp()}] ${line}\n`;
+  try {
+    await appendText(manifest.files.progress, entry);
+  } catch {
+    // Non-critical — don't break the run
+  }
+  if (renderer && typeof renderer.progress === 'function') {
+    renderer.progress(entry.trimEnd());
+  }
+}
 
 async function emitEvent(manifest, event, renderer) {
   await appendJsonl(manifest.files.events, event);
@@ -32,6 +53,7 @@ async function startUserRequest(manifest, renderer, userMessage) {
   manifest.error = null;
 
   renderer.user(userMessage);
+  await appendProgress(manifest, `Request: ${truncate(userMessage, 80)}`, renderer);
   await appendTranscript(manifest, { ts: nowIso(), role: 'user', text: userMessage, requestId: request.id });
   await emitEvent(
     manifest,
@@ -118,6 +140,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
       for (const message of controllerResult.decision.controller_messages) {
         renderer.controller(message);
+        await appendProgress(manifest, `Controller: ${truncate(message, 80)}`, renderer);
         await appendTranscript(manifest, {
           ts: nowIso(),
           role: 'controller',
@@ -149,6 +172,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         manifest.activeRequestId = null;
         manifest.transcriptSummary = truncate(request.userMessage, 120);
         renderer.stop();
+        await appendProgress(manifest, `Stopped: ${truncate(request.stopReason, 60)}`, renderer);
         await appendTranscript(manifest, {
           ts: nowIso(),
           role: 'controller',
@@ -176,6 +200,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       await saveManifest(manifest);
 
       renderer.launchClaude(controllerResult.decision.claude_message, manifest.worker.hasStarted);
+      await appendProgress(manifest, `Delegating to Claude: ${truncate(controllerResult.decision.claude_message, 60)}`, renderer);
       await emitEvent(
         manifest,
         {
@@ -208,6 +233,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         },
       });
 
+      await appendProgress(manifest, `Worker done (exit ${workerResult.exitCode})`, renderer);
       await appendTranscript(manifest, {
         ts: nowIso(),
         role: 'claude',
@@ -232,10 +258,17 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       manifest.phase = 'controller';
       manifest.transcriptSummary = truncate(workerResult.resultText || request.userMessage, 120);
       await saveManifest(manifest);
+
+      // In singlePass mode, return after one controller→worker cycle
+      // Caller checks manifest.status === 'running' to know more work is pending
+      if (options.singlePass) {
+        return manifest;
+      }
     }
   } catch (error) {
     const message = summarizeError(error);
     markInterrupted(manifest, request, message);
+    await appendProgress(manifest, `Error: ${truncate(message, 80)}`, renderer);
     await emitEvent(
       manifest,
       { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message },
