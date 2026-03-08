@@ -11,14 +11,14 @@ User input
       -> Controller reviews result, loops or stops
 ```
 
-The controller (Codex) receives user messages and outputs structured JSON decisions with `action: "continue"` or `action: "stop"`, along with `claude_message` (prompt for the worker) and `controller_messages` (messages shown to the user). The worker (Claude Code) executes the prompt using `--output-format stream-json` and streams results back.
+The controller (Codex) receives user messages and outputs structured JSON decisions with `action: "delegate"` or `action: "stop"`, along with `claude_message` (prompt for the worker) and `controller_messages` (messages shown to the user). The worker (Claude Code) executes the prompt using `--output-format stream-json` and streams results back.
 
 ### Core loop (`src/orchestrator.js`)
 
 1. User sends a message
 2. Controller turn: Codex CLI runs, reads transcript, outputs a JSON decision
 3. If decision is `stop`, the loop ends
-4. If decision is `continue`, the worker turn starts: Claude Code runs with the `claude_message`
+4. If decision is `delegate`, the worker turn starts: Claude Code runs with the `claude_message`
 5. Worker result is appended to transcript, loop returns to step 2
 
 ## Project Structure
@@ -142,14 +142,20 @@ cc-manager doctor                  Verify codex and claude binaries
 - `/help` - Show help
 - `/new <message>` - Start a new run
 - `/resume <run-id>` - Attach to existing run
+- `/use <run-id>` - Alias for /resume
 - `/run` - Continue interrupted request
 - `/status` - Show attached run status
 - `/list` - List runs
 - `/logs [n]` - Show last n events
+- `/workflow [name]` - List or run a workflow
 - `/detach` - Detach from current run
 - `/quit` - Exit
 
 Plain text starts a new run (if none attached) or sends a message to the current run.
+
+## Workflows
+
+Place workflow directories in `.cc-manager/workflows/` (project-level) or `~/.cc-manager/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter (`name`, `description`). Use `/workflow` to list available workflows or `/workflow <name>` to run one.
 
 ## Project-level customization (CCMANAGER.md)
 

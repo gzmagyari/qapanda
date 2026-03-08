@@ -116,25 +116,9 @@ class SessionManager {
     // Plain text: start or continue a run
     try {
       if (!this._activeManifest) {
-        const opts = {
-          ...this._runOptions,
-          repoRoot: this._repoRoot,
-          stateRoot: this._stateRoot,
-        };
-        if (this._controllerModel) opts.controllerModel = this._controllerModel;
-        if (this._workerModel) opts.workerModel = this._workerModel;
-        if (this._controllerThinking) {
-          opts.controllerConfig = [
-            ...(opts.controllerConfig || []),
-            `model_reasoning_effort="${this._controllerThinking}"`,
-          ];
-        }
-        this._activeManifest = await prepareNewRun(text, opts);
+        this._activeManifest = await prepareNewRun(text, this._buildNewRunOpts());
       }
-      // Apply worker thinking as env var
-      if (this._workerThinking) {
-        process.env.CLAUDE_CODE_EFFORT_LEVEL = this._workerThinking;
-      }
+      this._applyWorkerThinking();
       await this._runLoop({ userMessage: text });
     } catch (error) {
       this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
@@ -253,12 +237,9 @@ class SessionManager {
         this._renderer.banner('Usage: /new <message>');
         return;
       }
-      this._activeManifest = await prepareNewRun(rest, {
-        ...this._runOptions,
-        repoRoot: this._repoRoot,
-        stateRoot: this._stateRoot,
-      });
+      this._activeManifest = await prepareNewRun(rest, this._buildNewRunOpts());
       this._renderer.requestStarted(this._activeManifest.runId);
+      this._applyWorkerThinking();
       try {
         await this._runLoop({ userMessage: rest });
       } catch (error) {
@@ -377,27 +358,12 @@ class SessionManager {
         this._renderer.banner(`Failed to read workflow file: ${err.message}`);
         return;
       }
-      const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}`;
+      const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}\n\nFull workflow instructions:\n${content}`;
       try {
         if (!this._activeManifest) {
-          const opts = {
-            ...this._runOptions,
-            repoRoot: this._repoRoot,
-            stateRoot: this._stateRoot,
-          };
-          if (this._controllerModel) opts.controllerModel = this._controllerModel;
-          if (this._workerModel) opts.workerModel = this._workerModel;
-          if (this._controllerThinking) {
-            opts.controllerConfig = [
-              ...(opts.controllerConfig || []),
-              `model_reasoning_effort="${this._controllerThinking}"`,
-            ];
-          }
-          this._activeManifest = await prepareNewRun(message, opts);
+          this._activeManifest = await prepareNewRun(message, this._buildNewRunOpts());
         }
-        if (this._workerThinking) {
-          process.env.CLAUDE_CODE_EFFORT_LEVEL = this._workerThinking;
-        }
+        this._applyWorkerThinking();
         await this._runLoop({ userMessage: message });
       } catch (error) {
         this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
@@ -408,6 +374,33 @@ class SessionManager {
     }
 
     this._renderer.banner(`Unknown command: ${command}`);
+  }
+
+  /** Build the options object for prepareNewRun, applying current config. */
+  _buildNewRunOpts() {
+    const opts = {
+      ...this._runOptions,
+      repoRoot: this._repoRoot,
+      stateRoot: this._stateRoot,
+    };
+    if (this._controllerModel) opts.controllerModel = this._controllerModel;
+    if (this._workerModel) opts.workerModel = this._workerModel;
+    if (this._controllerThinking) {
+      opts.controllerConfig = [
+        ...(opts.controllerConfig || []),
+        `model_reasoning_effort="${this._controllerThinking}"`,
+      ];
+    }
+    return opts;
+  }
+
+  /** Set or clear CLAUDE_CODE_EFFORT_LEVEL based on worker thinking config. */
+  _applyWorkerThinking() {
+    if (this._workerThinking) {
+      process.env.CLAUDE_CODE_EFFORT_LEVEL = this._workerThinking;
+    } else {
+      delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+    }
   }
 
   _getConfig() {

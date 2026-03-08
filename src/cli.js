@@ -133,11 +133,19 @@ function parseArgs(argv, spec) {
   return { options, positionals };
 }
 
+function isPathLike(value) {
+  if (!value) return false;
+  if (path.isAbsolute(value)) return false;
+  return value.includes('/') || value.includes('\\') || value.startsWith('.');
+}
+
 function normalizeOptions(options) {
   return {
     ...options,
     repoRoot: options.repoRoot ? path.resolve(options.repoRoot) : process.cwd(),
     stateRoot: options.stateRoot ? path.resolve(options.stateRoot) : undefined,
+    codexBin: isPathLike(options.codexBin) ? path.resolve(options.codexBin) : options.codexBin,
+    claudeBin: isPathLike(options.claudeBin) ? path.resolve(options.claudeBin) : options.claudeBin,
     workerMaxTurns: parseInteger(options.workerMaxTurns, '--worker-max-turns'),
     workerMaxBudgetUsd: parseNumber(options.workerMaxBudgetUsd, '--worker-max-budget-usd'),
   };

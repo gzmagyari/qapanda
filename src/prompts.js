@@ -54,9 +54,9 @@ function parseFrontmatter(text) {
   if (nameMatch) name = nameMatch[1].trim();
 
   // Handle both single-line and multi-line (>) description
-  const descMatch = block.match(/^description:\s*>?\s*\n?([\s\S]*?)(?=\n\w|\n---|$)/m);
-  if (descMatch) {
-    description = descMatch[1].replace(/\n\s*/g, ' ').trim();
+  const descFolded = block.match(/^description:\s*>\s*\n((?:[ \t]+.*\n?)*)/m);
+  if (descFolded) {
+    description = descFolded[1].replace(/\n\s*/g, ' ').trim();
   } else {
     const descSimple = block.match(/^description:\s*(.+)/m);
     if (descSimple) description = descSimple[1].trim();

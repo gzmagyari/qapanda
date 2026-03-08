@@ -71,6 +71,24 @@ test('simple greeting stops without launching Claude Code', async () => {
   assert.doesNotMatch(result.stdout, /Launching Claude Code/);
 });
 
+test('relative binary paths are resolved from invocation directory, not repo root', async () => {
+  const { repoRoot, stateRoot } = await setupWorkspace();
+  // Use relative paths from the repo root (the invocation cwd)
+  const relCodex = path.relative(rootDir, fakeCodex);
+  const relClaude = path.relative(rootDir, fakeClaude);
+  const result = await runCli([
+    'run',
+    'Hi',
+    '--repo', repoRoot,
+    '--state-dir', stateRoot,
+    '--codex-bin', relCodex,
+    '--claude-bin', relClaude,
+  ], { cwd: rootDir });
+
+  assert.equal(result.code, 0, `Expected exit 0 but got ${result.code}.\nstderr: ${result.stderr}\nstdout: ${result.stdout}`);
+  assert.match(result.stdout, /Hi/);
+});
+
 test('controller delegates to Claude, reviews, delegates again, then stops', async () => {
   const { repoRoot, stateRoot } = await setupWorkspace();
   const first = await runCli([

@@ -1,8 +1,10 @@
+const fs = require('node:fs');
 const readline = require('node:readline/promises');
 const path = require('node:path');
 
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop } = require('./orchestrator');
+const { loadWorkflows } = require('./prompts');
 const {
   defaultStateRoot,
   listRunManifests,
@@ -36,6 +38,7 @@ Commands:
   /status              Show status for the attached run
   /list                List saved runs
   /logs [n]            Show the last n event lines for the attached run
+  /workflow [name]     List or run a workflow
   /detach              Detach from the current run
   /quit                Exit the shell
 
@@ -150,6 +153,47 @@ async function runInteractiveShell(options = {}) {
           renderer.requestStarted(activeManifest.runId);
           try {
             activeManifest = await runManagerLoop(activeManifest, renderer, { userMessage: rest });
+          } catch (error) {
+            renderer.banner(`Run error: ${summarizeError(error)}`);
+          } finally {
+            renderer.close();
+          }
+          continue;
+        }
+
+        if (command === '/workflow') {
+          const workflows = loadWorkflows(cwd);
+          if (!rest) {
+            if (workflows.length === 0) {
+              renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/\nEach must contain a WORKFLOW.md with YAML frontmatter (name, description).');
+            } else {
+              const lines = ['Available workflows:'];
+              for (const wf of workflows) {
+                lines.push(`  ${wf.name} — ${wf.description}`);
+              }
+              renderer.banner(lines.join('\n'));
+            }
+            continue;
+          }
+          const wf = workflows.find(w => w.name === rest);
+          if (!wf) {
+            renderer.banner(`Workflow "${rest}" not found. Use /workflow to list available workflows.`);
+            continue;
+          }
+          let content;
+          try {
+            content = fs.readFileSync(wf.path, 'utf8').trim();
+          } catch (err) {
+            renderer.banner(`Failed to read workflow file: ${err.message}`);
+            continue;
+          }
+          const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}\n\nFull workflow instructions:\n${content}`;
+          try {
+            if (!activeManifest) {
+              activeManifest = await prepareNewRun(message, { ...options, repoRoot: cwd, stateRoot });
+            }
+            activeManifest = await runManagerLoop(activeManifest, renderer, { userMessage: message });
+            await saveManifest(activeManifest);
           } catch (error) {
             renderer.banner(`Run error: ${summarizeError(error)}`);
           } finally {

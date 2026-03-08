@@ -65,6 +65,7 @@ cc-manager --repo /path/to/repo --state-dir /path/to/state
 /status              Show status for the attached run
 /list                List saved runs
 /logs [n]            Show the last n event lines for the attached run
+/workflow [name]     List or run a workflow
 /detach              Detach from the current run
 /quit                Exit the shell
 ```
@@ -187,6 +188,21 @@ Each run is stored under:
             worker.stderr.log
             worker.final.json
 ```
+
+## Workflows
+
+Place workflow directories in `.cc-manager/workflows/` (project-level) or `~/.cc-manager/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter:
+
+```yaml
+---
+name: autonomous-dev
+description: Run the autonomous dev loop
+---
+
+Step-by-step instructions here...
+```
+
+Project-level workflows take precedence over global ones with the same name. Use `/workflow` in the shell to list available workflows, or `/workflow <name>` to run one.
 
 ## Tests
 
