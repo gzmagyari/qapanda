@@ -1,5 +1,7 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const { runManagerLoop, printRunSummary, printEventTail } = require('./src/orchestrator');
+const { loadWorkflows } = require('./src/prompts');
 const {
   defaultStateRoot,
   listRunManifests,
@@ -163,6 +165,7 @@ class SessionManager {
         '  /controller-thinking [level]   Set/show Codex thinking tier\n' +
         '  /worker-thinking [level]       Set/show Claude thinking level\n' +
         '  /config                        Show current model/thinking config\n' +
+        '  /workflow [name]               List or run a workflow\n' +
         '\nPlain text starts a new run or continues the current one.'
       );
       return;
@@ -342,6 +345,65 @@ class SessionManager {
         `  Worker model:        ${wm}\n` +
         `  Worker thinking:     ${wt}`
       );
+      return;
+    }
+
+    if (command === '/workflow') {
+      const workflows = loadWorkflows(this._repoRoot);
+      if (!rest) {
+        // List available workflows
+        if (workflows.length === 0) {
+          this._renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/\nEach must contain a WORKFLOW.md with YAML frontmatter (name, description).');
+        } else {
+          const lines = ['Available workflows:'];
+          for (const wf of workflows) {
+            lines.push(`  ${wf.name} — ${wf.description}`);
+          }
+          this._renderer.banner(lines.join('\n'));
+        }
+        return;
+      }
+      // Find and run a workflow by name
+      const wf = workflows.find(w => w.name === rest);
+      if (!wf) {
+        this._renderer.banner(`Workflow "${rest}" not found. Use /workflow to list available workflows.`);
+        return;
+      }
+      // Read the full WORKFLOW.md and use it as the user message
+      let content;
+      try {
+        content = fs.readFileSync(wf.path, 'utf8').trim();
+      } catch (err) {
+        this._renderer.banner(`Failed to read workflow file: ${err.message}`);
+        return;
+      }
+      const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}`;
+      try {
+        if (!this._activeManifest) {
+          const opts = {
+            ...this._runOptions,
+            repoRoot: this._repoRoot,
+            stateRoot: this._stateRoot,
+          };
+          if (this._controllerModel) opts.controllerModel = this._controllerModel;
+          if (this._workerModel) opts.workerModel = this._workerModel;
+          if (this._controllerThinking) {
+            opts.controllerConfig = [
+              ...(opts.controllerConfig || []),
+              `model_reasoning_effort="${this._controllerThinking}"`,
+            ];
+          }
+          this._activeManifest = await prepareNewRun(message, opts);
+        }
+        if (this._workerThinking) {
+          process.env.CLAUDE_CODE_EFFORT_LEVEL = this._workerThinking;
+        }
+        await this._runLoop({ userMessage: message });
+      } catch (error) {
+        this._renderer.banner(isAbortError(error) ? 'Run stopped by user.' : `Run error: ${formatRunError(error)}`);
+      } finally {
+        this._renderer.close();
+      }
       return;
     }
 

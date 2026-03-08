@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
 
@@ -35,6 +36,110 @@ function loadCcManagerMd(repoRoot) {
     // File doesn't exist — that's fine
   }
   return null;
+}
+
+/**
+ * Parse YAML frontmatter from a markdown file.
+ * Extracts name and description fields from the --- delimited block.
+ */
+function parseFrontmatter(text) {
+  const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return null;
+  const block = match[1];
+
+  let name = null;
+  let description = null;
+
+  const nameMatch = block.match(/^name:\s*(.+)/m);
+  if (nameMatch) name = nameMatch[1].trim();
+
+  // Handle both single-line and multi-line (>) description
+  const descMatch = block.match(/^description:\s*>?\s*\n?([\s\S]*?)(?=\n\w|\n---|$)/m);
+  if (descMatch) {
+    description = descMatch[1].replace(/\n\s*/g, ' ').trim();
+  } else {
+    const descSimple = block.match(/^description:\s*(.+)/m);
+    if (descSimple) description = descSimple[1].trim();
+  }
+
+  return name ? { name, description: description || '' } : null;
+}
+
+/**
+ * Scan a directory for workflow subdirectories containing WORKFLOW.md.
+ * Returns array of { name, description, path, dir }.
+ */
+function scanWorkflowDir(baseDir) {
+  const results = [];
+  try {
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const workflowFile = path.join(baseDir, entry.name, 'WORKFLOW.md');
+      try {
+        const content = fs.readFileSync(workflowFile, 'utf8');
+        const meta = parseFrontmatter(content);
+        if (meta) {
+          results.push({
+            name: meta.name,
+            description: meta.description,
+            path: workflowFile,
+            dir: path.join(baseDir, entry.name),
+          });
+        }
+      } catch {
+        // No WORKFLOW.md or unreadable — skip
+      }
+    }
+  } catch {
+    // Directory doesn't exist — that's fine
+  }
+  return results;
+}
+
+/**
+ * Load all available workflows from project and global directories.
+ * Project-level workflows take precedence over global ones with the same name.
+ */
+function loadWorkflows(repoRoot) {
+  const seen = new Set();
+  const all = [];
+
+  // Project-level workflows first (higher priority)
+  if (repoRoot) {
+    const projectDir = path.join(repoRoot, '.cc-manager', 'workflows');
+    for (const wf of scanWorkflowDir(projectDir)) {
+      seen.add(wf.name);
+      all.push(wf);
+    }
+  }
+
+  // Global workflows from user home
+  const globalDir = path.join(os.homedir(), '.cc-manager', 'workflows');
+  for (const wf of scanWorkflowDir(globalDir)) {
+    if (!seen.has(wf.name)) {
+      all.push(wf);
+    }
+  }
+
+  return all;
+}
+
+/**
+ * Build the workflow section for the controller system prompt.
+ */
+function buildWorkflowSection(repoRoot) {
+  const workflows = loadWorkflows(repoRoot);
+  if (workflows.length === 0) return null;
+
+  const lines = ['Available workflows:'];
+  for (const wf of workflows) {
+    lines.push(`- ${wf.name}: ${wf.description} (read: ${wf.path})`);
+  }
+  lines.push('');
+  lines.push('To use a workflow, read its WORKFLOW.md file for full instructions. The workflow directory may also contain supporting scripts and files.');
+  lines.push('When the user asks you to run a workflow by name, read the WORKFLOW.md and follow its instructions step by step.');
+  return lines.join('\n');
 }
 
 function buildControllerPrompt(manifest, request) {
@@ -112,6 +217,7 @@ function buildControllerPrompt(manifest, request) {
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
     loadCcManagerMd(manifest.repoRoot),
+    buildWorkflowSection(manifest.repoRoot),
     '',
     'Now decide the next step. Return JSON only.',
   ].filter(Boolean).join('\n');
@@ -132,4 +238,5 @@ function buildDefaultWorkerAppendSystemPrompt() {
 module.exports = {
   buildControllerPrompt,
   buildDefaultWorkerAppendSystemPrompt,
+  loadWorkflows,
 };

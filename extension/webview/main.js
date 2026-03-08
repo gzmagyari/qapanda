@@ -435,6 +435,7 @@
     { cmd: '/controller-thinking', desc: 'Set Codex thinking' },
     { cmd: '/worker-thinking', desc: 'Set Claude thinking' },
     { cmd: '/config', desc: 'Show current config' },
+    { cmd: '/workflow', desc: 'List or run a workflow' },
   ];
 
   const SUBOPTIONS = {
