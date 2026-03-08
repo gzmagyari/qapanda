@@ -56,9 +56,7 @@ function buildClaudeArgs(manifest, prompt) {
     args.push('--append-system-prompt', appendSystemPrompt);
   }
 
-  // Prompt must be the last positional argument to avoid shell escaping issues
-  args.push(prompt);
-
+  // Prompt is passed via stdin to avoid shell escaping issues on Windows
   return args;
 }
 
@@ -77,6 +75,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     command: manifest.worker.bin,
     args,
     cwd: manifest.repoRoot,
+    stdinText: prompt,
     abortSignal,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);
