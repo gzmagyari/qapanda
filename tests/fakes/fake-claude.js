@@ -25,6 +25,17 @@ function emitText(text) {
   }
 }
 
+function readStdin() {
+  return new Promise((resolve) => {
+    const chunks = [];
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('end', () => resolve(chunks.join('')));
+    // If stdin is already ended or not piped, resolve quickly
+    if (process.stdin.readableEnded) resolve('');
+  });
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--version') || args.includes('-v')) {
@@ -32,12 +43,35 @@ async function main() {
     return;
   }
 
-  // -p is a boolean flag (print mode); the prompt is the last positional argument.
-  const prompt = args[args.length - 1];
+  // Known flags that take a value (the next arg belongs to the flag, not a positional prompt).
+  const valuedFlags = new Set([
+    '--output-format', '--model', '--session-id', '--resume',
+    '--allowedTools', '--tools', '--disallowedTools',
+    '--permission-prompt-tool', '--max-turns', '--max-budget-usd',
+    '--add-dir', '--append-system-prompt',
+  ]);
+
+  // Find the positional prompt: last arg that isn't a flag or a flag's value.
+  let prompt = null;
   const sessionId = getFlagValue(args, '--resume') || getFlagValue(args, '--session-id') || 'fake-claude-session-0001';
 
-  if (!prompt || prompt.startsWith('-')) {
-    process.stderr.write('Missing prompt (expected as last positional argument)\n');
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('-')) {
+      if (valuedFlags.has(args[i]) && i + 1 < args.length) {
+        i++; // skip the value
+      }
+      continue;
+    }
+    // This arg doesn't start with - and isn't consumed by a flag — it's the prompt.
+    prompt = args[i];
+  }
+
+  if (!prompt) {
+    prompt = (await readStdin()).trim();
+  }
+
+  if (!prompt) {
+    process.stderr.write('Missing prompt (expected as last positional argument or via stdin)\n');
     process.exit(2);
     return;
   }
