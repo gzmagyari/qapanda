@@ -28,7 +28,7 @@ function buildCodexArgs(manifest, loop) {
   }
 
   args.push(
-    '--full-auto',
+    '--dangerously-bypass-approvals-and-sandbox',
     '--json',
     '--output-last-message',
     loop.controller.finalFile,
