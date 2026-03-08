@@ -323,6 +323,11 @@ class Renderer {
     if (!summary || this.quiet) {
       return;
     }
+    if (summary.kind === 'reasoning') {
+      this.streamMarkdown('Controller', summary.text);
+      this.flushStream();
+      return;
+    }
     this.controller(summary.text);
   }
 

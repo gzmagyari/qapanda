@@ -114,6 +114,22 @@ function summarizeCodexEvent(raw) {
         text: truncate(item.text, 200),
       };
     }
+
+    if (item.type === 'reasoning' && item.text) {
+      return {
+        source: 'controller',
+        kind: 'reasoning',
+        text: item.text,
+      };
+    }
+
+    if (item.type === 'agent_message' && item.text) {
+      return {
+        source: 'controller',
+        kind: 'agent-message',
+        text: item.text,
+      };
+    }
   }
 
   return null;

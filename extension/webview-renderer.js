@@ -8,6 +8,7 @@ class WebviewRenderer {
     this.quiet = Boolean(options.quiet);
     // Markdown streaming state
     this._mdBuffer = '';
+    this._streamLabel = null;
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
   }
@@ -26,9 +27,10 @@ class WebviewRenderer {
 
   flushStream() {
     if (this._mdBuffer) {
-      this._post({ type: 'streamLine', text: this._mdBuffer });
+      this._post({ type: 'streamLine', label: this._streamLabel, text: this._mdBuffer });
       this._mdBuffer = '';
     }
+    this._streamLabel = null;
     this._post({ type: 'flushStream' });
   }
 
@@ -69,6 +71,7 @@ class WebviewRenderer {
 
   streamMarkdown(label, text, _labelColor) {
     if (!text) return;
+    this._streamLabel = label;
     const normalized = String(text).replace(/\r/g, '');
     this._mdBuffer += normalized;
 
@@ -153,6 +156,11 @@ class WebviewRenderer {
     }
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
+    if (summary.kind === 'reasoning') {
+      this.streamMarkdown('Controller', summary.text);
+      this.flushStream();
+      return;
+    }
     this.controller(summary.text);
   }
 
