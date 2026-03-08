@@ -561,11 +561,7 @@
       sendInput();
     }
     if (e.key === 'Escape') {
-      if (suggestionsEl.style.display !== 'none') {
-        suggestionsEl.style.display = 'none';
-      } else if (isRunning) {
-        vscode.postMessage({ type: 'abort' });
-      }
+      suggestionsEl.style.display = 'none';
     }
   });
 
@@ -574,6 +570,13 @@
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
     updateSuggestions();
+  });
+
+  // Global ESC to stop running processes
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isRunning) {
+      vscode.postMessage({ type: 'abort' });
+    }
   });
 
   // Focus input on load
