@@ -101,7 +101,8 @@ function normalizeRunOptions(options = {}) {
     stateRoot: path.resolve(options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd())),
     runId: options.runId || `${slugify(options.initialMessage || 'run', 24)}-${Date.now().toString(36)}`,
     controller: {
-      bin: options.codexBin || 'codex',
+      cli: options.controllerCli || 'codex',
+      bin: options.controllerCli === 'claude' ? (options.claudeBin || 'claude') : (options.codexBin || 'codex'),
       model: options.controllerModel || null,
       profile: options.controllerProfile || null,
       sandbox: options.controllerSandbox || 'workspace-write',

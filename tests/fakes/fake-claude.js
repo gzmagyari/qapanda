@@ -36,6 +36,49 @@ function readStdin() {
   });
 }
 
+function decideAsController(prompt) {
+  if (/"latest_user_message":\s*"Hi"/.test(prompt)) {
+    return {
+      action: 'stop',
+      controller_messages: ['Hi from Claude controller!'],
+      claude_message: null,
+      stop_reason: 'Handled greeting.',
+      progress_updates: [],
+    };
+  }
+
+  const latestClaudeResultMatch = prompt.match(/"latest_claude_result":\s*(null|"([\s\S]*?)")/);
+  const latestClaudeResult = latestClaudeResultMatch && latestClaudeResultMatch[2] ? latestClaudeResultMatch[2] : '';
+
+  if (latestClaudeResult.includes('All unit tests passing. All issues fixed')) {
+    return {
+      action: 'stop',
+      controller_messages: ['Claude controller verified the fix. All tests pass.'],
+      claude_message: null,
+      stop_reason: 'Task complete.',
+      progress_updates: ['Fix verified'],
+    };
+  }
+
+  if (/Please do fixes/.test(prompt)) {
+    return {
+      action: 'delegate',
+      controller_messages: ['Claude controller delegating to worker.'],
+      claude_message: 'Please fix all issues in this repository such that all unit tests pass.',
+      stop_reason: null,
+      progress_updates: ['Starting fixes'],
+    };
+  }
+
+  return {
+    action: 'stop',
+    controller_messages: ['Got it.'],
+    claude_message: null,
+    stop_reason: 'No further action.',
+    progress_updates: [],
+  };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--version') || args.includes('-v')) {
@@ -51,9 +94,17 @@ async function main() {
     '--add-dir', '--append-system-prompt',
   ]);
 
+  // Validate --session-id is a valid UUID (matches real Claude CLI behavior)
+  const rawSessionId = getFlagValue(args, '--session-id');
+  if (rawSessionId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawSessionId)) {
+    process.stderr.write(`Invalid session ID. Must be a valid UUID. Got: ${rawSessionId}\n`);
+    process.exit(1);
+    return;
+  }
+
   // Find the positional prompt: last arg that isn't a flag or a flag's value.
   let prompt = null;
-  const sessionId = getFlagValue(args, '--resume') || getFlagValue(args, '--session-id') || 'fake-claude-session-0001';
+  const sessionId = getFlagValue(args, '--resume') || rawSessionId || 'fake-claude-session-0001';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith('-')) {
@@ -77,6 +128,15 @@ async function main() {
   }
 
   emit({ type: 'system', session_id: sessionId });
+
+  // Controller mode: when used as a controller, emit a valid JSON decision
+  if (prompt.includes('You are the CONTROLLER agent')) {
+    const decision = decideAsController(prompt);
+    const json = JSON.stringify(decision, null, 2);
+    emitText(json + '\n');
+    emit({ type: 'result_message', session_id: sessionId, result: json });
+    return;
+  }
 
   if (prompt.includes('Please fix all issues in this repository')) {
     emitText('I will start fixing the issues.\n');

@@ -87,6 +87,10 @@ const glyph = {
   pipe: '\u2502',     // │
 };
 
+function controllerLabelFor(cli) {
+  return cli === 'claude' ? 'Controller (Claude)' : 'Controller (Codex)';
+}
+
 class Renderer {
   constructor(options = {}) {
     this.rawEvents = Boolean(options.rawEvents);
@@ -103,6 +107,8 @@ class Renderer {
     this._currentColor = null;
     // Whether we've written at least one content line in the current section
     this._hasContent = false;
+    // Controller label — set from manifest.controller.cli
+    this.controllerLabel = 'Controller';
   }
 
   write(text) {
@@ -295,7 +301,7 @@ class Renderer {
   }
 
   controller(text) {
-    this.line('Controller', text, color.controller);
+    this.line(this.controllerLabel, text, color.controller);
   }
 
   claude(text) {
@@ -324,7 +330,7 @@ class Renderer {
       return;
     }
     if (summary.kind === 'reasoning') {
-      this.streamMarkdown('Controller', summary.text);
+      this.streamMarkdown(this.controllerLabel, summary.text);
       this.flushStream();
       return;
     }
@@ -364,6 +370,49 @@ class Renderer {
       return `${name}: ${brief}`;
     }
     return `Using ${name}`;
+  }
+
+  claudeControllerEvent(raw) {
+    if (this.rawEvents) {
+      this.flushStream();
+      this.write(`${JSON.stringify({ source: 'controller', raw })}\n`);
+      return;
+    }
+    const summary = summarizeClaudeEvent(raw);
+    if (!summary || this.quiet) return;
+    if (summary.kind === 'text-delta') {
+      this.streamMarkdown(this.controllerLabel, summary.text, color.controller);
+      return;
+    }
+    if (summary.kind === 'tool-start') {
+      this.flushStream();
+      this._toolCalls.set(summary.index, { name: summary.toolName, inputJson: '' });
+      return;
+    }
+    if (summary.kind === 'tool-input-delta') {
+      const tc = this._toolCalls.get(summary.index);
+      if (tc) tc.inputJson += summary.text;
+      return;
+    }
+    if (summary.kind === 'block-stop') {
+      const tc = this._toolCalls.get(summary.index);
+      if (tc) {
+        let input = {};
+        try { input = JSON.parse(tc.inputJson); } catch {}
+        const desc = this._formatToolCall(tc.name, input);
+        this._ensureHeader(this.controllerLabel, color.controller);
+        this._contentLine(`${color.dim}${desc}${color.reset}`);
+        this._toolCalls.delete(summary.index);
+      }
+      return;
+    }
+    if (summary.kind === 'assistant-text' || summary.kind === 'final-text') {
+      return;
+    }
+    if (!this.quiet || summary.kind === 'error') {
+      const c = summary.kind === 'error' ? color.error : color.controller;
+      this.line(this.controllerLabel, summary.text, c);
+    }
   }
 
   claudeEvent(raw) {
@@ -437,4 +486,5 @@ class Renderer {
 
 module.exports = {
   Renderer,
+  controllerLabelFor,
 };

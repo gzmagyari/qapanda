@@ -1,7 +1,20 @@
 const { appendJsonl, appendText, nowIso, readText, summarizeError, truncate } = require('./utils');
 const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, saveManifest } = require('./state');
-const { runControllerTurn } = require('./codex');
+const { runControllerTurn: runCodexControllerTurn } = require('./codex');
+const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn } = require('./claude');
+const { controllerLabelFor } = require('./render');
+
+function getControllerRunner(manifest) {
+  if (manifest.controller.cli === 'claude') return runClaudeControllerTurn;
+  return runCodexControllerTurn;
+}
+
+function setControllerLabel(renderer, manifest) {
+  if (renderer && manifest && manifest.controller) {
+    renderer.controllerLabel = controllerLabelFor(manifest.controller.cli);
+  }
+}
 
 function progressTimestamp() {
   const d = new Date();
@@ -75,6 +88,7 @@ function getRunnableRequest(manifest) {
 }
 
 async function runManagerLoop(manifest, renderer, options = {}) {
+  setControllerLabel(renderer, manifest);
   const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
   let request = null;
 
@@ -117,6 +131,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       const loop = await createLoopRecord(manifest, request);
       await saveManifest(manifest);
 
+      const runControllerTurn = getControllerRunner(manifest);
       const controllerResult = await runControllerTurn({
         manifest,
         request,
@@ -143,6 +158,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           ts: nowIso(),
           role: 'controller',
           text: message,
+          controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id,
           loopIndex: loop.index,
         });
@@ -178,6 +194,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           ts: nowIso(),
           role: 'controller',
           text: '[STOP]',
+          controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id,
           loopIndex: loop.index,
         });
@@ -285,6 +302,7 @@ async function printRunSummary(manifest, out = process.stdout) {
   out.write(`Run: ${manifest.runId}\n`);
   out.write(`Repo: ${manifest.repoRoot}\n`);
   out.write(`Status: ${manifest.status}\n`);
+  out.write(`Controller CLI: ${manifest.controller.cli || 'codex'}\n`);
   out.write(`Controller session: ${manifest.controller.sessionId || '(not started)'}\n`);
   out.write(`Claude session: ${manifest.worker.sessionId || '(not started)'}\n`);
   if (request) {
@@ -306,8 +324,120 @@ async function printEventTail(manifest, tail = 40, out = process.stdout) {
   out.write(`${lines.join('\n')}\n`);
 }
 
+async function runDirectWorkerTurn(manifest, renderer, options = {}) {
+  const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
+  if (!userMessage) throw new Error('No message provided for direct worker turn.');
+
+  const request = await startUserRequest(manifest, renderer, userMessage);
+
+  const signalController = new AbortController();
+  const onSignal = (signal) => {
+    markInterrupted(manifest, request, `Received ${signal}.`);
+    signalController.abort();
+  };
+  const onSigInt = () => onSignal('SIGINT');
+  const onSigTerm = () => onSignal('SIGTERM');
+
+  if (options.abortSignal) {
+    const onExternalAbort = () => onSignal('external-abort');
+    if (options.abortSignal.aborted) {
+      onExternalAbort();
+    } else {
+      options.abortSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  process.on('SIGINT', onSigInt);
+  process.on('SIGTERM', onSigTerm);
+
+  try {
+    const loop = await createLoopRecord(manifest, request);
+    const workerRecord = attachWorkerRecord(manifest, loop);
+    manifest.phase = 'worker';
+    await saveManifest(manifest);
+
+    await emitEvent(
+      manifest,
+      {
+        ts: nowIso(),
+        source: 'launch-claude-direct',
+        requestId: request.id,
+        loopIndex: loop.index,
+        sameSession: manifest.worker.hasStarted,
+        prompt: userMessage,
+      },
+      renderer,
+    );
+
+    const workerResult = await runWorkerTurn({
+      manifest,
+      request,
+      loop,
+      workerRecord,
+      prompt: userMessage,
+      renderer,
+      abortSignal: signalController.signal,
+      emitEvent: async (event) => {
+        if (event.rawLine && workerRecord.stdoutFile) {
+          await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+        }
+        if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
+          await appendJsonl(workerRecord.stderrFile, { text: event.text });
+        }
+        await emitEvent(manifest, event, renderer);
+      },
+    });
+
+    await appendTranscript(manifest, {
+      ts: nowIso(),
+      role: 'claude',
+      text: workerResult.resultText,
+      requestId: request.id,
+      loopIndex: loop.index,
+    });
+    await emitEvent(
+      manifest,
+      {
+        ts: nowIso(),
+        source: 'worker-result',
+        requestId: request.id,
+        loopIndex: loop.index,
+        exitCode: workerResult.exitCode,
+        text: workerResult.resultText,
+      },
+      renderer,
+    );
+
+    request.status = 'stopped';
+    request.stopReason = 'Direct worker turn completed.';
+    request.finishedAt = nowIso();
+    loop.finishedAt = nowIso();
+    manifest.status = 'idle';
+    manifest.phase = 'idle';
+    manifest.stopReason = request.stopReason;
+    manifest.activeRequestId = null;
+    manifest.transcriptSummary = truncate(workerResult.resultText || userMessage, 120);
+    await saveManifest(manifest);
+    return manifest;
+  } catch (error) {
+    const message = summarizeError(error);
+    markInterrupted(manifest, request, message);
+    await emitEvent(
+      manifest,
+      { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message },
+      renderer,
+    );
+    await saveManifest(manifest);
+    throw error;
+  } finally {
+    process.off('SIGINT', onSigInt);
+    process.off('SIGTERM', onSigTerm);
+  }
+}
+
 module.exports = {
   printEventTail,
   printRunSummary,
+  runDirectWorkerTurn,
   runManagerLoop,
 };

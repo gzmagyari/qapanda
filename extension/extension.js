@@ -36,6 +36,20 @@ function getWebviewHtml(panel, extensionUri) {
     </div>
     <div id="config-bar">
       <div class="config-group">
+        <label>Target</label>
+        <select id="cfg-chat-target">
+          <option value="controller">Controller</option>
+          <option value="claude">Claude Code</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>Controller CLI</label>
+        <select id="cfg-controller-cli">
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+      </div>
+      <div class="config-group">
         <label>Controller</label>
         <select id="cfg-controller-model">
           <option value="">Model: default</option>
@@ -141,32 +155,36 @@ function activate(context) {
     const renderer = new WebviewRenderer(panel);
     const repoRoot = getRepoRoot(context.extensionUri);
 
-    // Load persisted config
-    const savedConfig = context.workspaceState.get('ccManagerConfig', {});
+    // Per-panel mutable config (new panels start with defaults)
+    const panelConfig = {};
+
+    function postMessage(msg) {
+      // Keep panelConfig in sync when SessionManager pushes config changes
+      if (msg && msg.type === 'syncConfig' && msg.config) {
+        Object.assign(panelConfig, msg.config);
+      }
+      try {
+        panel.webview.postMessage(msg);
+      } catch {
+        // Panel disposed
+      }
+    }
 
     const session = new SessionManager(renderer, {
       repoRoot,
-      postMessage: (msg) => {
-        try {
-          panel.webview.postMessage(msg);
-        } catch {
-          // Panel disposed
-        }
-      },
-      initialConfig: savedConfig,
+      postMessage,
+      initialConfig: panelConfig,
     });
 
     panel.webview.onDidReceiveMessage(
       (msg) => {
         if (msg.type === 'configChanged') {
-          // Update session manager and persist
           session.applyConfig(msg.config);
-          context.workspaceState.update('ccManagerConfig', msg.config);
+          Object.assign(panelConfig, msg.config);
           return;
         }
         if (msg.type === 'ready') {
-          // Send saved config to webview on load
-          panel.webview.postMessage({ type: 'initConfig', config: savedConfig });
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig });
           return;
         }
         session.handleMessage(msg);
@@ -200,29 +218,34 @@ function activate(context) {
 
       const renderer = new WebviewRenderer(panel);
       const repoRoot = getRepoRoot(context.extensionUri);
-      const savedConfig = context.workspaceState.get('ccManagerConfig', {});
-      // Extract the saved run ID from the webview state (set by vscode.setState in main.js)
+      // Per-panel config restored from webview state (per-panel, not shared)
+      const panelConfig = (state && state.config) || {};
       const savedRunId = (state && state.runId) || null;
+
+      function postMessage(msg) {
+        if (msg && msg.type === 'syncConfig' && msg.config) {
+          Object.assign(panelConfig, msg.config);
+        }
+        try {
+          panel.webview.postMessage(msg);
+        } catch {}
+      }
 
       const session = new SessionManager(renderer, {
         repoRoot,
-        postMessage: (msg) => {
-          try {
-            panel.webview.postMessage(msg);
-          } catch {}
-        },
-        initialConfig: savedConfig,
+        postMessage,
+        initialConfig: panelConfig,
       });
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
           if (msg.type === 'configChanged') {
             session.applyConfig(msg.config);
-            context.workspaceState.update('ccManagerConfig', msg.config);
+            Object.assign(panelConfig, msg.config);
             return;
           }
           if (msg.type === 'ready') {
-            panel.webview.postMessage({ type: 'initConfig', config: savedConfig });
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig });
             // Reattach to saved run if the webview had one before reload
             const runId = msg.runId || savedRunId;
             if (runId) {

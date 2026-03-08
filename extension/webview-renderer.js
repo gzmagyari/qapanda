@@ -11,6 +11,8 @@ class WebviewRenderer {
     this._streamLabel = null;
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
+    // Controller label — set from manifest.controller.cli
+    this.controllerLabel = 'Controller';
   }
 
   _post(msg) {
@@ -41,7 +43,7 @@ class WebviewRenderer {
 
   controller(text) {
     this.flushStream();
-    this._post({ type: 'controller', text });
+    this._post({ type: 'controller', text, label: this.controllerLabel });
   }
 
   claude(text) {
@@ -88,12 +90,12 @@ class WebviewRenderer {
     const prefix = sameSession
       ? 'Launching Claude Code with the same session with: '
       : 'Launching Claude Code with: ';
-    this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"` });
+    this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: this.controllerLabel });
   }
 
   stop() {
     this.flushStream();
-    this._post({ type: 'stop' });
+    this._post({ type: 'stop', label: this.controllerLabel });
   }
 
   requestStarted(runId) {
@@ -161,11 +163,55 @@ class WebviewRenderer {
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
     if (summary.kind === 'reasoning') {
-      this.streamMarkdown('Controller', summary.text);
+      this.streamMarkdown(this.controllerLabel, summary.text);
       this.flushStream();
       return;
     }
     this.controller(summary.text);
+  }
+
+  claudeControllerEvent(raw) {
+    if (this.rawEvents) {
+      this._post({ type: 'rawEvent', source: 'controller', raw });
+      return;
+    }
+    const summary = summarizeClaudeEvent(raw);
+    if (!summary || this.quiet) return;
+
+    if (summary.kind === 'text-delta') {
+      this.streamMarkdown(this.controllerLabel, summary.text);
+      return;
+    }
+    if (summary.kind === 'tool-start') {
+      this.flushStream();
+      this._toolCalls.set(summary.index, { name: summary.toolName, inputJson: '' });
+      return;
+    }
+    if (summary.kind === 'tool-input-delta') {
+      const tc = this._toolCalls.get(summary.index);
+      if (tc) {
+        tc.inputJson += summary.text;
+      }
+      return;
+    }
+    if (summary.kind === 'block-stop') {
+      const tc = this._toolCalls.get(summary.index);
+      if (tc) {
+        let input = {};
+        try { input = JSON.parse(tc.inputJson); } catch {}
+        const desc = this._formatToolCall(tc.name, input);
+        this._post({ type: 'toolCall', label: this.controllerLabel, text: desc });
+        this._toolCalls.delete(summary.index);
+      }
+      return;
+    }
+    if (summary.kind === 'assistant-text' || summary.kind === 'final-text') {
+      return;
+    }
+    if (!this.quiet || summary.kind === 'error') {
+      const msgType = summary.kind === 'error' ? 'error' : 'controller';
+      this._post({ type: msgType, text: summary.text, label: this.controllerLabel });
+    }
   }
 
   claudeEvent(raw) {

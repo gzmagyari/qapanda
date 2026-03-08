@@ -299,9 +299,9 @@ test('sendTranscript posts transcriptHistory with mapped message types', async (
     assert.ok(hist, 'should post transcriptHistory');
     assert.equal(hist.messages.length, 4);
     assert.deepEqual(hist.messages[0], { type: 'user', text: 'Hello' });
-    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating to Claude' });
+    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating to Claude', label: 'Controller (Codex)' });
     assert.deepEqual(hist.messages[2], { type: 'claude', text: 'Done editing file.js' });
-    assert.deepEqual(hist.messages[3], { type: 'stop' });
+    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Controller (Codex)' });
   } finally {
     cleanup();
   }
@@ -502,6 +502,196 @@ test('serializer restore: failed reattach posts clearRunId and skips transcript'
     assert.equal(hist, undefined, 'should not post transcriptHistory after failed reattach');
   } finally {
     cleanup();
+  }
+});
+
+// ── Controller-label regression tests ─────────────────────────────────────────
+
+test('sendTranscript uses manifest CLI for old entries without controllerCli', async () => {
+  // Older transcript entries lack controllerCli. The fallback should use the
+  // manifest's controller.cli (claude), NOT the session default (codex).
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-'));
+  const transcriptFile = path.join(tmpDir, 'transcript.jsonl');
+  fs.writeFileSync(transcriptFile, [
+    JSON.stringify({ ts: '2025-01-01T00:00:00Z', role: 'user', text: 'Hello' }),
+    // No controllerCli field — simulates older transcript
+    JSON.stringify({ ts: '2025-01-01T00:00:01Z', role: 'controller', text: 'Delegating' }),
+    JSON.stringify({ ts: '2025-01-01T00:00:02Z', role: 'claude', text: 'Done' }),
+    JSON.stringify({ ts: '2025-01-01T00:00:03Z', role: 'controller', text: '[STOP]' }),
+  ].join('\n') + '\n');
+
+  const posted = [];
+  const fakeManifest = {
+    runId: 'old-transcript-run',
+    runDir: tmpDir,
+    controller: { model: null, config: [], cli: 'claude' },
+    worker: { model: null },
+    files: { transcript: transcriptFile, progress: path.join(tmpDir, 'progress.md') },
+    status: 'idle',
+    waitDelay: null,
+    nextWakeAt: null,
+    errorRetry: false,
+  };
+
+  delete require.cache[smPath];
+  require.cache[statePath] = {
+    id: statePath, filename: statePath, loaded: true,
+    exports: {
+      ...origState,
+      resolveRunDir: async () => tmpDir,
+      loadManifestFromDir: async () => ({ ...fakeManifest }),
+      saveManifest: async () => {},
+    },
+  };
+  require.cache[orchPath] = {
+    id: orchPath, filename: orchPath, loaded: true,
+    exports: { ...origOrch, runManagerLoop: async (m) => m },
+  };
+  require.cache[promptsPath] = {
+    id: promptsPath, filename: promptsPath, loaded: true,
+    exports: { ...origPrompts, loadWorkflows: () => [] },
+  };
+  // Session default is codex, but manifest says claude
+  const { SessionManager } = require(smPath);
+  const session = new SessionManager(stubRenderer(), {
+    repoRoot: '/tmp/fake-repo',
+    stateRoot: '/tmp/fake-state',
+    initialConfig: { controllerCli: 'codex' },
+    postMessage: (msg) => posted.push(msg),
+  });
+
+  try {
+    await session.reattachRun('old-transcript-run');
+    posted.length = 0;
+    await session.sendTranscript();
+    const hist = posted.find(m => m.type === 'transcriptHistory');
+    assert.ok(hist, 'should post transcriptHistory');
+    // Controller entries should use manifest's CLI (claude), not session default (codex)
+    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating', label: 'Controller (Claude)' });
+    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Controller (Claude)' });
+  } finally {
+    session.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete require.cache[smPath];
+    require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
+    require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
+    require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
+  }
+});
+
+test('reattachRun updates renderer.controllerLabel from manifest', async () => {
+  const fakeManifest = {
+    runId: 'claude-run',
+    controller: { model: null, config: [], cli: 'claude' },
+    worker: { model: null },
+  };
+
+  delete require.cache[smPath];
+  require.cache[statePath] = {
+    id: statePath, filename: statePath, loaded: true,
+    exports: {
+      ...origState,
+      resolveRunDir: async () => '/fake/runs/claude-run',
+      loadManifestFromDir: async () => ({ ...fakeManifest }),
+      saveManifest: async () => {},
+    },
+  };
+  require.cache[orchPath] = {
+    id: orchPath, filename: orchPath, loaded: true,
+    exports: { ...origOrch, runManagerLoop: async (m) => m },
+  };
+  require.cache[promptsPath] = {
+    id: promptsPath, filename: promptsPath, loaded: true,
+    exports: { ...origPrompts, loadWorkflows: () => [] },
+  };
+  const { SessionManager } = require(smPath);
+  // Use a plain object renderer so we can read controllerLabel back
+  const renderer = { controllerLabel: null };
+  const noop = () => {};
+  for (const m of ['write','flushStream','user','controller','claude','shell','banner','line','mdLine','streamMarkdown','launchClaude','stop','close','requestStarted','requestFinished','userPrompt','progress']) {
+    renderer[m] = noop;
+  }
+  const session = new SessionManager(renderer, {
+    repoRoot: '/tmp/fake-repo',
+    stateRoot: '/tmp/fake-state',
+    initialConfig: { controllerCli: 'codex' },
+    postMessage: () => {},
+  });
+
+  try {
+    assert.equal(renderer.controllerLabel, 'Controller (Codex)');
+    await session.reattachRun('claude-run');
+    assert.equal(renderer.controllerLabel, 'Controller (Claude)');
+  } finally {
+    session.dispose();
+    delete require.cache[smPath];
+    require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
+    require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
+    require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
+  }
+});
+
+test('/resume updates renderer.controllerLabel from manifest', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-'));
+  const transcriptFile = path.join(tmpDir, 'transcript.jsonl');
+  fs.writeFileSync(transcriptFile, JSON.stringify({ role: 'user', text: 'Hi' }) + '\n');
+
+  const posted = [];
+  const fakeManifest = {
+    runId: 'claude-resume-run',
+    runDir: tmpDir,
+    controller: { model: null, config: [], cli: 'claude' },
+    worker: { model: null },
+    files: { transcript: transcriptFile, progress: path.join(tmpDir, 'progress.md') },
+    status: 'idle',
+    waitDelay: null,
+    nextWakeAt: null,
+    errorRetry: false,
+  };
+
+  delete require.cache[smPath];
+  require.cache[statePath] = {
+    id: statePath, filename: statePath, loaded: true,
+    exports: {
+      ...origState,
+      resolveRunDir: async () => tmpDir,
+      loadManifestFromDir: async () => ({ ...fakeManifest }),
+      saveManifest: async () => {},
+    },
+  };
+  require.cache[orchPath] = {
+    id: orchPath, filename: orchPath, loaded: true,
+    exports: { ...origOrch, runManagerLoop: async (m) => m },
+  };
+  require.cache[promptsPath] = {
+    id: promptsPath, filename: promptsPath, loaded: true,
+    exports: { ...origPrompts, loadWorkflows: () => [] },
+  };
+  const { SessionManager } = require(smPath);
+  // Use a plain object renderer so we can read controllerLabel back
+  const renderer = { controllerLabel: null };
+  const noop = () => {};
+  for (const m of ['write','flushStream','user','controller','claude','shell','banner','line','mdLine','streamMarkdown','launchClaude','stop','close','requestStarted','requestFinished','userPrompt','progress']) {
+    renderer[m] = noop;
+  }
+  const session = new SessionManager(renderer, {
+    repoRoot: '/tmp/fake-repo',
+    stateRoot: '/tmp/fake-state',
+    initialConfig: { controllerCli: 'codex' },
+    postMessage: (msg) => posted.push(msg),
+  });
+
+  try {
+    assert.equal(renderer.controllerLabel, 'Controller (Codex)');
+    await session.handleMessage({ type: 'userInput', text: '/resume claude-resume-run' });
+    assert.equal(renderer.controllerLabel, 'Controller (Claude)');
+  } finally {
+    session.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete require.cache[smPath];
+    require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
+    require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
+    require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
   }
 });
 

@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { runManagerLoop, printRunSummary, printEventTail } = require('./src/orchestrator');
+const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } = require('./src/orchestrator');
 const { loadWorkflows } = require('./src/prompts');
 const {
   WAIT_OPTIONS,
@@ -14,6 +14,7 @@ const {
   saveManifest,
 } = require('./src/state');
 const { readText, summarizeError } = require('./src/utils');
+const { controllerLabelFor } = require('./src/render');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 
@@ -74,14 +75,43 @@ class SessionManager {
     this._controllerThinking = init.controllerThinking || null;
     this._workerThinking = init.workerThinking || null;
     this._waitDelay = init.waitDelay || '';
+    this._chatTarget = init.chatTarget || 'controller';
+    this._controllerCli = init.controllerCli || 'codex';
+    this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
   }
 
   applyConfig(config) {
     if (!config) return;
-    this._controllerModel = config.controllerModel || null;
-    this._workerModel = config.workerModel || null;
-    this._controllerThinking = config.controllerThinking || null;
-    this._workerThinking = config.workerThinking || null;
+    if (config.controllerModel !== undefined) this._controllerModel = config.controllerModel || null;
+    if (config.workerModel !== undefined) this._workerModel = config.workerModel || null;
+    if (config.controllerThinking !== undefined) this._controllerThinking = config.controllerThinking || null;
+    if (config.workerThinking !== undefined) this._workerThinking = config.workerThinking || null;
+    if (config.chatTarget !== undefined) {
+      this._chatTarget = config.chatTarget || 'controller';
+    }
+    if (config.controllerCli !== undefined) {
+      const newCli = config.controllerCli || 'codex';
+      if (newCli !== this._controllerCli) {
+        this._controllerCli = newCli;
+        this._renderer.controllerLabel = controllerLabelFor(newCli);
+        // Reset incompatible controller session state and model/thinking overrides
+        this._controllerModel = null;
+        this._controllerThinking = null;
+        if (this._activeManifest) {
+          this._activeManifest.controller.sessionId = null;
+          this._activeManifest.controller.claudeSessionId = null;
+          this._activeManifest.controller.cli = newCli;
+          this._activeManifest.controller.bin = newCli === 'claude'
+            ? (this._runOptions.claudeBin || 'claude')
+            : (this._runOptions.codexBin || 'codex');
+          this._activeManifest.controller.model = null;
+          this._activeManifest.controller.config = [];
+          saveManifest(this._activeManifest).catch(() => {});
+          this._renderer.banner(`Controller CLI switched to ${newCli}. Controller session and model/thinking reset.`);
+        }
+        this._syncConfig();
+      }
+    }
     if (config.waitDelay !== undefined) {
       this._waitDelay = config.waitDelay || '';
       // Persist to manifest if attached
@@ -115,6 +145,9 @@ class SessionManager {
     try {
       const runDir = await resolveRunDir(runId, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
+      if (this._activeManifest.controller && this._activeManifest.controller.cli) {
+        this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
+      }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       return true;
     } catch {
@@ -146,10 +179,14 @@ class SessionManager {
         if (entry.role === 'user') {
           messages.push({ type: 'user', text: entry.text || '' });
         } else if (entry.role === 'controller') {
+          const cli = entry.controllerCli
+            || (this._activeManifest && this._activeManifest.controller && this._activeManifest.controller.cli)
+            || 'codex';
+          const label = controllerLabelFor(cli);
           if (entry.text === '[STOP]') {
-            messages.push({ type: 'stop' });
+            messages.push({ type: 'stop', label });
           } else {
-            messages.push({ type: 'controller', text: entry.text || '' });
+            messages.push({ type: 'controller', text: entry.text || '', label });
           }
         } else if (entry.role === 'claude') {
           messages.push({ type: 'claude', text: entry.text || '' });
@@ -380,12 +417,21 @@ class SessionManager {
         this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       }
       this._applyWorkerThinking();
-      await this._runLoop({ userMessage: text });
-      this._scheduleNextPass();
+
+      if (this._chatTarget === 'claude') {
+        // Direct-to-Claude: skip controller, no auto-pass scheduling
+        await this._runDirectWorker(text);
+      } else {
+        await this._runLoop({ userMessage: text });
+        this._scheduleNextPass();
+      }
     } catch (error) {
       if (!isAbortError(error)) {
         this._renderer.banner(`Run error: ${formatRunError(error)}`);
-        this._scheduleErrorRetry();
+        // Only schedule error retry for controller path
+        if (this._chatTarget !== 'claude') {
+          this._scheduleErrorRetry();
+        }
       } else {
         this._renderer.banner('Run stopped by user.');
       }
@@ -462,6 +508,9 @@ class SessionManager {
       this._clearWaitTimer();
       const runDir = await resolveRunDir(rest, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
+      if (this._activeManifest.controller && this._activeManifest.controller.cli) {
+        this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
+      }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       await this.sendTranscript();
       this._renderer.requestStarted(this._activeManifest.runId);
@@ -713,13 +762,17 @@ class SessionManager {
       repoRoot: this._repoRoot,
       stateRoot: this._stateRoot,
     };
-    if (this._controllerModel) opts.controllerModel = this._controllerModel;
+    if (this._controllerCli) opts.controllerCli = this._controllerCli;
+    if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
     if (this._workerModel) opts.workerModel = this._workerModel;
     if (this._controllerThinking) {
-      opts.controllerConfig = [
-        ...(opts.controllerConfig || []),
-        `model_reasoning_effort="${this._controllerThinking}"`,
-      ];
+      // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
+      if (this._controllerCli !== 'claude') {
+        opts.controllerConfig = [
+          ...(opts.controllerConfig || []),
+          `model_reasoning_effort="${this._controllerThinking}"`,
+        ];
+      }
     }
     return opts;
   }
@@ -740,11 +793,34 @@ class SessionManager {
       controllerThinking: this._controllerThinking || '',
       workerThinking: this._workerThinking || '',
       waitDelay: this._waitDelay || '',
+      chatTarget: this._chatTarget || 'controller',
+      controllerCli: this._controllerCli || 'codex',
     };
   }
 
   _syncConfig() {
     this._postMessage({ type: 'syncConfig', config: this._getConfig() });
+  }
+
+  async _runDirectWorker(userMessage) {
+    this._running = true;
+    this._abortController = new AbortController();
+    this._postMessage({ type: 'running', value: true });
+
+    try {
+      this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
+        userMessage,
+        abortSignal: this._abortController.signal,
+      });
+      if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
+        this._activeManifest.waitDelay = this._waitDelay || null;
+      }
+      await saveManifest(this._activeManifest);
+    } finally {
+      this._running = false;
+      this._abortController = null;
+      this._postMessage({ type: 'running', value: false });
+    }
   }
 
   async _runLoop(options) {

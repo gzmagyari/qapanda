@@ -14,6 +14,8 @@
   const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
   const cfgWorkerModel = document.getElementById('cfg-worker-model');
   const cfgWorkerThinking = document.getElementById('cfg-worker-thinking');
+  const cfgChatTarget = document.getElementById('cfg-chat-target');
+  const cfgControllerCli = document.getElementById('cfg-controller-cli');
   const cfgWaitDelay = document.getElementById('cfg-wait-delay');
 
   // ── Persisted state ─────────────────────────────────────────────────
@@ -23,9 +25,9 @@
   let currentRunId = null;
 
   function saveState() {
-    // Only persist the run ID — chat history is restored from transcript.jsonl on disk.
-    // Keeping messageLog out of persisted state avoids bloat and stale-data failures.
-    vscode.setState({ runId: currentRunId });
+    // Persist run ID and config per panel. Chat history is restored from
+    // transcript.jsonl on disk, so messageLog is NOT persisted.
+    vscode.setState({ runId: currentRunId, config: getConfig() });
   }
 
   function logMessage(msg) {
@@ -76,6 +78,8 @@
       controllerThinking: cfgControllerThinking.value,
       workerThinking: cfgWorkerThinking.value,
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
+      chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
+      controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
     };
   }
 
@@ -86,10 +90,26 @@
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
+    if (config.chatTarget !== undefined && cfgChatTarget) cfgChatTarget.value = config.chatTarget;
+    if (config.controllerCli !== undefined && cfgControllerCli) cfgControllerCli.value = config.controllerCli;
+    updateControllerDropdowns();
+  }
+
+  function updateControllerDropdowns() {
+    const isClaude = cfgControllerCli && cfgControllerCli.value === 'claude';
+    cfgControllerModel.disabled = isClaude;
+    cfgControllerThinking.disabled = isClaude;
+    if (isClaude) {
+      cfgControllerModel.value = '';
+      cfgControllerThinking.value = '';
+    }
   }
 
   function onConfigChange() {
-    vscode.postMessage({ type: 'configChanged', config: getConfig() });
+    updateControllerDropdowns();
+    const config = getConfig();
+    vscode.postMessage({ type: 'configChanged', config });
+    saveState();
   }
 
   cfgControllerModel.addEventListener('change', onConfigChange);
@@ -97,6 +117,8 @@
   cfgWorkerModel.addEventListener('change', onConfigChange);
   cfgWorkerThinking.addEventListener('change', onConfigChange);
   if (cfgWaitDelay) cfgWaitDelay.addEventListener('change', onConfigChange);
+  if (cfgChatTarget) cfgChatTarget.addEventListener('change', onConfigChange);
+  if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
 
   let currentActor = null;
   let currentSection = null;
@@ -361,7 +383,7 @@
 
     controller(msg) {
       streamingEntry = null;
-      addEntry('Controller', renderInlineMarkdown(msg.text));
+      addEntry(msg.label || 'Controller', renderInlineMarkdown(msg.text));
     },
 
     claude(msg) {
@@ -376,7 +398,7 @@
 
     error(msg) {
       streamingEntry = null;
-      addEntry('Error', escapeHtml(msg.text), 'role-error');
+      addEntry(msg.label || 'Error', escapeHtml(msg.text), 'role-error');
     },
 
     banner(msg) {
@@ -408,9 +430,9 @@
       addEntry(msg.label || 'Claude code', escapeHtml(msg.text), 'tool-call');
     },
 
-    stop() {
+    stop(msg) {
       streamingEntry = null;
-      addEntry('Controller', 'STOP');
+      addEntry((msg && msg.label) || 'Controller', 'STOP');
     },
 
     requestStarted(msg) {
@@ -459,10 +481,12 @@
 
     initConfig(msg) {
       setConfig(msg.config);
+      saveState();
     },
 
     syncConfig(msg) {
       setConfig(msg.config);
+      saveState();
     },
 
     setRunId(msg) {
@@ -524,12 +548,15 @@
   });
 
   // ── Restore persisted state on startup ────────────────────────────
-  // Only the run ID is persisted. Chat history is rebuilt from transcript.jsonl
-  // on disk when the extension host processes the 'ready' message and calls
-  // sendTranscript(). This avoids bloating webview state with the full history.
+  // Run ID and config are persisted per panel via vscode.setState/getState.
+  // Chat history is rebuilt from transcript.jsonl on disk when the extension
+  // host processes the 'ready' message and calls sendTranscript().
   const savedState = vscode.getState();
   if (savedState) {
     currentRunId = savedState.runId || null;
+    if (savedState.config) {
+      setConfig(savedState.config);
+    }
   }
 
   // ── Suggestions / Autocomplete ────────────────────────────────────

@@ -58,6 +58,7 @@ const RUN_SPEC = {
   'state-dir': { key: 'stateRoot', kind: 'value' },
   'codex-bin': { key: 'codexBin', kind: 'value' },
   'claude-bin': { key: 'claudeBin', kind: 'value' },
+  'controller-cli': { key: 'controllerCli', kind: 'value' },
   'controller-model': { key: 'controllerModel', kind: 'value' },
   'controller-profile': { key: 'controllerProfile', kind: 'value' },
   'controller-sandbox': { key: 'controllerSandbox', kind: 'value' },
@@ -180,7 +181,9 @@ async function runOneShot(argv) {
     throw new Error('Missing initial user message.');
   }
 
-  await ensureBinaryAvailable(options.codexBin || 'codex');
+  if (options.controllerCli !== 'claude') {
+    await ensureBinaryAvailable(options.codexBin || 'codex');
+  }
   await ensureBinaryAvailable(options.claudeBin || 'claude');
 
   const manifest = await prepareNewRun(message, options);
