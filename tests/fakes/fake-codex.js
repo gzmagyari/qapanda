@@ -30,6 +30,7 @@ function decide(prompt) {
       controller_messages: ['Hi, how can I help you?'],
       claude_message: null,
       stop_reason: 'Handled greeting.',
+      progress_updates: [],
     };
   }
 
@@ -39,6 +40,7 @@ function decide(prompt) {
       controller_messages: ['No worries. Let me know if you want me to do anything else.'],
       claude_message: null,
       stop_reason: 'Acknowledged user.',
+      progress_updates: [],
     };
   }
 
@@ -53,6 +55,7 @@ function decide(prompt) {
       ],
       claude_message: 'The changes in logic.py introduced a critical bug. Please fix it and rerun the unit tests.',
       stop_reason: null,
+      progress_updates: ['Reviewing Claude work', 'Found bug in logic.py, sending fix'],
     };
   }
 
@@ -67,6 +70,7 @@ function decide(prompt) {
       ],
       claude_message: null,
       stop_reason: 'Task complete.',
+      progress_updates: ['Fix verified, all tests passing'],
     };
   }
 
@@ -76,6 +80,7 @@ function decide(prompt) {
       controller_messages: ['I will instruct Claude Code to fix the issues.'],
       claude_message: 'Please fix all issues in this repository such that all unit tests pass.',
       stop_reason: null,
+      progress_updates: ['Starting test fixes'],
     };
   }
 
@@ -84,6 +89,7 @@ function decide(prompt) {
     controller_messages: [latestUser ? `Understood: ${latestUser}` : 'Got it.'],
     claude_message: null,
     stop_reason: 'No further action.',
+    progress_updates: [],
   };
 }
 

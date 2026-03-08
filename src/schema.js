@@ -18,8 +18,12 @@ const controllerDecisionSchema = {
     stop_reason: {
       type: ['string', 'null'],
     },
+    progress_updates: {
+      type: 'array',
+      items: { type: 'string' },
+    },
   },
-  required: ['action', 'controller_messages', 'claude_message', 'stop_reason'],
+  required: ['action', 'controller_messages', 'claude_message', 'stop_reason', 'progress_updates'],
   additionalProperties: false,
 };
 
@@ -60,11 +64,26 @@ function validateControllerDecision(value) {
     throw new Error('stop_reason must be a string or null.');
   }
 
+  const progressUpdates = [];
+  if (value.progress_updates != null) {
+    if (!Array.isArray(value.progress_updates)) {
+      throw new Error('progress_updates must be an array of strings.');
+    }
+    for (const entry of value.progress_updates) {
+      if (typeof entry !== 'string') {
+        throw new Error('progress_updates must contain only strings.');
+      }
+      const trimmed = entry.trim();
+      if (trimmed) progressUpdates.push(trimmed);
+    }
+  }
+
   return {
     action,
     controller_messages: controllerMessages,
     claude_message: action === 'delegate' ? value.claude_message.trim() : null,
     stop_reason: value.stop_reason == null ? null : String(value.stop_reason).trim(),
+    progress_updates: progressUpdates,
   };
 }
 

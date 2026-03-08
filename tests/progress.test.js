@@ -50,9 +50,9 @@ test('orchestrator appendProgress writes to file and notifies renderer', async (
   // progress file creation via the state + utils modules.
   const { appendText, readText } = require('../src/utils');
 
-  // Simulate what appendProgress does
-  const line1 = '[12:00:00] Request: test message';
-  const line2 = '[12:00:01] Controller: analyzing';
+  // Simulate what appendProgress does — status lines only, no transcript chatter
+  const line1 = '[12:00:00] Analyzing the request';
+  const line2 = '[12:00:01] Done';
   await appendText(progressFile, line1 + '\n');
   await appendText(progressFile, line2 + '\n');
 
@@ -153,7 +153,7 @@ function buildSession({ runExists = true, progressContent = '', manifest = null 
 }
 
 test('sendProgress sends full progress file content to webview', async () => {
-  const content = '[12:00:00] Request: hello\n[12:00:01] Controller: thinking\n';
+  const content = '[12:00:00] Analyzing the request\n[12:00:01] Done\n';
   const { session, posted, cleanup } = buildSession({ progressContent: content });
   try {
     await session.reattachRun('progress-run');
@@ -162,8 +162,8 @@ test('sendProgress sends full progress file content to webview', async () => {
     await session.sendProgress();
     const msg = posted.find(m => m.type === 'progressFull');
     assert.ok(msg, 'should post progressFull');
-    assert.ok(msg.text.includes('[12:00:00] Request: hello'));
-    assert.ok(msg.text.includes('[12:00:01] Controller: thinking'));
+    assert.ok(msg.text.includes('Analyzing the request'));
+    assert.ok(msg.text.includes('Done'));
   } finally {
     cleanup();
   }
@@ -229,14 +229,138 @@ test('/detach posts empty progressFull to webview', async () => {
 });
 
 test('/resume sends progress to webview', async () => {
-  const content = '[12:00:00] Request: task\n';
+  const content = '[12:00:00] Working on it\n';
   const { session, posted, cleanup } = buildSession({ progressContent: content });
   try {
     await session.handleMessage({ type: 'userInput', text: '/resume progress-run' });
     const msg = posted.find(m => m.type === 'progressFull');
     assert.ok(msg, '/resume should post progressFull');
-    assert.ok(msg.text.includes('[12:00:00] Request: task'));
+    assert.ok(msg.text.includes('Working on it'));
   } finally {
     cleanup();
+  }
+});
+
+// ── Integration: progress.md content after a real orchestrator run ────────────
+
+const { spawn } = require('node:child_process');
+
+const rootDir = path.resolve(__dirname, '..');
+const cliPath = path.join(rootDir, 'bin', 'cc-manager.js');
+const fakeCodex = path.join(rootDir, 'tests', 'fakes', 'fake-codex.js');
+const fakeClaude = path.join(rootDir, 'tests', 'fakes', 'fake-claude.js');
+
+async function runCli(args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd: options.cwd || rootDir,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({
+        code,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      });
+    });
+  });
+}
+
+async function setupIntegrationWorkspace() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-progress-int-'));
+  const repoRoot = path.join(tmpDir, 'repo');
+  const stateRoot = path.join(tmpDir, 'state');
+  fs.mkdirSync(repoRoot, { recursive: true });
+  fs.mkdirSync(stateRoot, { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, 'logic.py'), 'def add(a, b):\n    return a + b\n');
+  return { tmpDir, repoRoot, stateRoot };
+}
+
+function readProgressFile(stateRoot) {
+  const runsDir = path.join(stateRoot, 'runs');
+  const runs = fs.readdirSync(runsDir);
+  assert.equal(runs.length, 1);
+  const progressFile = path.join(runsDir, runs[0], 'progress.md');
+  return fs.readFileSync(progressFile, 'utf8');
+}
+
+test('progress.md contains only progress_updates, not controller_messages or chatter', async () => {
+  const { tmpDir, repoRoot, stateRoot } = await setupIntegrationWorkspace();
+
+  try {
+    const result = await runCli([
+      'run',
+      'Please do fixes in this repository until all unit tests pass',
+      '--repo', repoRoot,
+      '--state-dir', stateRoot,
+      '--codex-bin', fakeCodex,
+      '--claude-bin', fakeClaude,
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+
+    const content = readProgressFile(stateRoot);
+
+    // progress.md must NOT contain user request text
+    assert.doesNotMatch(content, /Please do fixes/i, 'should not contain user request text');
+
+    // progress.md must NOT contain controller_messages (chat text)
+    assert.doesNotMatch(content, /I will instruct Claude Code/, 'should not contain controller_messages text');
+    assert.doesNotMatch(content, /Let me review the work/, 'should not contain controller_messages text');
+    assert.doesNotMatch(content, /All unit tests passing\. The task has been completed/, 'should not contain controller_messages text');
+
+    // progress.md must NOT contain delegation/worker chatter
+    assert.doesNotMatch(content, /Delegating to Claude/i, 'should not contain delegation text');
+    assert.doesNotMatch(content, /Worker done/i, 'should not contain worker done chatter');
+
+    // progress.md must NOT have automatic Done/Error lines
+    assert.doesNotMatch(content, /^.*\] Done$/m, 'should not contain automatic Done line');
+
+    // progress.md SHOULD contain only the explicit progress_updates from fake-codex
+    assert.match(content, /Starting test fixes/, 'should contain progress_update from first delegate');
+    assert.match(content, /Reviewing Claude work/, 'should contain progress_update from review');
+    assert.match(content, /Found bug in logic\.py/, 'should contain progress_update from review');
+    assert.match(content, /Fix verified, all tests passing/, 'should contain progress_update from final stop');
+
+    // Every line should be timestamped
+    const lines = content.trim().split('\n').filter(Boolean);
+    assert.ok(lines.length >= 3, `expected at least 3 progress lines, got ${lines.length}`);
+    for (const line of lines) {
+      assert.match(line, /^\[\d{2}:\d{2}:\d{2}\]/, `line should be timestamped: ${line}`);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('simple greeting produces no progress lines in progress.md', async () => {
+  const { tmpDir, repoRoot, stateRoot } = await setupIntegrationWorkspace();
+
+  try {
+    const result = await runCli([
+      'run',
+      'Hi',
+      '--repo', repoRoot,
+      '--state-dir', stateRoot,
+      '--codex-bin', fakeCodex,
+      '--claude-bin', fakeClaude,
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+
+    // Greeting has empty progress_updates — file should not exist or be empty
+    const runsDir = path.join(stateRoot, 'runs');
+    const runs = fs.readdirSync(runsDir);
+    assert.equal(runs.length, 1);
+    const progressFile = path.join(runsDir, runs[0], 'progress.md');
+    let content = '';
+    try { content = fs.readFileSync(progressFile, 'utf8'); } catch {}
+    assert.equal(content.trim(), '', 'progress.md should be empty or absent for a greeting');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
