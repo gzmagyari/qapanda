@@ -145,6 +145,9 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   });
 
   if (result.aborted) {
+    // Mark session as started so resume uses --resume instead of --session-id
+    manifest.worker.sessionId = discoveredSessionId;
+    manifest.worker.hasStarted = true;
     throw new Error('Claude Code process was interrupted.');
   }
 
