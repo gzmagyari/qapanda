@@ -32,11 +32,12 @@ async function main() {
     return;
   }
 
-  const prompt = getFlagValue(args, '-p');
+  // -p is a boolean flag (print mode); the prompt is the last positional argument.
+  const prompt = args[args.length - 1];
   const sessionId = getFlagValue(args, '--resume') || getFlagValue(args, '--session-id') || 'fake-claude-session-0001';
 
-  if (!prompt) {
-    process.stderr.write('Missing -p prompt\n');
+  if (!prompt || prompt.startsWith('-')) {
+    process.stderr.write('Missing prompt (expected as last positional argument)\n');
     process.exit(2);
     return;
   }

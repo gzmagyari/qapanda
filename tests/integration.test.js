@@ -63,9 +63,11 @@ test('simple greeting stops without launching Claude Code', async () => {
   ]);
 
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /User: Hi/);
-  assert.match(result.stdout, /Controller: Hi, how can I help you\?/);
-  assert.match(result.stdout, /Controller: STOP/);
+  // Timeline UI renders labels on separate lines from content
+  assert.match(result.stdout, /User/);
+  assert.match(result.stdout, /Hi/);
+  assert.match(result.stdout, /Hi, how can I help you\?/);
+  assert.match(result.stdout, /STOP/);
   assert.doesNotMatch(result.stdout, /Launching Claude Code/);
 });
 
@@ -81,13 +83,14 @@ test('controller delegates to Claude, reviews, delegates again, then stops', asy
   ]);
 
   assert.equal(first.code, 0, first.stderr);
-  assert.match(first.stdout, /Controller: I will instruct Claude Code to fix the issues\./);
-  assert.match(first.stdout, /Controller: Launching Claude Code with: "Please fix all issues in this repository such that all unit tests pass\."/);
-  assert.match(first.stdout, /Claude code: I will start fixing the issues\./);
-  assert.match(first.stdout, /Controller: Let me review the work that was done\./);
-  assert.match(first.stdout, /Controller: Launching Claude Code with the same session with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
-  assert.match(first.stdout, /Controller: All unit tests passing\. The task has been completed\. Waiting for next user instruction\./);
-  assert.match(first.stdout, /Controller: STOP/);
+  // Timeline UI renders labels on separate lines from content
+  assert.match(first.stdout, /I will instruct Claude Code to fix the issues\./);
+  assert.match(first.stdout, /Launching Claude Code with: "Please fix all issues in this repository such that all unit tests pass\."/);
+  assert.match(first.stdout, /I will start fixing the issues\./);
+  assert.match(first.stdout, /Let me review the work that was done\./);
+  assert.match(first.stdout, /Launching Claude Code with the same session with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
+  assert.match(first.stdout, /All unit tests passing\. The task has been completed\. Waiting for next user instruction\./);
+  assert.match(first.stdout, /STOP/);
 
   const runId = await getSingleRunId(stateRoot);
   const second = await runCli([
@@ -101,8 +104,9 @@ test('controller delegates to Claude, reviews, delegates again, then stops', asy
   ]);
 
   assert.equal(second.code, 0, second.stderr);
-  assert.match(second.stdout, /User: Good job\. Thank you/);
-  assert.match(second.stdout, /Controller: No worries\. Let me know if you want me to do anything else\./);
-  assert.match(second.stdout, /Controller: STOP/);
+  // Timeline UI renders labels on separate lines from content
+  assert.match(second.stdout, /Good job\. Thank you/);
+  assert.match(second.stdout, /No worries\. Let me know if you want me to do anything else\./);
+  assert.match(second.stdout, /STOP/);
   assert.doesNotMatch(second.stdout, /Launching Claude Code/);
 });
