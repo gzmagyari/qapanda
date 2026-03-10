@@ -2,7 +2,7 @@
 
 ## What It Is
 
-The chat input stays enabled while the agent is working. Any message sent during an active run is automatically queued and processed after the current run finishes. No special syntax, no `/queue` command — just type your next task and send it. The agent picks it up when it is ready, fully autonomously.
+The chat input stays enabled in the VS Code webview while the agent is working. Any message sent during an active run is automatically queued and processed after the current run finishes. No special syntax, no `/queue` command — just type your next task and send it. The agent picks it up when it is ready, fully autonomously.
 
 ## Why Users Would Want It
 
@@ -10,18 +10,18 @@ Real usage is bursty: a user has five things they need done, not one. Today, the
 
 ## MVP Shape
 
-- The chat input box (both terminal readline and VS Code webview) stays active during a run. Messages sent while a run is in progress are added to a queue and shown beneath the input area with their position.
-- When the current run stops, the orchestrator automatically picks up the next queued message and starts a new run for it. No user input needed between tasks.
-- The queue is visible: a small list under the chat input showing pending messages with their order. In VS Code, items can be drag-reordered or removed. In the terminal, `/queue` shows pending items and `/queue remove <n>` drops one.
+- **VS Code (MVP)**: The webview chat input stays active during a run. Messages sent while a run is in progress are added to a queue and shown beneath the input area with their position. Items can be drag-reordered or removed. When the current run stops, the orchestrator automatically picks up the next queued message and starts a new run. No user input needed between tasks.
 - Each queued task becomes its own run with its own run ID, logs, and transcript — fully independent, fully searchable via the conversation history engine (idea 01).
+- The queue is persisted to `.cc-manager/queue.json` so it survives VS Code reloads.
+- **CLI (future work)**: The terminal shell currently blocks during active runs, so CLI queue support would require reworking the readline loop. This is a later consideration, not part of the MVP.
 
 ## Why It Fits cc-manager
 
-The orchestrator in `src/orchestrator.js` already handles run lifecycle — start, loop, stop. The queue sits above the orchestrator as a thin scheduling layer: when one run stops, check the queue, start the next. Each task uses the existing run infrastructure in `src/state.js` with no changes to the core loop. The key UX change is simply keeping the input enabled, which is a renderer/webview concern.
+The orchestrator in `src/orchestrator.js` already handles run lifecycle — start, loop, stop. The queue sits above the orchestrator as a thin scheduling layer: when one run stops, check the queue, start the next. Each task uses the existing run infrastructure in `src/state.js` with no changes to the core loop. The key UX change is keeping the webview input enabled, which is a `webview/main.js` concern.
 
 ## Implementation Notes
 
 - Add `src/queue.js` with `add(stateDir, message)`, `next(stateDir)`, `list(stateDir)`, `remove(stateDir, index)`. The queue is stored as `.cc-manager/queue.json`.
-- `src/shell.js` stops disabling readline during active runs. Incoming messages check if a run is active — if yes, call `queue.add()` and render a "queued" confirmation instead of starting a new run.
-- `extension/session-manager.js` does the same: messages during an active run go to the queue. `webview/main.js` keeps the input enabled and renders the queue list below it.
-- `src/orchestrator.js` checks `queue.next()` after a run stops. If a task is pending, it calls `orchestrator.start()` with the queued message automatically.
+- `extension/session-manager.js` handles messages during an active run by calling `queue.add()` instead of starting a new run. `webview/main.js` keeps the input enabled and renders the queue list below it.
+- When a run stops, the queue layer in `extension/session-manager.js` checks `queue.next()`. If a task is pending, it feeds the queued message through the existing new-run flow — the same path used when the user sends a message with no active run.
+- Queue updates are pushed to the webview via `queue-updated` postMessages so the UI stays in sync.

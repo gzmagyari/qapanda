@@ -1,5 +1,7 @@
 # Scope Boundaries
 
+> **Deferred.** We do not yet have true filesystem-level enforcement. The current approach relies on prompt instructions and tool restriction flags, which are not strong enough to back the UX promise of hard boundaries. Revisit once we can enforce scope at the filesystem or process level rather than relying on the model to comply.
+
 ## What It Is
 
 Declarative rules that define where the agent can and cannot operate within the repository — which directories are writable, which files are off-limits, which commands are allowed. The agent stays fully autonomous within the defined scope, but structurally cannot wander into areas the user wants protected. No approval prompts — just hard boundaries.

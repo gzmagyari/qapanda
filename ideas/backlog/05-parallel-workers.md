@@ -1,5 +1,7 @@
 # Parallel Workers
 
+> **Deferred.** We do not yet have an isolation model we trust enough for concurrent worker writes. Shipping this without proper isolation would lead to file conflicts and race conditions that users would rightfully complain about. Revisit once we have a reliable per-worker sandboxing strategy (e.g., git worktrees or filesystem-level isolation).
+
 ## What It Is
 
 The controller can split a complex task into independent subtasks and delegate them to multiple Claude Code worker sessions running simultaneously. Each worker operates in its own context, and the controller merges results when all workers finish — turning sequential loops into parallel execution.

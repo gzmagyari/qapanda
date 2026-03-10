@@ -2,7 +2,7 @@
 
 ## What It Is
 
-An agent-accessible tool that lets the controller search and retrieve context from past conversations. The user can ask "what did we discuss yesterday?" or "find the chat where we fixed Windows quoting" and the agent looks it up — searching by date, time, keywords, or topic across all saved run transcripts. It can summarize matches, pull in relevant context, and even switch to a found run automatically.
+An on-demand lookup tool that lets the controller search past conversations when the user explicitly asks. The user can say "what did we discuss yesterday?" or "find the chat where we fixed Windows quoting" and the controller searches by date, time, keywords, or topic across all saved run transcripts. It returns matches with summaries and context so the user can decide what to do with them. This is not persistent memory, not auto-discovery, and not background context gathering — it is a deliberate search the user or controller invokes when needed.
 
 ## Why Users Would Want It
 
@@ -13,12 +13,12 @@ Past runs contain valuable context — decisions, approaches, gotchas — but to
 - A `conversation_history` tool available to the controller that accepts a query object with optional fields: `keywords`, `date_from`, `date_to`, `run_id`.
 - The tool scans `transcript.jsonl` and `events.jsonl` across all runs in the state directory, matching against keywords and date/time filters. Every message carries its timestamp so the agent knows how old the information is.
 - Results return a ranked list: run ID, date/time, a short summary of the run, and the matching message snippets with surrounding context.
-- The agent can then offer to resume a found run via the existing `/resume` flow, or simply use the retrieved context to inform the current conversation.
+- The controller presents matches to the user, who can then choose to resume a found run via the existing `/resume` flow or ask the controller to pull in specific context.
 - `/history <query>` in the shell lets the user trigger a search directly.
 
 ## Why It Fits cc-manager
 
-Runs already persist full transcripts with timestamps in `.cc-manager/runs/`. The controller already receives tools via its system prompt. This adds one more tool that reads existing artifacts — no new data collection, just a retrieval layer over what is already saved.
+Runs already persist full transcripts with timestamps in `.cc-manager/runs/`. The controller already receives tools via its system prompt. This adds one more tool that reads existing artifacts on demand — no background indexing, no silent context injection, just a retrieval layer the controller uses when the user asks for it.
 
 ## Implementation Notes
 
