@@ -83,10 +83,13 @@ function summarizeCodexEvent(raw) {
     }
 
     if (item.type === 'mcp_tool_call') {
+      const server = item.server || '';
+      const tool = item.tool || '';
+      const label = server && tool ? `${server}:${tool}` : server || tool || 'MCP tool';
       return {
         source: 'controller',
         kind: 'status',
-        text: started ? 'Calling an MCP tool.' : 'Finished MCP tool call.',
+        text: started ? `Calling ${label}` : `Finished ${label}`,
       };
     }
 

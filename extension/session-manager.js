@@ -78,6 +78,28 @@ class SessionManager {
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
+    this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
+  }
+
+  /** Update the MCP server data (both scopes). Called from extension.js. */
+  setMcpServers(mcpData) {
+    this._mcpData = mcpData || { global: {}, project: {} };
+  }
+
+  /** Return servers visible to a given role, stripped of the target field. */
+  _mcpServersForRole(role) {
+    const result = {};
+    const all = { ...this._mcpData.global, ...this._mcpData.project };
+    for (const [name, server] of Object.entries(all)) {
+      if (!server) continue;
+      const target = server.target || 'both';
+      if (target === 'none') continue;
+      if (target === 'both' || target === role) {
+        const { target: _t, ...rest } = server;
+        result[name] = rest;
+      }
+    }
+    return result;
   }
 
   applyConfig(config) {
@@ -765,6 +787,11 @@ class SessionManager {
     if (this._controllerCli) opts.controllerCli = this._controllerCli;
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
     if (this._workerModel) opts.workerModel = this._workerModel;
+    // Split MCP servers by target role
+    const controllerMcp = this._mcpServersForRole('controller');
+    const workerMcp = this._mcpServersForRole('worker');
+    if (Object.keys(controllerMcp).length > 0) opts.controllerMcpServers = controllerMcp;
+    if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
       if (this._controllerCli !== 'claude') {
@@ -802,7 +829,17 @@ class SessionManager {
     this._postMessage({ type: 'syncConfig', config: this._getConfig() });
   }
 
+  /** Sync current MCP server config into the active manifest before each run. */
+  _syncMcpToManifest() {
+    if (!this._activeManifest) return;
+    const controllerMcp = this._mcpServersForRole('controller');
+    const workerMcp = this._mcpServersForRole('worker');
+    this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
+    this._activeManifest.workerMcpServers = Object.keys(workerMcp).length > 0 ? workerMcp : null;
+  }
+
   async _runDirectWorker(userMessage) {
+    this._syncMcpToManifest();
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
@@ -824,6 +861,7 @@ class SessionManager {
   }
 
   async _runLoop(options) {
+    this._syncMcpToManifest();
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });

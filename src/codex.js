@@ -1,5 +1,7 @@
 const { readText, writeText, parsePossiblyFencedJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
+
+const MCP_STARTUP_TIMEOUT_SEC = 30;
 const { parseJsonLine } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision } = require('./schema');
@@ -44,6 +46,23 @@ function buildCodexArgs(manifest, loop) {
 
   for (const entry of manifest.controller.config || []) {
     args.push('--config', entry);
+  }
+
+  // Pass MCP servers via -c config overrides (prefer role-specific, fall back to shared)
+  const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};
+  for (const [name, server] of Object.entries(controllerMcp)) {
+    if (!server || !server.command) continue;
+    args.push('-c', `mcp_servers.${name}.command="${server.command}"`);
+    if (Array.isArray(server.args) && server.args.length > 0) {
+      const argsToml = `[${server.args.map(a => `"${a}"`).join(', ')}]`;
+      args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
+    }
+    if (server.env && typeof server.env === 'object') {
+      for (const [key, val] of Object.entries(server.env)) {
+        args.push('-c', `mcp_servers.${name}.env.${key}="${val}"`);
+      }
+    }
+    args.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
   }
 
   args.push('-');

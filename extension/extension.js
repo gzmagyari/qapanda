@@ -1,9 +1,41 @@
 const vscode = require('vscode');
+const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 
 const activePanels = new Set();
+
+// ── MCP config file helpers ─────────────────────────────────────────
+function globalMcpPath() {
+  return path.join(os.homedir(), '.cc-manager', 'mcp.json');
+}
+
+function projectMcpPath(repoRoot) {
+  return path.join(repoRoot, '.cc-manager', 'mcp.json');
+}
+
+function loadMcpFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveMcpFile(filePath, data) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
+
+/** Load and merge global + project MCP servers. Project overrides global by name. */
+function loadMergedMcpServers(repoRoot) {
+  const globalServers = loadMcpFile(globalMcpPath());
+  const projectServers = loadMcpFile(projectMcpPath(repoRoot));
+  return { global: globalServers, project: projectServers };
+}
 
 function getWebviewHtml(panel, extensionUri) {
   const webviewDir = vscode.Uri.joinPath(extensionUri, 'webview');
@@ -23,18 +55,24 @@ function getWebviewHtml(panel, extensionUri) {
 </head>
 <body>
   <div id="app">
-    <div id="progress-bubble" class="progress-bubble hidden">
-      <div class="progress-header">Progress</div>
-      <div class="progress-body"></div>
+    <div id="tab-bar">
+      <button class="tab-btn active" data-tab="agent">Agent</button>
+      <button class="tab-btn" data-tab="mcp">MCP Servers</button>
     </div>
-    <div id="messages"></div>
-    <div id="suggestions"></div>
-    <div id="input-area">
-      <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
-      <button id="btn-send">Send</button>
-      <button id="btn-stop">Stop</button>
-    </div>
-    <div id="config-bar">
+
+    <div id="tab-agent">
+      <div id="progress-bubble" class="progress-bubble hidden">
+        <div class="progress-header">Progress</div>
+        <div class="progress-body"></div>
+      </div>
+      <div id="messages"></div>
+      <div id="suggestions"></div>
+      <div id="input-area">
+        <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
+        <button id="btn-send">Send</button>
+        <button id="btn-stop">Stop</button>
+      </div>
+      <div id="config-bar">
       <div class="config-group">
         <label>Target</label>
         <select id="cfg-chat-target">
@@ -109,6 +147,28 @@ function getWebviewHtml(panel, extensionUri) {
         </select>
       </div>
     </div>
+    </div><!-- /tab-agent -->
+
+    <div id="tab-mcp" class="tab-hidden">
+      <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Global Servers</h3>
+            <span class="mcp-section-path">~/.cc-manager/mcp.json</span>
+            <button class="mcp-add-btn" data-scope="global">+ Add</button>
+          </div>
+          <div id="mcp-list-global" class="mcp-list"></div>
+        </div>
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Project Servers</h3>
+            <span class="mcp-section-path">.cc-manager/mcp.json</span>
+            <button class="mcp-add-btn" data-scope="project">+ Add</button>
+          </div>
+          <div id="mcp-list-project" class="mcp-list"></div>
+        </div>
+      </div>
+    </div><!-- /tab-mcp -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -175,6 +235,8 @@ function activate(context) {
       postMessage,
       initialConfig: panelConfig,
     });
+    // Initialize MCP servers from disk
+    session.setMcpServers(loadMergedMcpServers(repoRoot));
 
     panel.webview.onDidReceiveMessage(
       (msg) => {
@@ -184,7 +246,18 @@ function activate(context) {
           return;
         }
         if (msg.type === 'ready') {
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig });
+          const mcpData = loadMergedMcpServers(repoRoot);
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData });
+          return;
+        }
+        if (msg.type === 'mcpServersChanged') {
+          const scope = msg.scope; // 'global' or 'project'
+          const servers = msg.servers; // full server object for that scope
+          const filePath = scope === 'global' ? globalMcpPath() : projectMcpPath(repoRoot);
+          saveMcpFile(filePath, servers);
+          // Update session with merged enabled servers
+          const mcpData = loadMergedMcpServers(repoRoot);
+          session.setMcpServers(mcpData);
           return;
         }
         session.handleMessage(msg);
@@ -236,6 +309,7 @@ function activate(context) {
         postMessage,
         initialConfig: panelConfig,
       });
+      session.setMcpServers(loadMergedMcpServers(repoRoot));
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
@@ -244,8 +318,18 @@ function activate(context) {
             Object.assign(panelConfig, msg.config);
             return;
           }
+          if (msg.type === 'mcpServersChanged') {
+            const scope = msg.scope;
+            const servers = msg.servers;
+            const filePath = scope === 'global' ? globalMcpPath() : projectMcpPath(repoRoot);
+            saveMcpFile(filePath, servers);
+            const mcpData = loadMergedMcpServers(repoRoot);
+            session.setMcpServers(mcpData);
+            return;
+          }
           if (msg.type === 'ready') {
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig });
+            const mcpData = loadMergedMcpServers(repoRoot);
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData });
             // Reattach to saved run if the webview had one before reload
             const runId = msg.runId || savedRunId;
             if (runId) {

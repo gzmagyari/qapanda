@@ -56,6 +56,26 @@ function buildClaudeArgs(manifest) {
     args.push('--append-system-prompt', appendSystemPrompt);
   }
 
+  // Pass MCP servers via --mcp-config with inline JSON (prefer role-specific, fall back to shared)
+  const mcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  if (Object.keys(mcpServers).length > 0) {
+    const mcpConfig = { mcpServers: {} };
+    for (const [name, server] of Object.entries(mcpServers)) {
+      if (!server || !server.command) continue;
+      mcpConfig.mcpServers[name] = {
+        type: 'stdio',
+        command: server.command,
+        args: server.args || [],
+      };
+      if (server.env) {
+        mcpConfig.mcpServers[name].env = server.env;
+      }
+    }
+    if (Object.keys(mcpConfig.mcpServers).length > 0) {
+      args.push('--mcp-config', JSON.stringify(mcpConfig));
+    }
+  }
+
   // Prompt is passed via stdin to avoid Windows cmd.exe command-line length limits
   return args;
 }

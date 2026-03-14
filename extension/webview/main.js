@@ -9,6 +9,236 @@
   const progressBubble = document.getElementById('progress-bubble');
   const progressBody = progressBubble ? progressBubble.querySelector('.progress-body') : null;
 
+  // ── Tab switching ───────────────────────────────────────────────────
+  const tabBar = document.getElementById('tab-bar');
+  const tabAgent = document.getElementById('tab-agent');
+  const tabMcp = document.getElementById('tab-mcp');
+
+  tabBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (tab === 'agent') {
+      tabAgent.classList.remove('tab-hidden');
+      tabMcp.classList.add('tab-hidden');
+    } else {
+      tabAgent.classList.add('tab-hidden');
+      tabMcp.classList.remove('tab-hidden');
+    }
+  });
+
+  // ── MCP Server Management ─────────────────────────────────────────
+  let mcpGlobal = {};
+  let mcpProject = {};
+  let mcpEditingForm = null; // { scope, name } or null
+
+  function renderMcpList(scope) {
+    const listEl = document.getElementById('mcp-list-' + scope);
+    const servers = scope === 'global' ? mcpGlobal : mcpProject;
+    listEl.innerHTML = '';
+
+    const names = Object.keys(servers);
+    if (names.length === 0 && !(mcpEditingForm && mcpEditingForm.scope === scope && !mcpEditingForm.name)) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.textContent = 'No servers configured';
+      listEl.appendChild(empty);
+    }
+
+    // Show add form at top if adding to this scope
+    if (mcpEditingForm && mcpEditingForm.scope === scope && !mcpEditingForm.name) {
+      listEl.appendChild(createMcpForm(scope, null));
+    }
+
+    for (const name of names) {
+      const server = servers[name];
+      // Show edit form inline
+      if (mcpEditingForm && mcpEditingForm.scope === scope && mcpEditingForm.name === name) {
+        listEl.appendChild(createMcpForm(scope, name));
+        continue;
+      }
+      const card = document.createElement('div');
+      card.className = 'mcp-card' + (server.target === 'none' ? ' mcp-disabled' : '');
+
+      const header = document.createElement('div');
+      header.className = 'mcp-card-header';
+
+      const targetSelect = document.createElement('select');
+      targetSelect.className = 'mcp-target-select';
+      const currentTarget = server.target || 'both';
+      for (const [val, label] of [['both', 'Both'], ['controller', 'Controller'], ['worker', 'Worker'], ['none', 'Off']]) {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = label;
+        if (val === currentTarget) opt.selected = true;
+        targetSelect.appendChild(opt);
+      }
+      targetSelect.addEventListener('change', () => {
+        server.target = targetSelect.value;
+        notifyMcpChanged(scope);
+        renderMcpList(scope);
+      });
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'mcp-name';
+      nameEl.textContent = name;
+
+      const actions = document.createElement('span');
+      actions.className = 'mcp-actions';
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'mcp-btn';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => {
+        mcpEditingForm = { scope, name };
+        renderMcpList(scope);
+      });
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'mcp-btn mcp-btn-danger';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => {
+        delete servers[name];
+        notifyMcpChanged(scope);
+        renderMcpList(scope);
+      });
+
+      actions.appendChild(editBtn);
+      actions.appendChild(deleteBtn);
+      header.appendChild(targetSelect);
+      header.appendChild(nameEl);
+      header.appendChild(actions);
+
+      const details = document.createElement('div');
+      details.className = 'mcp-card-details';
+      details.innerHTML =
+        '<span class="mcp-detail-label">Command:</span> ' + escapeHtml(server.command || '') +
+        '<br><span class="mcp-detail-label">Args:</span> ' + escapeHtml((server.args || []).join(' '));
+      if (server.env && Object.keys(server.env).length > 0) {
+        details.innerHTML += '<br><span class="mcp-detail-label">Env:</span> ' +
+          escapeHtml(Object.entries(server.env).map(([k, v]) => k + '=' + v).join(', '));
+      }
+
+      card.appendChild(header);
+      card.appendChild(details);
+      listEl.appendChild(card);
+    }
+  }
+
+  function serverToJson(name, server) {
+    const obj = {};
+    if (server.type) obj.type = server.type;
+    obj.command = server.command;
+    if (server.args && server.args.length > 0) obj.args = server.args;
+    if (server.env && Object.keys(server.env).length > 0) obj.env = server.env;
+    const wrapper = {};
+    wrapper[name] = obj;
+    return JSON.stringify(wrapper, null, 2);
+  }
+
+  function createMcpForm(scope, editName) {
+    const servers = scope === 'global' ? mcpGlobal : mcpProject;
+    const existing = editName ? servers[editName] : null;
+
+    const form = document.createElement('div');
+    form.className = 'mcp-form';
+
+    const prefill = existing ? serverToJson(editName, existing) : '';
+    const placeholder = '{\n  "server-name": {\n    "command": "uvx",\n    "args": ["package@latest"]\n  }\n}\n\nAlso accepts {\"mcpServers\": {...}} wrapper';
+
+    form.innerHTML =
+      '<div class="mcp-form-row"><textarea class="mcp-input mcp-textarea-json" id="mcp-f-json" placeholder="' + escapeHtml(placeholder) + '">' + escapeHtml(prefill) + '</textarea></div>' +
+      '<div id="mcp-f-error" class="mcp-form-error"></div>' +
+      '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="mcp-f-save">Save</button><button class="mcp-btn" id="mcp-f-cancel">Cancel</button></div>';
+
+    setTimeout(() => {
+      const saveBtn = document.getElementById('mcp-f-save');
+      const cancelBtn = document.getElementById('mcp-f-cancel');
+      if (saveBtn) saveBtn.addEventListener('click', () => saveMcpForm(scope, editName));
+      if (cancelBtn) cancelBtn.addEventListener('click', () => { mcpEditingForm = null; renderMcpList(scope); });
+    }, 0);
+
+    return form;
+  }
+
+  /** Parse pasted JSON: supports { name: {...} }, { mcpServers: { name: {...} } }, or a fragment like "key": { ... } */
+  function parseMcpJson(text) {
+    let raw = text.trim();
+    // If it doesn't start with '{', try wrapping with {} (handles pasted fragments like "mcpServers": {...})
+    if (!raw.startsWith('{')) {
+      raw = '{' + raw + '}';
+    }
+    // Also handle trailing commas before closing brace
+    raw = raw.replace(/,\s*}/g, '}');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) throw new Error('Expected a JSON object');
+
+    // Unwrap { mcpServers: { ... } } wrapper
+    let servers = parsed;
+    if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+      servers = parsed.mcpServers;
+    }
+
+    // Validate: each entry must have a "command" string
+    const result = {};
+    for (const [name, config] of Object.entries(servers)) {
+      if (!config || typeof config !== 'object') throw new Error(`"${name}" is not an object`);
+      if (!config.command) throw new Error(`"${name}" is missing "command"`);
+      result[name] = {
+        command: config.command,
+        args: Array.isArray(config.args) ? config.args : [],
+        env: (config.env && typeof config.env === 'object') ? config.env : {},
+      };
+    }
+    if (Object.keys(result).length === 0) throw new Error('No servers found in JSON');
+    return result;
+  }
+
+  function saveMcpForm(scope, editName) {
+    const servers = scope === 'global' ? mcpGlobal : mcpProject;
+    const jsonInput = document.getElementById('mcp-f-json');
+    const errorEl = document.getElementById('mcp-f-error');
+
+    let parsed;
+    try {
+      parsed = parseMcpJson(jsonInput.value);
+    } catch (err) {
+      if (errorEl) { errorEl.textContent = err.message; }
+      return;
+    }
+
+    // If editing, remove the old entry
+    if (editName) {
+      delete servers[editName];
+    }
+
+    // Add all parsed servers, preserving existing target if editing a single server
+    for (const [name, config] of Object.entries(parsed)) {
+      const prevTarget = servers[name] ? servers[name].target : (editName ? 'both' : 'both');
+      servers[name] = { ...config, target: prevTarget || 'both' };
+    }
+
+    mcpEditingForm = null;
+    notifyMcpChanged(scope);
+    renderMcpList(scope);
+  }
+
+  function notifyMcpChanged(scope) {
+    const servers = scope === 'global' ? mcpGlobal : mcpProject;
+    vscode.postMessage({ type: 'mcpServersChanged', scope, servers });
+  }
+
+  // Add button listeners
+  document.querySelectorAll('.mcp-add-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const scope = btn.dataset.scope;
+      mcpEditingForm = { scope, name: null };
+      renderMcpList(scope);
+    });
+  });
+
   // Config dropdowns
   const cfgControllerModel = document.getElementById('cfg-controller-model');
   const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
@@ -481,6 +711,12 @@
 
     initConfig(msg) {
       setConfig(msg.config);
+      if (msg.mcpServers) {
+        mcpGlobal = msg.mcpServers.global || {};
+        mcpProject = msg.mcpServers.project || {};
+        renderMcpList('global');
+        renderMcpList('project');
+      }
       saveState();
     },
 

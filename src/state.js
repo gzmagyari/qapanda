@@ -128,6 +128,9 @@ function normalizeRunOptions(options = {}) {
       quiet: Boolean(options.quiet),
       color: options.color !== false,
     },
+    mcpServers: options.mcpServers || {},
+    controllerMcpServers: options.controllerMcpServers || null,
+    workerMcpServers: options.workerMcpServers || null,
   };
 }
 
@@ -169,6 +172,9 @@ async function prepareNewRun(initialMessage, options = {}) {
       hasStarted: false,
     },
     settings: normalized.settings,
+    mcpServers: normalized.mcpServers || {},
+    controllerMcpServers: normalized.controllerMcpServers || null,
+    workerMcpServers: normalized.workerMcpServers || null,
     counters: {
       request: 0,
       loop: 0,
