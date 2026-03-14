@@ -11,8 +11,11 @@
 
   // ── Tab switching ───────────────────────────────────────────────────
   const tabBar = document.getElementById('tab-bar');
-  const tabAgent = document.getElementById('tab-agent');
-  const tabMcp = document.getElementById('tab-mcp');
+  const tabPanels = {
+    agent: document.getElementById('tab-agent'),
+    tasks: document.getElementById('tab-tasks'),
+    mcp: document.getElementById('tab-mcp'),
+  };
 
   tabBar.addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
@@ -20,13 +23,11 @@
     const tab = btn.dataset.tab;
     tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    if (tab === 'agent') {
-      tabAgent.classList.remove('tab-hidden');
-      tabMcp.classList.add('tab-hidden');
-    } else {
-      tabAgent.classList.add('tab-hidden');
-      tabMcp.classList.remove('tab-hidden');
+    for (const [key, el] of Object.entries(tabPanels)) {
+      if (key === tab) el.classList.remove('tab-hidden');
+      else el.classList.add('tab-hidden');
     }
+    if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
   });
 
   // ── MCP Server Management ─────────────────────────────────────────
@@ -238,6 +239,247 @@
       renderMcpList(scope);
     });
   });
+
+  // ── Tasks / Kanban ───────────────────────────────────────────────────
+  const TASK_COLUMNS = [
+    { key: 'backlog', label: 'Backlog' },
+    { key: 'todo', label: 'To Do' },
+    { key: 'in_progress', label: 'In Progress' },
+    { key: 'review', label: 'Code Review' },
+    { key: 'testing', label: 'Testing' },
+    { key: 'done', label: 'Done' },
+  ];
+
+  let kanbanTasks = [];
+  const kanbanBoard = document.getElementById('kanban-board');
+  const taskDetail = document.getElementById('task-detail');
+
+  function renderKanban() {
+    kanbanBoard.innerHTML = '';
+    kanbanBoard.style.display = '';
+    taskDetail.style.display = 'none';
+
+    // New task button row
+    const toolbar = document.createElement('div');
+    toolbar.className = 'kanban-toolbar';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'mcp-btn mcp-btn-primary';
+    addBtn.textContent = '+ New Task';
+    addBtn.addEventListener('click', () => showTaskForm(null));
+    toolbar.appendChild(addBtn);
+    kanbanBoard.appendChild(toolbar);
+
+    const columnsRow = document.createElement('div');
+    columnsRow.className = 'kanban-columns';
+
+    let draggedTaskId = null;
+
+    for (const col of TASK_COLUMNS) {
+      const colEl = document.createElement('div');
+      colEl.className = 'kanban-column';
+      colEl.dataset.status = col.key;
+
+      // Drop target events
+      colEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        colEl.classList.add('kanban-column-dragover');
+      });
+      colEl.addEventListener('dragleave', () => {
+        colEl.classList.remove('kanban-column-dragover');
+      });
+      colEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        colEl.classList.remove('kanban-column-dragover');
+        if (draggedTaskId && col.key) {
+          vscode.postMessage({ type: 'taskUpdate', task_id: draggedTaskId, status: col.key });
+          draggedTaskId = null;
+        }
+      });
+
+      const tasks = kanbanTasks.filter(t => t.status === col.key);
+      const header = document.createElement('div');
+      header.className = 'kanban-column-header';
+      header.innerHTML = escapeHtml(col.label) + ' <span class="kanban-count">' + tasks.length + '</span>';
+      colEl.appendChild(header);
+
+      for (const task of tasks) {
+        const card = document.createElement('div');
+        card.className = 'kanban-card';
+        card.draggable = true;
+        card.dataset.taskId = task.id;
+        card.addEventListener('click', () => showTaskDetail(task.id));
+        card.addEventListener('dragstart', (e) => {
+          draggedTaskId = task.id;
+          card.classList.add('kanban-card-dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', task.id);
+        });
+        card.addEventListener('dragend', () => {
+          card.classList.remove('kanban-card-dragging');
+          draggedTaskId = null;
+          document.querySelectorAll('.kanban-column-dragover').forEach(el => el.classList.remove('kanban-column-dragover'));
+        });
+
+        const title = document.createElement('div');
+        title.className = 'kanban-card-title';
+        title.textContent = task.title;
+
+        const desc = document.createElement('div');
+        desc.className = 'kanban-card-desc';
+        desc.textContent = (task.description || '').slice(0, 80);
+
+        const meta = document.createElement('div');
+        meta.className = 'kanban-card-meta';
+        const cc = (task.comments || []).length;
+        const pc = (task.progress_updates || []).length;
+        if (cc) meta.innerHTML += '<span>' + cc + ' comment' + (cc > 1 ? 's' : '') + '</span>';
+        if (pc) meta.innerHTML += '<span>' + pc + ' update' + (pc > 1 ? 's' : '') + '</span>';
+
+        card.appendChild(title);
+        if (task.description) card.appendChild(desc);
+        if (cc || pc) card.appendChild(meta);
+        colEl.appendChild(card);
+      }
+
+      // Spacer fills remaining space so the entire column is a drop target
+      const spacer = document.createElement('div');
+      spacer.className = 'kanban-column-spacer';
+      colEl.appendChild(spacer);
+
+      columnsRow.appendChild(colEl);
+    }
+    kanbanBoard.appendChild(columnsRow);
+  }
+
+  function showTaskForm(editTask) {
+    kanbanBoard.style.display = 'none';
+    taskDetail.style.display = '';
+    taskDetail.innerHTML = '';
+    taskDetail.dataset.taskId = editTask ? editTask.id : '';
+
+    const isEdit = !!editTask;
+    const t = editTask || { title: '', description: '', detail_text: '', status: 'backlog' };
+
+    taskDetail.innerHTML =
+      '<div class="task-detail-toolbar">' +
+        '<button class="mcp-btn" id="task-back">Back</button>' +
+        (isEdit ? '<button class="mcp-btn mcp-btn-danger" id="task-delete">Delete</button>' : '') +
+      '</div>' +
+      '<div class="mcp-form">' +
+        '<div class="mcp-form-row"><label>Title</label><input class="mcp-input" id="task-f-title" value="' + escapeHtml(t.title) + '"></div>' +
+        '<div class="mcp-form-row"><label>Status</label><select class="mcp-input" id="task-f-status">' +
+          TASK_COLUMNS.map(c => '<option value="' + c.key + '"' + (c.key === t.status ? ' selected' : '') + '>' + escapeHtml(c.label) + '</option>').join('') +
+        '</select></div>' +
+        '<div class="mcp-form-row"><label>Description</label><input class="mcp-input" id="task-f-desc" value="' + escapeHtml(t.description || '') + '" placeholder="Short summary"></div>' +
+        '<div class="mcp-form-row"><label>Details</label><textarea class="mcp-input mcp-textarea" id="task-f-detail" placeholder="Detailed notes / acceptance criteria">' + escapeHtml(t.detail_text || '') + '</textarea></div>' +
+        '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="task-f-save">' + (isEdit ? 'Save Changes' : 'Create Task') + '</button></div>' +
+      '</div>';
+
+    // Comments & progress (edit mode only)
+    if (isEdit) {
+      // Comments section
+      let commentsHtml = '<div class="task-section"><h4>Comments</h4>';
+      for (const c of (t.comments || [])) {
+        commentsHtml += '<div class="task-entry" data-comment-id="' + c.id + '"><div class="task-entry-header"><span class="task-entry-author">' + escapeHtml(c.author) + '</span> <span class="task-entry-date">' + (c.created_at || '').slice(0, 16) + '</span><span class="task-entry-actions"><button class="mcp-btn task-edit-comment-btn" data-id="' + c.id + '">Edit</button><button class="mcp-btn mcp-btn-danger task-del-comment-btn" data-id="' + c.id + '">Del</button></span></div><div class="task-entry-text">' + escapeHtml(c.text) + '</div></div>';
+      }
+      commentsHtml += '<div class="task-add-row"><input class="mcp-input" id="task-comment-text" placeholder="Add a comment..."><button class="mcp-btn mcp-btn-primary" id="task-comment-post">Post</button></div></div>';
+
+      // Progress section
+      let progressHtml = '<div class="task-section"><h4>Progress Updates</h4>';
+      for (const p of (t.progress_updates || [])) {
+        progressHtml += '<div class="task-entry" data-progress-id="' + p.id + '"><div class="task-entry-header"><span class="task-entry-author">' + escapeHtml(p.author) + '</span> <span class="task-entry-date">' + (p.created_at || '').slice(0, 16) + '</span><span class="task-entry-actions"><button class="mcp-btn task-edit-progress-btn" data-id="' + p.id + '">Edit</button><button class="mcp-btn mcp-btn-danger task-del-progress-btn" data-id="' + p.id + '">Del</button></span></div><div class="task-entry-text">' + escapeHtml(p.text) + '</div></div>';
+      }
+      progressHtml += '<div class="task-add-row"><input class="mcp-input" id="task-progress-text" placeholder="Add a progress update..."><button class="mcp-btn mcp-btn-primary" id="task-progress-post">Post</button></div></div>';
+
+      taskDetail.innerHTML += commentsHtml + progressHtml;
+    }
+
+    // Wire up events
+    setTimeout(() => {
+      document.getElementById('task-back').addEventListener('click', renderKanban);
+
+      document.getElementById('task-f-save').addEventListener('click', () => {
+        const title = document.getElementById('task-f-title').value.trim();
+        if (!title) return;
+        if (isEdit) {
+          vscode.postMessage({ type: 'taskUpdate', task_id: t.id, title, description: document.getElementById('task-f-desc').value, detail_text: document.getElementById('task-f-detail').value, status: document.getElementById('task-f-status').value });
+        } else {
+          vscode.postMessage({ type: 'taskCreate', title, description: document.getElementById('task-f-desc').value, detail_text: document.getElementById('task-f-detail').value, status: document.getElementById('task-f-status').value });
+        }
+      });
+
+      const delBtn = document.getElementById('task-delete');
+      if (delBtn) {
+        delBtn.addEventListener('click', () => {
+          if (confirm('Delete this task?')) {
+            vscode.postMessage({ type: 'taskDelete', task_id: t.id });
+          }
+        });
+      }
+
+      const commentPost = document.getElementById('task-comment-post');
+      if (commentPost) {
+        commentPost.addEventListener('click', () => {
+          const text = document.getElementById('task-comment-text').value.trim();
+          if (text) vscode.postMessage({ type: 'taskAddComment', task_id: t.id, text });
+        });
+      }
+
+      // Comment edit/delete
+      document.querySelectorAll('.task-del-comment-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'taskDeleteComment', task_id: t.id, comment_id: Number(btn.dataset.id) });
+        });
+      });
+      document.querySelectorAll('.task-edit-comment-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const entry = btn.closest('.task-entry');
+          const textEl = entry.querySelector('.task-entry-text');
+          const current = textEl.textContent;
+          textEl.innerHTML = '<div class="task-add-row"><input class="mcp-input task-inline-edit" value="' + escapeHtml(current) + '"><button class="mcp-btn mcp-btn-primary task-inline-save">Save</button></div>';
+          const saveBtn = textEl.querySelector('.task-inline-save');
+          saveBtn.addEventListener('click', () => {
+            const newText = textEl.querySelector('.task-inline-edit').value.trim();
+            if (newText) vscode.postMessage({ type: 'taskEditComment', task_id: t.id, comment_id: Number(btn.dataset.id), text: newText });
+          });
+        });
+      });
+
+      const progressPost = document.getElementById('task-progress-post');
+      if (progressPost) {
+        progressPost.addEventListener('click', () => {
+          const text = document.getElementById('task-progress-text').value.trim();
+          if (text) vscode.postMessage({ type: 'taskAddProgress', task_id: t.id, text });
+        });
+      }
+
+      // Progress edit/delete
+      document.querySelectorAll('.task-del-progress-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'taskDeleteProgress', task_id: t.id, progress_id: Number(btn.dataset.id) });
+        });
+      });
+      document.querySelectorAll('.task-edit-progress-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const entry = btn.closest('.task-entry');
+          const textEl = entry.querySelector('.task-entry-text');
+          const current = textEl.textContent;
+          textEl.innerHTML = '<div class="task-add-row"><input class="mcp-input task-inline-edit" value="' + escapeHtml(current) + '"><button class="mcp-btn mcp-btn-primary task-inline-save">Save</button></div>';
+          const saveBtn = textEl.querySelector('.task-inline-save');
+          saveBtn.addEventListener('click', () => {
+            const newText = textEl.querySelector('.task-inline-edit').value.trim();
+            if (newText) vscode.postMessage({ type: 'taskEditProgress', task_id: t.id, progress_id: Number(btn.dataset.id), text: newText });
+          });
+        });
+      });
+    }, 0);
+  }
+
+  function showTaskDetail(taskId) {
+    const task = kanbanTasks.find(t => t.id === taskId);
+    if (task) showTaskForm(task);
+  }
 
   // Config dropdowns
   const cfgControllerModel = document.getElementById('cfg-controller-model');
@@ -723,6 +965,19 @@
     syncConfig(msg) {
       setConfig(msg.config);
       saveState();
+    },
+
+    tasksData(msg) {
+      kanbanTasks = msg.tasks || [];
+      // If we're viewing a task detail, refresh it; otherwise refresh board
+      if (taskDetail.style.display !== 'none') {
+        const openId = taskDetail.dataset.taskId;
+        const updated = kanbanTasks.find(t => t.id === openId);
+        if (updated) showTaskForm(updated);
+        else renderKanban();
+      } else {
+        renderKanban();
+      }
     },
 
     setRunId(msg) {

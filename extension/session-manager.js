@@ -78,6 +78,7 @@ class SessionManager {
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
+    this._extensionPath = options.extensionPath || '';
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
   }
 
@@ -98,6 +99,14 @@ class SessionManager {
         const { target: _t, ...rest } = server;
         result[name] = rest;
       }
+    }
+    // Auto-inject built-in cc-tasks MCP server
+    if (this._extensionPath) {
+      result['cc-tasks'] = {
+        command: 'node',
+        args: [path.join(this._extensionPath, 'tasks-mcp-server.js')],
+        env: { TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json') },
+      };
     }
     return result;
   }

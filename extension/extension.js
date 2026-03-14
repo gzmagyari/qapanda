@@ -37,6 +37,129 @@ function loadMergedMcpServers(repoRoot) {
   return { global: globalServers, project: projectServers };
 }
 
+// ── Tasks file helpers ───────────────────────────────────────────────
+function tasksFilePath(repoRoot) {
+  return path.join(repoRoot, '.cc-manager', 'tasks.json');
+}
+
+function loadTasksFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] };
+  }
+}
+
+function saveTasksFile(filePath, data) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function nowIso() { return new Date().toISOString(); }
+
+function handleTaskMessage(msg, repoRoot) {
+  const fp = tasksFilePath(repoRoot);
+  const data = loadTasksFile(fp);
+
+  if (msg.type === 'tasksLoad') {
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskCreate') {
+    const id = `task-${data.nextId++}`;
+    const task = {
+      id, title: msg.title || 'Untitled', description: msg.description || '',
+      detail_text: msg.detail_text || '', status: msg.status || 'backlog',
+      created_at: nowIso(), updated_at: nowIso(), comments: [], progress_updates: [],
+    };
+    data.tasks.push(task);
+    saveTasksFile(fp, data);
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskUpdate') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task) {
+      if (msg.title !== undefined) task.title = msg.title;
+      if (msg.description !== undefined) task.description = msg.description;
+      if (msg.detail_text !== undefined) task.detail_text = msg.detail_text;
+      if (msg.status !== undefined) task.status = msg.status;
+      task.updated_at = nowIso();
+      saveTasksFile(fp, data);
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskDelete') {
+    data.tasks = data.tasks.filter(t => t.id !== msg.task_id);
+    saveTasksFile(fp, data);
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskAddComment') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task) {
+      if (!task.comments) task.comments = [];
+      task.comments.push({ id: data.nextCommentId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
+      task.updated_at = nowIso();
+      saveTasksFile(fp, data);
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskDeleteComment') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task && task.comments) {
+      task.comments = task.comments.filter(c => c.id !== msg.comment_id);
+      task.updated_at = nowIso();
+      saveTasksFile(fp, data);
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskEditComment') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task && task.comments) {
+      const comment = task.comments.find(c => c.id === msg.comment_id);
+      if (comment) { comment.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskDeleteProgress') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task && task.progress_updates) {
+      task.progress_updates = task.progress_updates.filter(p => p.id !== msg.progress_id);
+      task.updated_at = nowIso();
+      saveTasksFile(fp, data);
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskEditProgress') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task && task.progress_updates) {
+      const update = task.progress_updates.find(p => p.id === msg.progress_id);
+      if (update) { update.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  if (msg.type === 'taskAddProgress') {
+    const task = data.tasks.find(t => t.id === msg.task_id);
+    if (task) {
+      if (!task.progress_updates) task.progress_updates = [];
+      task.progress_updates.push({ id: data.nextProgressId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
+      task.updated_at = nowIso();
+      saveTasksFile(fp, data);
+    }
+    return { type: 'tasksData', tasks: data.tasks };
+  }
+
+  return null;
+}
+
 function getWebviewHtml(panel, extensionUri) {
   const webviewDir = vscode.Uri.joinPath(extensionUri, 'webview');
   const styleUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'style.css'));
@@ -57,6 +180,7 @@ function getWebviewHtml(panel, extensionUri) {
   <div id="app">
     <div id="tab-bar">
       <button class="tab-btn active" data-tab="agent">Agent</button>
+      <button class="tab-btn" data-tab="tasks">Tasks</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
     </div>
 
@@ -149,6 +273,11 @@ function getWebviewHtml(panel, extensionUri) {
     </div>
     </div><!-- /tab-agent -->
 
+    <div id="tab-tasks" class="tab-hidden">
+      <div id="kanban-board" class="kanban-board"></div>
+      <div id="task-detail" class="task-detail" style="display:none"></div>
+    </div><!-- /tab-tasks -->
+
     <div id="tab-mcp" class="tab-hidden">
       <div class="mcp-container">
         <div class="mcp-section">
@@ -234,6 +363,7 @@ function activate(context) {
       repoRoot,
       postMessage,
       initialConfig: panelConfig,
+      extensionPath: context.extensionUri.fsPath,
     });
     // Initialize MCP servers from disk
     session.setMcpServers(loadMergedMcpServers(repoRoot));
@@ -251,15 +381,17 @@ function activate(context) {
           return;
         }
         if (msg.type === 'mcpServersChanged') {
-          const scope = msg.scope; // 'global' or 'project'
-          const servers = msg.servers; // full server object for that scope
+          const scope = msg.scope;
+          const servers = msg.servers;
           const filePath = scope === 'global' ? globalMcpPath() : projectMcpPath(repoRoot);
           saveMcpFile(filePath, servers);
-          // Update session with merged enabled servers
           const mcpData = loadMergedMcpServers(repoRoot);
           session.setMcpServers(mcpData);
           return;
         }
+        // Task CRUD messages
+        const taskReply = handleTaskMessage(msg, repoRoot);
+        if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
         session.handleMessage(msg);
       },
       undefined,
@@ -308,6 +440,7 @@ function activate(context) {
         repoRoot,
         postMessage,
         initialConfig: panelConfig,
+        extensionPath: context.extensionUri.fsPath,
       });
       session.setMcpServers(loadMergedMcpServers(repoRoot));
 
@@ -327,6 +460,9 @@ function activate(context) {
             session.setMcpServers(mcpData);
             return;
           }
+          // Task CRUD messages
+          const taskReply = handleTaskMessage(msg, repoRoot);
+          if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
           if (msg.type === 'ready') {
             const mcpData = loadMergedMcpServers(repoRoot);
             panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData });

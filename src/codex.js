@@ -50,16 +50,18 @@ function buildCodexArgs(manifest, loop) {
 
   // Pass MCP servers via -c config overrides (prefer role-specific, fall back to shared)
   const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};
+  // Escape backslashes for TOML string values (Windows paths)
+  const tomlEsc = (s) => s.replace(/\\/g, '\\\\');
   for (const [name, server] of Object.entries(controllerMcp)) {
     if (!server || !server.command) continue;
-    args.push('-c', `mcp_servers.${name}.command="${server.command}"`);
+    args.push('-c', `mcp_servers.${name}.command="${tomlEsc(server.command)}"`);
     if (Array.isArray(server.args) && server.args.length > 0) {
-      const argsToml = `[${server.args.map(a => `"${a}"`).join(', ')}]`;
+      const argsToml = `[${server.args.map(a => `"${tomlEsc(a)}"`).join(', ')}]`;
       args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
     }
     if (server.env && typeof server.env === 'object') {
       for (const [key, val] of Object.entries(server.env)) {
-        args.push('-c', `mcp_servers.${name}.env.${key}="${val}"`);
+        args.push('-c', `mcp_servers.${name}.env.${key}="${tomlEsc(val)}"`);
       }
     }
     args.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
