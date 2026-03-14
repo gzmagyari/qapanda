@@ -106,7 +106,7 @@ test('controller delegates to Claude, reviews, delegates again, then stops', asy
   assert.match(first.stdout, /Launching Claude Code with: "Please fix all issues in this repository such that all unit tests pass\."/);
   assert.match(first.stdout, /I will start fixing the issues\./);
   assert.match(first.stdout, /Let me review the work that was done\./);
-  assert.match(first.stdout, /Launching Claude Code with the same session with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
+  assert.match(first.stdout, /Launching Claude Code \(same session\) with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
   assert.match(first.stdout, /All unit tests passing\. The task has been completed\. Waiting for next user instruction\./);
   assert.match(first.stdout, /STOP/);
 

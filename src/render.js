@@ -308,10 +308,11 @@ class Renderer {
     this.line('Claude code', text, color.claude);
   }
 
-  launchClaude(prompt, sameSession) {
+  launchClaude(prompt, sameSession, agentId) {
+    const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
     const prefix = sameSession
-      ? 'Launching Claude Code with the same session with: '
-      : 'Launching Claude Code with: ';
+      ? `Launching Claude Code${agentLabel} (same session) with: `
+      : `Launching Claude Code${agentLabel} with: `;
     this.controller(`${prefix}"${truncate(prompt, 400)}"`);
   }
 

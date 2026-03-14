@@ -80,11 +80,29 @@ class SessionManager {
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
     this._extensionPath = options.extensionPath || '';
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
+    this._agentsData = { global: {}, project: {} }; // Set via setAgents() from extension.js
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
   setMcpServers(mcpData) {
     this._mcpData = mcpData || { global: {}, project: {} };
+  }
+
+  /** Update the agents data (both scopes). Called from extension.js. */
+  setAgents(agentsData) {
+    this._agentsData = agentsData || { global: {}, project: {} };
+  }
+
+  /** Return enabled agents merged from global + project. */
+  _enabledAgents() {
+    const result = {};
+    const all = { ...this._agentsData.global, ...this._agentsData.project };
+    for (const [id, agent] of Object.entries(all)) {
+      if (agent && agent.enabled !== false) {
+        result[id] = agent;
+      }
+    }
+    return result;
   }
 
   /** Return servers visible to a given role, stripped of the target field. */
@@ -801,6 +819,8 @@ class SessionManager {
     const workerMcp = this._mcpServersForRole('worker');
     if (Object.keys(controllerMcp).length > 0) opts.controllerMcpServers = controllerMcp;
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
+    const agents = this._enabledAgents();
+    if (Object.keys(agents).length > 0) opts.agents = agents;
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
       if (this._controllerCli !== 'claude') {
@@ -838,13 +858,16 @@ class SessionManager {
     this._postMessage({ type: 'syncConfig', config: this._getConfig() });
   }
 
-  /** Sync current MCP server config into the active manifest before each run. */
+  /** Sync current MCP server config and agents into the active manifest before each run. */
   _syncMcpToManifest() {
     if (!this._activeManifest) return;
     const controllerMcp = this._mcpServersForRole('controller');
     const workerMcp = this._mcpServersForRole('worker');
     this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
     this._activeManifest.workerMcpServers = Object.keys(workerMcp).length > 0 ? workerMcp : null;
+    // Sync enabled agents
+    this._activeManifest.agents = this._enabledAgents();
+    if (!this._activeManifest.worker.agentSessions) this._activeManifest.worker.agentSessions = {};
   }
 
   async _runDirectWorker(userMessage) {

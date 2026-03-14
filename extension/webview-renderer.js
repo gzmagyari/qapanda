@@ -85,11 +85,12 @@ class WebviewRenderer {
     }
   }
 
-  launchClaude(prompt, sameSession) {
+  launchClaude(prompt, sameSession, agentId) {
     this.flushStream();
+    const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
     const prefix = sameSession
-      ? 'Launching Claude Code with the same session with: '
-      : 'Launching Claude Code with: ';
+      ? `Launching Claude Code${agentLabel} (same session) with: `
+      : `Launching Claude Code${agentLabel} with: `;
     this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: this.controllerLabel });
   }
 

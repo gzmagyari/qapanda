@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
+const { globalAgentsPath, projectAgentsPath, loadAgentsFile, saveAgentsFile, loadMergedAgents } = require('./agents-store');
 
 const activePanels = new Set();
 
@@ -160,6 +161,19 @@ function handleTaskMessage(msg, repoRoot) {
   return null;
 }
 
+function handleAgentMessage(msg, repoRoot) {
+  if (msg.type === 'agentsLoad') {
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot) };
+  }
+  if (msg.type === 'agentSave') {
+    const scope = msg.scope; // 'global' or 'project'
+    const filePath = scope === 'global' ? globalAgentsPath() : projectAgentsPath(repoRoot);
+    saveAgentsFile(filePath, msg.agents);
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot) };
+  }
+  return null;
+}
+
 function getWebviewHtml(panel, extensionUri) {
   const webviewDir = vscode.Uri.joinPath(extensionUri, 'webview');
   const styleUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'style.css'));
@@ -181,6 +195,7 @@ function getWebviewHtml(panel, extensionUri) {
     <div id="tab-bar">
       <button class="tab-btn active" data-tab="agent">Agent</button>
       <button class="tab-btn" data-tab="tasks">Tasks</button>
+      <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
     </div>
 
@@ -278,6 +293,27 @@ function getWebviewHtml(panel, extensionUri) {
       <div id="task-detail" class="task-detail" style="display:none"></div>
     </div><!-- /tab-tasks -->
 
+    <div id="tab-agents" class="tab-hidden">
+      <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Global Agents</h3>
+            <span class="mcp-section-path">~/.cc-manager/agents.json</span>
+            <button class="agent-add-btn" data-scope="global">+ Add</button>
+          </div>
+          <div id="agent-list-global" class="mcp-list"></div>
+        </div>
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Project Agents</h3>
+            <span class="mcp-section-path">.cc-manager/agents.json</span>
+            <button class="agent-add-btn" data-scope="project">+ Add</button>
+          </div>
+          <div id="agent-list-project" class="mcp-list"></div>
+        </div>
+      </div>
+    </div><!-- /tab-agents -->
+
     <div id="tab-mcp" class="tab-hidden">
       <div class="mcp-container">
         <div class="mcp-section">
@@ -365,8 +401,9 @@ function activate(context) {
       initialConfig: panelConfig,
       extensionPath: context.extensionUri.fsPath,
     });
-    // Initialize MCP servers from disk
+    // Initialize MCP servers and agents from disk
     session.setMcpServers(loadMergedMcpServers(repoRoot));
+    session.setAgents(loadMergedAgents(repoRoot));
 
     panel.webview.onDidReceiveMessage(
       (msg) => {
@@ -377,7 +414,8 @@ function activate(context) {
         }
         if (msg.type === 'ready') {
           const mcpData = loadMergedMcpServers(repoRoot);
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData });
+          const agentsData = loadMergedAgents(repoRoot);
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData });
           return;
         }
         if (msg.type === 'mcpServersChanged') {
@@ -392,6 +430,13 @@ function activate(context) {
         // Task CRUD messages
         const taskReply = handleTaskMessage(msg, repoRoot);
         if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+        // Agent CRUD messages
+        const agentReply = handleAgentMessage(msg, repoRoot);
+        if (agentReply) {
+          try { panel.webview.postMessage(agentReply); } catch {}
+          session.setAgents(loadMergedAgents(repoRoot));
+          return;
+        }
         session.handleMessage(msg);
       },
       undefined,
@@ -443,6 +488,7 @@ function activate(context) {
         extensionPath: context.extensionUri.fsPath,
       });
       session.setMcpServers(loadMergedMcpServers(repoRoot));
+      session.setAgents(loadMergedAgents(repoRoot));
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
@@ -463,9 +509,17 @@ function activate(context) {
           // Task CRUD messages
           const taskReply = handleTaskMessage(msg, repoRoot);
           if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+          // Agent CRUD messages
+          const agentReply = handleAgentMessage(msg, repoRoot);
+          if (agentReply) {
+            try { panel.webview.postMessage(agentReply); } catch {}
+            session.setAgents(loadMergedAgents(repoRoot));
+            return;
+          }
           if (msg.type === 'ready') {
             const mcpData = loadMergedMcpServers(repoRoot);
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData });
+            const agentsData = loadMergedAgents(repoRoot);
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData });
             // Reattach to saved run if the webview had one before reload
             const runId = msg.runId || savedRunId;
             if (runId) {

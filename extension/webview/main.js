@@ -14,6 +14,7 @@
   const tabPanels = {
     agent: document.getElementById('tab-agent'),
     tasks: document.getElementById('tab-tasks'),
+    agents: document.getElementById('tab-agents'),
     mcp: document.getElementById('tab-mcp'),
   };
 
@@ -28,6 +29,7 @@
       else el.classList.add('tab-hidden');
     }
     if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
+    if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
   });
 
   // ── MCP Server Management ─────────────────────────────────────────
@@ -237,6 +239,161 @@
       const scope = btn.dataset.scope;
       mcpEditingForm = { scope, name: null };
       renderMcpList(scope);
+    });
+  });
+
+  // ── Agents Management ──────────────────────────────────────────────
+  let agentsGlobal = {};
+  let agentsProject = {};
+  let agentEditingForm = null; // { scope, id } or null
+
+  function renderAgentList(scope) {
+    const listEl = document.getElementById('agent-list-' + scope);
+    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    listEl.innerHTML = '';
+
+    const ids = Object.keys(agents);
+    if (ids.length === 0 && !(agentEditingForm && agentEditingForm.scope === scope && !agentEditingForm.id)) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.textContent = 'No agents configured';
+      listEl.appendChild(empty);
+    }
+
+    if (agentEditingForm && agentEditingForm.scope === scope && !agentEditingForm.id) {
+      listEl.appendChild(createAgentForm(scope, null));
+    }
+
+    for (const id of ids) {
+      const agent = agents[id];
+      if (agentEditingForm && agentEditingForm.scope === scope && agentEditingForm.id === id) {
+        listEl.appendChild(createAgentForm(scope, id));
+        continue;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'mcp-card' + (agent.enabled === false ? ' mcp-disabled' : '');
+
+      const header = document.createElement('div');
+      header.className = 'mcp-card-header';
+
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = agent.enabled !== false;
+      toggle.className = 'mcp-toggle';
+      toggle.style.accentColor = 'var(--vscode-focusBorder, #007fd4)';
+      toggle.style.cursor = 'pointer';
+      toggle.addEventListener('change', () => {
+        agent.enabled = toggle.checked;
+        notifyAgentChanged(scope);
+        renderAgentList(scope);
+      });
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'mcp-name';
+      nameEl.textContent = (agent.name || id) + ' (' + id + ')';
+
+      const actions = document.createElement('span');
+      actions.className = 'mcp-actions';
+      const editBtn = document.createElement('button');
+      editBtn.className = 'mcp-btn';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
+      const delBtn = document.createElement('button');
+      delBtn.className = 'mcp-btn mcp-btn-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => { delete agents[id]; notifyAgentChanged(scope); renderAgentList(scope); });
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+
+      header.appendChild(toggle);
+      header.appendChild(nameEl);
+      header.appendChild(actions);
+
+      const details = document.createElement('div');
+      details.className = 'mcp-card-details';
+      if (agent.description) {
+        details.innerHTML = escapeHtml(agent.description);
+      } else {
+        details.innerHTML = '<em style="opacity:0.5">No description</em>';
+      }
+      if (agent.system_prompt) details.innerHTML += '<br><span class="mcp-detail-label">Prompt:</span> ' + escapeHtml(agent.system_prompt.slice(0, 80)) + (agent.system_prompt.length > 80 ? '...' : '');
+      const mcpCount = Object.keys(agent.mcps || {}).length;
+      if (mcpCount) details.innerHTML += '<br><span class="mcp-detail-label">MCPs:</span> ' + mcpCount + ' server' + (mcpCount > 1 ? 's' : '');
+
+      card.appendChild(header);
+      card.appendChild(details);
+      listEl.appendChild(card);
+    }
+  }
+
+  function createAgentForm(scope, editId) {
+    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    const existing = editId ? agents[editId] : null;
+
+    const form = document.createElement('div');
+    form.className = 'mcp-form';
+
+    const mcpsJson = existing && existing.mcps && Object.keys(existing.mcps).length > 0
+      ? JSON.stringify(existing.mcps, null, 2) : '';
+
+    form.innerHTML =
+      '<div class="agent-form-row"><label>ID</label><input class="mcp-input" id="agent-f-id" value="' + escapeHtml(editId || '') + '" ' + (editId ? 'disabled' : '') + ' placeholder="unique-id (e.g. qa, dev)"></div>' +
+      '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="agent-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
+      '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
+      '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt appended to the default worker prompt (NOT visible to controller)">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
+      '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
+      '<div id="agent-f-error" class="mcp-form-error"></div>' +
+      '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="agent-f-save">Save</button><button class="mcp-btn" id="agent-f-cancel">Cancel</button></div>';
+
+    setTimeout(() => {
+      document.getElementById('agent-f-save').addEventListener('click', () => saveAgentForm(scope, editId));
+      document.getElementById('agent-f-cancel').addEventListener('click', () => { agentEditingForm = null; renderAgentList(scope); });
+    }, 0);
+
+    return form;
+  }
+
+  function saveAgentForm(scope, editId) {
+    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    const id = (document.getElementById('agent-f-id').value || '').trim();
+    const name = (document.getElementById('agent-f-name').value || '').trim();
+    const description = (document.getElementById('agent-f-desc').value || '').trim();
+    const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
+    const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
+    const errorEl = document.getElementById('agent-f-error');
+
+    if (!id) { if (errorEl) errorEl.textContent = 'ID is required'; return; }
+    if (id === 'default') { if (errorEl) errorEl.textContent = '"default" is reserved'; return; }
+
+    let mcps = {};
+    if (mcpsText) {
+      try {
+        mcps = parseMcpJson(mcpsText);
+      } catch (e) {
+        if (errorEl) errorEl.textContent = 'MCPs JSON error: ' + e.message;
+        return;
+      }
+    }
+
+    if (editId && editId !== id) delete agents[editId];
+    const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
+    agents[id] = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
+
+    agentEditingForm = null;
+    notifyAgentChanged(scope);
+    renderAgentList(scope);
+  }
+
+  function notifyAgentChanged(scope) {
+    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    vscode.postMessage({ type: 'agentSave', scope, agents });
+  }
+
+  document.querySelectorAll('.agent-add-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      agentEditingForm = { scope: btn.dataset.scope, id: null };
+      renderAgentList(btn.dataset.scope);
     });
   });
 
@@ -959,7 +1116,22 @@
         renderMcpList('global');
         renderMcpList('project');
       }
+      if (msg.agents) {
+        agentsGlobal = msg.agents.global || {};
+        agentsProject = msg.agents.project || {};
+        renderAgentList('global');
+        renderAgentList('project');
+      }
       saveState();
+    },
+
+    agentsData(msg) {
+      if (msg.agents) {
+        agentsGlobal = msg.agents.global || {};
+        agentsProject = msg.agents.project || {};
+        renderAgentList('global');
+        renderAgentList('project');
+      }
     },
 
     syncConfig(msg) {

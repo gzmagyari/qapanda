@@ -1,9 +1,19 @@
+const crypto = require('node:crypto');
 const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
-const { buildDefaultWorkerAppendSystemPrompt } = require('./prompts');
+const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 
-function buildClaudeArgs(manifest) {
+/**
+ * @param {object} manifest
+ * @param {object} [options]
+ * @param {object} [options.agentConfig] - Agent config (system_prompt, mcps)
+ * @param {object} [options.agentSession] - { sessionId, hasStarted }
+ */
+function buildClaudeArgs(manifest, options = {}) {
+  const agentConfig = options.agentConfig || null;
+  const agentSession = options.agentSession || null;
+
   const args = [
     '-p',
     '--output-format',
@@ -13,10 +23,12 @@ function buildClaudeArgs(manifest) {
     '--dangerously-skip-permissions',
   ];
 
-  if (manifest.worker.hasStarted) {
-    args.push('--resume', manifest.worker.sessionId);
+  // Use agent-specific session if provided, otherwise default worker session
+  const session = agentSession || manifest.worker;
+  if (session.hasStarted) {
+    args.push('--resume', session.sessionId);
   } else {
-    args.push('--session-id', manifest.worker.sessionId);
+    args.push('--session-id', session.sessionId);
   }
 
   if (manifest.worker.model) {
@@ -51,13 +63,19 @@ function buildClaudeArgs(manifest) {
     args.push('--add-dir', dir);
   }
 
-  const appendSystemPrompt = manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt();
+  // System prompt: agent-specific or default
+  const appendSystemPrompt = agentConfig
+    ? buildAgentWorkerSystemPrompt(agentConfig)
+    : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
   if (appendSystemPrompt) {
     args.push('--append-system-prompt', appendSystemPrompt);
   }
 
   // Pass MCP servers via --mcp-config with inline JSON (prefer role-specific, fall back to shared)
-  const mcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  // Merge agent-specific MCPs on top of base worker MCPs
+  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  const agentMcps = (agentConfig && agentConfig.mcps) || {};
+  const mcpServers = { ...baseMcpServers, ...agentMcps };
   if (Object.keys(mcpServers).length > 0) {
     const mcpConfig = { mcpServers: {} };
     for (const [name, server] of Object.entries(mcpServers)) {
@@ -80,15 +98,33 @@ function buildClaudeArgs(manifest) {
   return args;
 }
 
-async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal }) {
+async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
   await writeText(workerRecord.promptFile, `${prompt}\n`);
-  const args = buildClaudeArgs(manifest);
+
+  // Resolve agent config and session
+  const isCustomAgent = agentId && agentId !== 'default';
+  let agentConfig = null;
+  let agentSession = null;
+
+  if (isCustomAgent) {
+    agentConfig = (manifest.agents || {})[agentId] || null;
+    if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
+    if (!manifest.worker.agentSessions[agentId]) {
+      manifest.worker.agentSessions[agentId] = {
+        sessionId: crypto.randomUUID(),
+        hasStarted: false,
+      };
+    }
+    agentSession = manifest.worker.agentSessions[agentId];
+  }
+
+  const args = buildClaudeArgs(manifest, { agentConfig, agentSession });
 
   let accumulatedText = '';
   let lastAssistantMessage = '';
   let finalResultText = '';
   let finalEvent = null;
-  let discoveredSessionId = manifest.worker.sessionId;
+  let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let sawTextDelta = false;
 
   const result = await spawnStreamingProcess({
@@ -166,8 +202,13 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
 
   if (result.aborted) {
     // Mark session as started so resume uses --resume instead of --session-id
-    manifest.worker.sessionId = discoveredSessionId;
-    manifest.worker.hasStarted = true;
+    if (agentSession) {
+      agentSession.sessionId = discoveredSessionId;
+      agentSession.hasStarted = true;
+    } else {
+      manifest.worker.sessionId = discoveredSessionId;
+      manifest.worker.hasStarted = true;
+    }
     throw new Error('Claude Code process was interrupted.');
   }
 
@@ -175,8 +216,14 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     finalResultText = lastAssistantMessage || accumulatedText || '';
   }
 
-  manifest.worker.sessionId = discoveredSessionId;
-  manifest.worker.hasStarted = true;
+  // Update the correct session
+  if (agentSession) {
+    agentSession.sessionId = discoveredSessionId;
+    agentSession.hasStarted = true;
+  } else {
+    manifest.worker.sessionId = discoveredSessionId;
+    manifest.worker.hasStarted = true;
+  }
 
   workerRecord.exitCode = result.code;
   workerRecord.resultText = finalResultText;

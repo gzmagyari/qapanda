@@ -131,6 +131,7 @@ function normalizeRunOptions(options = {}) {
     mcpServers: options.mcpServers || {},
     controllerMcpServers: options.controllerMcpServers || null,
     workerMcpServers: options.workerMcpServers || null,
+    agents: options.agents || {},
   };
 }
 
@@ -170,11 +171,13 @@ async function prepareNewRun(initialMessage, options = {}) {
     worker: {
       ...normalized.worker,
       hasStarted: false,
+      agentSessions: {},
     },
     settings: normalized.settings,
     mcpServers: normalized.mcpServers || {},
     controllerMcpServers: normalized.controllerMcpServers || null,
     workerMcpServers: normalized.workerMcpServers || null,
+    agents: normalized.agents || {},
     counters: {
       request: 0,
       loop: 0,

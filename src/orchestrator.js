@@ -217,7 +217,8 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       manifest.phase = 'worker';
       await saveManifest(manifest);
 
-      renderer.launchClaude(controllerResult.decision.claude_message, manifest.worker.hasStarted);
+      const delegateAgentId = controllerResult.decision.agent_id || null;
+      renderer.launchClaude(controllerResult.decision.claude_message, manifest.worker.hasStarted, delegateAgentId);
       await emitEvent(
         manifest,
         {
@@ -237,6 +238,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         loop,
         workerRecord,
         prompt: controllerResult.decision.claude_message,
+        agentId: controllerResult.decision.agent_id || null,
         renderer,
         abortSignal: signalController.signal,
         emitEvent: async (event) => {

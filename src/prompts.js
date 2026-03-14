@@ -207,6 +207,7 @@ function buildControllerPrompt(manifest, request) {
     '',
     'Return JSON ONLY with these fields:',
     '- action: "delegate" or "stop"',
+    '- agent_id: which worker agent to delegate to (null or "default" for the default worker, or a custom agent id). Always include this field.',
     '- controller_messages: array of short strings shown to the user in chat (visible conversation)',
     '- claude_message: a non-empty string when action is delegate, otherwise null',
     '- stop_reason: a short string or null',
@@ -220,9 +221,28 @@ function buildControllerPrompt(manifest, request) {
       : null,
     loadCcManagerMd(manifest.repoRoot),
     buildWorkflowSection(manifest.repoRoot),
+    buildAgentsSection(manifest),
     '',
     'Now decide the next step. Return JSON only.',
   ].filter(Boolean).join('\n');
+}
+
+function buildAgentsSection(manifest) {
+  const agents = manifest.agents;
+  if (!agents || Object.keys(agents).length === 0) return null;
+
+  const lines = [
+    'Available worker agents (use agent_id in your JSON response to target a specific agent):',
+    '- "default": The default Claude Code worker (no special configuration)',
+  ];
+  for (const [id, agent] of Object.entries(agents)) {
+    const name = agent.name || id;
+    const desc = agent.description ? ` — ${agent.description}` : '';
+    lines.push(`- "${id}": ${name}${desc}`);
+  }
+  lines.push('');
+  lines.push('Set agent_id to the agent you want to delegate to, or null/"default" for the default worker.');
+  return lines.join('\n');
 }
 
 function buildDefaultWorkerAppendSystemPrompt() {
@@ -237,7 +257,14 @@ function buildDefaultWorkerAppendSystemPrompt() {
   ].join(' ');
 }
 
+function buildAgentWorkerSystemPrompt(agentConfig) {
+  const base = buildDefaultWorkerAppendSystemPrompt();
+  if (!agentConfig || !agentConfig.system_prompt) return base;
+  return base + '\n\n' + agentConfig.system_prompt;
+}
+
 module.exports = {
+  buildAgentWorkerSystemPrompt,
   buildControllerPrompt,
   buildDefaultWorkerAppendSystemPrompt,
   loadWorkflows,

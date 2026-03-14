@@ -12,6 +12,9 @@ const controllerDecisionSchema = {
       type: 'array',
       items: { type: 'string' },
     },
+    agent_id: {
+      type: ['string', 'null'],
+    },
     claude_message: {
       type: ['string', 'null'],
     },
@@ -23,7 +26,7 @@ const controllerDecisionSchema = {
       items: { type: 'string' },
     },
   },
-  required: ['action', 'controller_messages', 'claude_message', 'stop_reason', 'progress_updates'],
+  required: ['action', 'agent_id', 'controller_messages', 'claude_message', 'stop_reason', 'progress_updates'],
   additionalProperties: false,
 };
 
@@ -78,8 +81,14 @@ function validateControllerDecision(value) {
     }
   }
 
+  // agent_id: optional, defaults to null (= default worker)
+  const agentId = (value.agent_id != null && typeof value.agent_id === 'string' && value.agent_id.trim())
+    ? value.agent_id.trim()
+    : null;
+
   return {
     action,
+    agent_id: agentId,
     controller_messages: controllerMessages,
     claude_message: action === 'delegate' ? value.claude_message.trim() : null,
     stop_reason: value.stop_reason == null ? null : String(value.stop_reason).trim(),
