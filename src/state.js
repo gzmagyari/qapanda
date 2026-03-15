@@ -133,6 +133,7 @@ function normalizeRunOptions(options = {}) {
     controllerMcpServers: options.controllerMcpServers || null,
     workerMcpServers: options.workerMcpServers || null,
     agents: options.agents || {},
+    panelId: options.panelId || null,
   };
 }
 
@@ -179,6 +180,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     controllerMcpServers: normalized.controllerMcpServers || null,
     workerMcpServers: normalized.workerMcpServers || null,
     agents: normalized.agents || {},
+    panelId: normalized.panelId || null,
     counters: {
       request: 0,
       loop: 0,

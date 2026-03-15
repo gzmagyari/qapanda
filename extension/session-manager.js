@@ -62,6 +62,7 @@ class SessionManager {
     this._renderer = renderer;
     this._repoRoot = options.repoRoot || process.cwd();
     this._stateRoot = options.stateRoot || defaultStateRoot(this._repoRoot);
+    this._panelId = require('node:crypto').randomUUID();
     this._runOptions = options.runOptions || {};
     this._activeManifest = null;
     this._abortController = null;
@@ -480,6 +481,7 @@ class SessionManager {
     // Plain text: start or continue a run — cancel any pending timer
     this._clearWaitTimer();
     try {
+
       if (!this._activeManifest) {
         this._activeManifest = await prepareNewRun(text, this._buildNewRunOpts());
         this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
@@ -644,6 +646,7 @@ class SessionManager {
         return;
       }
       this._clearWaitTimer();
+
       this._activeManifest = await prepareNewRun(rest, this._buildNewRunOpts());
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       this._renderer.requestStarted(this._activeManifest.runId);
@@ -803,6 +806,7 @@ class SessionManager {
       const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}\n\nFull workflow instructions:\n${content}`;
       this._clearWaitTimer();
       try {
+  
         if (!this._activeManifest) {
           this._activeManifest = await prepareNewRun(message, this._buildNewRunOpts());
           this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
@@ -832,6 +836,7 @@ class SessionManager {
       ...this._runOptions,
       repoRoot: this._repoRoot,
       stateRoot: this._stateRoot,
+      panelId: this._panelId,
     };
     if (this._controllerCli) opts.controllerCli = this._controllerCli;
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;

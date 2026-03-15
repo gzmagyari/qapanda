@@ -4,6 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
+const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
 
 /**
  * @param {object} manifest
@@ -120,7 +121,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     agentSession = manifest.worker.agentSessions[agentId];
   }
 
-  const args = buildClaudeArgs(manifest, { agentConfig, agentSession });
+  let args = buildClaudeArgs(manifest, { agentConfig, agentSession });
 
   let accumulatedText = '';
   let lastAssistantMessage = '';
@@ -133,6 +134,19 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabelFor(workerBin);
+
+  // Ensure remote desktop is running and inject --remote-port for qa-remote-* backends
+  if (isRemoteCli(workerBin)) {
+    const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    if (desktop) {
+      if (desktop.isNew) {
+        renderer.banner(`Desktop container started (API port ${desktop.apiPort})`);
+      }
+      args = injectRemotePort(workerBin, args, desktop);
+    } else {
+      renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
+    }
+  }
 
   // Per-agent thinking: override CLAUDE_CODE_EFFORT_LEVEL if agent specifies it
   let spawnEnv = process.env;

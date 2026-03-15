@@ -4,6 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
+const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
 
@@ -109,7 +110,20 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabel;
 
-  const args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession });
+  // Ensure remote desktop is running and inject --remote-port for qa-remote-* backends
+  let desktop = null;
+  if (isRemoteCli(workerBin)) {
+    desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    if (desktop) {
+      if (desktop.isNew) {
+        renderer.banner(`Desktop container started (API port ${desktop.apiPort})`);
+      }
+    } else {
+      renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
+    }
+  }
+
+  const args = injectRemotePort(workerBin, buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession }), desktop);
   const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
 
   await writeText(workerRecord.promptFile, `${stdinText}\n`);
