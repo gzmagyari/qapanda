@@ -318,6 +318,7 @@
         details.innerHTML = '<em style="opacity:0.5">No description</em>';
       }
       if (agent.system_prompt) details.innerHTML += '<br><span class="mcp-detail-label">Prompt:</span> ' + escapeHtml(agent.system_prompt.slice(0, 80)) + (agent.system_prompt.length > 80 ? '...' : '');
+      if (agent.cli) details.innerHTML += '<br><span class="mcp-detail-label">CLI:</span> ' + escapeHtml(agent.cli);
       const mcpCount = Object.keys(agent.mcps || {}).length;
       if (mcpCount) details.innerHTML += '<br><span class="mcp-detail-label">MCPs:</span> ' + mcpCount + ' server' + (mcpCount > 1 ? 's' : '');
 
@@ -337,10 +338,18 @@
     const mcpsJson = existing && existing.mcps && Object.keys(existing.mcps).length > 0
       ? JSON.stringify(existing.mcps, null, 2) : '';
 
+    const existingCli = existing ? (existing.cli || '') : '';
+    const cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
+    const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
+    const cliSelectHtml = '<select class="mcp-input" id="agent-f-cli">' +
+      cliOptions.map(v => '<option value="' + v + '"' + (existingCli === v ? ' selected' : '') + '>' + cliLabels[v] + '</option>').join('') +
+      '</select>';
+
     form.innerHTML =
       '<div class="agent-form-row"><label>ID</label><input class="mcp-input" id="agent-f-id" value="' + escapeHtml(editId || '') + '" ' + (editId ? 'disabled' : '') + ' placeholder="unique-id (e.g. qa, dev)"></div>' +
       '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="agent-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
       '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
+      '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt appended to the default worker prompt (NOT visible to controller)">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
@@ -359,6 +368,7 @@
     const id = (document.getElementById('agent-f-id').value || '').trim();
     const name = (document.getElementById('agent-f-name').value || '').trim();
     const description = (document.getElementById('agent-f-desc').value || '').trim();
+    const cli = (document.getElementById('agent-f-cli') ? document.getElementById('agent-f-cli').value : '') || null;
     const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
     const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
     const errorEl = document.getElementById('agent-f-error');
@@ -378,7 +388,9 @@
 
     if (editId && editId !== id) delete agents[editId];
     const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
-    agents[id] = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
+    const agentData = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
+    if (cli) agentData.cli = cli;
+    agents[id] = agentData;
 
     agentEditingForm = null;
     notifyAgentChanged(scope);
@@ -645,6 +657,7 @@
   const cfgWorkerThinking = document.getElementById('cfg-worker-thinking');
   const cfgChatTarget = document.getElementById('cfg-chat-target');
   const cfgControllerCli = document.getElementById('cfg-controller-cli');
+  const cfgWorkerCli = document.getElementById('cfg-worker-cli');
   const cfgWaitDelay = document.getElementById('cfg-wait-delay');
 
   // ── Persisted state ─────────────────────────────────────────────────
@@ -709,29 +722,78 @@
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
       chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
+      workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'claude',
     };
   }
 
   function setConfig(config) {
     if (!config) return;
+    // Set CLI selectors first so updateControllerDropdowns repopulates with the right option sets
+    if (config.controllerCli !== undefined && cfgControllerCli) cfgControllerCli.value = config.controllerCli;
+    if (config.workerCli !== undefined && cfgWorkerCli) cfgWorkerCli.value = config.workerCli;
+    // Repopulate model/thinking options based on selected CLIs, preserving current values where possible
+    updateControllerDropdowns();
+    // Now set the model/thinking values (options exist after repopulate)
     if (config.controllerModel !== undefined) cfgControllerModel.value = config.controllerModel;
     if (config.workerModel !== undefined) cfgWorkerModel.value = config.workerModel;
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
     if (config.chatTarget !== undefined && cfgChatTarget) cfgChatTarget.value = config.chatTarget;
-    if (config.controllerCli !== undefined && cfgControllerCli) cfgControllerCli.value = config.controllerCli;
-    updateControllerDropdowns();
+  }
+
+  const CODEX_MODELS = [
+    { value: '', label: 'Model: default' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Spark' },
+    { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  ];
+  const CODEX_THINKING = [
+    { value: '', label: 'Thinking: default' },
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra High' },
+  ];
+  const CLAUDE_MODELS = [
+    { value: '', label: 'Model: default' },
+    { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+    { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  ];
+  const CLAUDE_THINKING = [
+    { value: '', label: 'Thinking: default' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+  ];
+
+  function repopulateSelect(el, options, currentValue) {
+    if (!el) return;
+    el.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+    // Restore previous value if it still exists, otherwise default to ''
+    if (currentValue && options.some(o => o.value === currentValue)) {
+      el.value = currentValue;
+    } else {
+      el.value = '';
+    }
   }
 
   function updateControllerDropdowns() {
-    const isClaude = cfgControllerCli && cfgControllerCli.value === 'claude';
-    cfgControllerModel.disabled = isClaude;
-    cfgControllerThinking.disabled = isClaude;
-    if (isClaude) {
-      cfgControllerModel.value = '';
-      cfgControllerThinking.value = '';
-    }
+    const controllerCli = cfgControllerCli ? cfgControllerCli.value : 'codex';
+    const workerCli = cfgWorkerCli ? cfgWorkerCli.value : 'claude';
+
+    const controllerModels = controllerCli === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
+    const controllerThinking = controllerCli === 'claude' ? CLAUDE_THINKING : CODEX_THINKING;
+    const workerModels = workerCli === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+    const workerThinking = workerCli === 'codex' ? CODEX_THINKING : CLAUDE_THINKING;
+
+    repopulateSelect(cfgControllerModel, controllerModels, cfgControllerModel ? cfgControllerModel.value : '');
+    repopulateSelect(cfgControllerThinking, controllerThinking, cfgControllerThinking ? cfgControllerThinking.value : '');
+    repopulateSelect(cfgWorkerModel, workerModels, cfgWorkerModel ? cfgWorkerModel.value : '');
+    repopulateSelect(cfgWorkerThinking, workerThinking, cfgWorkerThinking ? cfgWorkerThinking.value : '');
   }
 
   function onConfigChange() {
@@ -748,6 +810,7 @@
   if (cfgWaitDelay) cfgWaitDelay.addEventListener('change', onConfigChange);
   if (cfgChatTarget) cfgChatTarget.addEventListener('change', onConfigChange);
   if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
+  if (cfgWorkerCli) cfgWorkerCli.addEventListener('change', onConfigChange);
 
   let currentActor = null;
   let currentSection = null;
@@ -983,7 +1046,7 @@
 
   function streamLine(label, text) {
     hideThinking();
-    const role = label || 'Claude code';
+    const role = label || 'Worker';
     ensureSection(role);
 
     if (!streamingEntry) {
@@ -1017,7 +1080,7 @@
 
     claude(msg) {
       streamingEntry = null;
-      addEntry('Claude code', renderInlineMarkdown(msg.text));
+      addEntry(msg.label || 'Worker', renderInlineMarkdown(msg.text));
     },
 
     shell(msg) {
@@ -1056,7 +1119,7 @@
 
     toolCall(msg) {
       streamingEntry = null;
-      addEntry(msg.label || 'Claude code', escapeHtml(msg.text), 'tool-call');
+      addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call');
     },
 
     stop(msg) {

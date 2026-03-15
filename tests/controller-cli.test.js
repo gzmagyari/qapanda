@@ -314,7 +314,7 @@ test('Claude-backed controller handles greeting and stops', async () => {
   assert.equal(result.code, 0, `stderr: ${result.stderr}\nstdout: ${result.stdout}`);
   assert.match(result.stdout, /Hi from Claude controller!/);
   assert.match(result.stdout, /STOP/);
-  assert.doesNotMatch(result.stdout, /Launching Claude Code/);
+  assert.doesNotMatch(result.stdout, /Launching Worker/);
 });
 
 test('Claude-backed controller delegates to worker then stops', async () => {
@@ -331,7 +331,7 @@ test('Claude-backed controller delegates to worker then stops', async () => {
 
   assert.equal(result.code, 0, `stderr: ${result.stderr}\nstdout: ${result.stdout}`);
   assert.match(result.stdout, /Claude controller delegating to worker/);
-  assert.match(result.stdout, /Launching Claude Code/);
+  assert.match(result.stdout, /Launching Worker/);
   assert.match(result.stdout, /Claude controller verified the fix/);
   assert.match(result.stdout, /STOP/);
 });

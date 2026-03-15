@@ -230,33 +230,25 @@ function getWebviewHtml(panel, extensionUri) {
         <label>Controller</label>
         <select id="cfg-controller-model">
           <option value="">Model: default</option>
-          <option value="gpt-5.4">GPT-5.4</option>
-          <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
-          <option value="gpt-5.3-codex-spark">GPT-5.3 Spark</option>
-          <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
         </select>
         <select id="cfg-controller-thinking">
           <option value="">Thinking: default</option>
-          <option value="minimal">Minimal</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="xhigh">Extra High</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>Worker CLI</label>
+        <select id="cfg-worker-cli">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
         </select>
       </div>
       <div class="config-group">
         <label>Worker</label>
         <select id="cfg-worker-model">
           <option value="">Model: default</option>
-          <option value="sonnet">Sonnet</option>
-          <option value="opus">Opus</option>
-          <option value="haiku">Haiku</option>
         </select>
         <select id="cfg-worker-thinking">
           <option value="">Thinking: default</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
         </select>
       </div>
       <div class="config-group">

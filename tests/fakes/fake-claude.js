@@ -47,8 +47,8 @@ function decideAsController(prompt) {
     };
   }
 
-  const latestClaudeResultMatch = prompt.match(/"latest_claude_result":\s*(null|"([\s\S]*?)")/);
-  const latestClaudeResult = latestClaudeResultMatch && latestClaudeResultMatch[2] ? latestClaudeResultMatch[2] : '';
+  const latestWorkerResultMatch = prompt.match(/"latest_worker_result":\s*(null|"([\s\S]*?)")/);
+  const latestClaudeResult = latestWorkerResultMatch && latestWorkerResultMatch[2] ? latestWorkerResultMatch[2] : '';
 
   if (latestClaudeResult.includes('All unit tests passing. All issues fixed')) {
     return {

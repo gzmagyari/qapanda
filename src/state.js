@@ -111,7 +111,8 @@ function normalizeRunOptions(options = {}) {
       extraInstructions: options.controllerExtraInstructions || null,
     },
     worker: {
-      bin: options.claudeBin || 'claude',
+      cli: options.workerCli || 'claude',
+      bin: options.workerCli || options.claudeBin || 'claude',
       model: options.workerModel || null,
       sessionId: options.workerSessionId || randomId(),
       allowedTools: options.workerAllowedTools || 'Bash,Read,Edit',

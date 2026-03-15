@@ -3,16 +3,29 @@ const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, s
 const { runControllerTurn: runCodexControllerTurn } = require('./codex');
 const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn } = require('./claude');
-const { controllerLabelFor } = require('./render');
+const { runCodexWorkerTurn } = require('./codex-worker');
+const { controllerLabelFor, workerLabelFor } = require('./render');
 
 function getControllerRunner(manifest) {
   if (manifest.controller.cli === 'claude') return runClaudeControllerTurn;
   return runCodexControllerTurn;
 }
 
+function getWorkerRunner(manifest, agentConfig) {
+  const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
+  if (cli === 'codex' || cli === 'qa-remote-codex') return runCodexWorkerTurn;
+  return runWorkerTurn;
+}
+
 function setControllerLabel(renderer, manifest) {
   if (renderer && manifest && manifest.controller) {
     renderer.controllerLabel = controllerLabelFor(manifest.controller.cli);
+  }
+}
+
+function setWorkerLabel(renderer, manifest) {
+  if (renderer && manifest && manifest.worker) {
+    renderer.workerLabel = workerLabelFor(manifest.worker.cli);
   }
 }
 
@@ -89,6 +102,7 @@ function getRunnableRequest(manifest) {
 
 async function runManagerLoop(manifest, renderer, options = {}) {
   setControllerLabel(renderer, manifest);
+  setWorkerLabel(renderer, manifest);
   const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
   let request = null;
 
@@ -218,7 +232,14 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       await saveManifest(manifest);
 
       const delegateAgentId = controllerResult.decision.agent_id || null;
-      renderer.launchClaude(controllerResult.decision.claude_message, manifest.worker.hasStarted, delegateAgentId);
+      const delegateAgentConfig = delegateAgentId && delegateAgentId !== 'default'
+        ? ((manifest.agents || {})[delegateAgentId] || null)
+        : null;
+      const delegateCli = (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli || 'claude';
+      const workerSameSession = delegateAgentId && delegateAgentId !== 'default'
+        ? !!((manifest.worker.agentSessions || {})[delegateAgentId] || {}).hasStarted
+        : manifest.worker.hasStarted;
+      renderer.launchClaude(controllerResult.decision.claude_message, workerSameSession, delegateAgentId, delegateCli);
       await emitEvent(
         manifest,
         {
@@ -226,13 +247,14 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           source: 'launch-claude',
           requestId: request.id,
           loopIndex: loop.index,
-          sameSession: manifest.worker.hasStarted,
+          sameSession: workerSameSession,
           prompt: controllerResult.decision.claude_message,
         },
         renderer,
       );
 
-      const workerResult = await runWorkerTurn({
+      const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
+      const workerResult = await runWorker({
         manifest,
         request,
         loop,

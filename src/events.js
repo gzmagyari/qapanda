@@ -138,6 +138,57 @@ function summarizeCodexEvent(raw) {
   return null;
 }
 
+/**
+ * Like summarizeCodexEvent but for worker turns — omits controller-specific
+ * lifecycle messages (session started, turn started/completed) that are noise
+ * in the worker context. Only surfaces tool activity, reasoning, and output.
+ */
+function summarizeCodexWorkerEvent(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  // Skip controller lifecycle noise — not meaningful for a worker turn
+  if (raw.type === 'thread.started') return null;
+  if (raw.type === 'turn.started') return null;
+  if (raw.type === 'turn.completed') return null;
+  if (raw.type === 'turn.failed') return null;
+
+  // Errors are still worth showing
+  if (raw.type === 'error') {
+    return { kind: 'error', text: truncate(raw.message || raw.error || JSON.stringify(raw), 300) };
+  }
+
+  if (raw.type === 'item.started' || raw.type === 'item.completed') {
+    const item = raw.item || {};
+    const started = raw.type === 'item.started';
+
+    if (item.type === 'command_execution' && item.command) {
+      return { kind: 'status', text: started ? `Running: ${truncate(item.command, 200)}` : `Done: ${truncate(item.command, 200)}` };
+    }
+    if (item.type === 'mcp_tool_call') {
+      const label = [item.server, item.tool].filter(Boolean).join(':') || 'MCP tool';
+      return { kind: 'status', text: started ? `Calling ${label}` : `Finished ${label}` };
+    }
+    if (item.type === 'web_search') {
+      return { kind: 'status', text: started ? 'Searching...' : 'Search done.' };
+    }
+    if (item.type === 'file_change') {
+      const p = item.path || item.file || item.target || 'a file';
+      return { kind: 'status', text: started ? `Checking ${p}` : `Reviewed ${p}` };
+    }
+    if (item.type === 'plan_update' && item.text) {
+      return { kind: 'status', text: truncate(item.text, 200) };
+    }
+    if (item.type === 'reasoning' && item.text) {
+      return { kind: 'reasoning', text: item.text };
+    }
+    if (item.type === 'agent_message' && item.text) {
+      return { kind: 'agent-message', text: item.text };
+    }
+  }
+
+  return null;
+}
+
 function summarizeClaudeEvent(raw) {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -197,4 +248,5 @@ module.exports = {
   parseJsonLine,
   summarizeClaudeEvent,
   summarizeCodexEvent,
+  summarizeCodexWorkerEvent,
 };

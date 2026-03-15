@@ -14,7 +14,7 @@ function buildTranscriptExcerpt(manifest, limit = 18) {
         }
       }
       if (loop.worker && loop.worker.resultText) {
-        requestLines.push(`Claude Code: ${truncate(loop.worker.resultText, 600)}`);
+        requestLines.push(`Worker: ${truncate(loop.worker.resultText, 600)}`);
       }
     }
     if (request.stopReason) {
@@ -147,69 +147,72 @@ function buildControllerPrompt(manifest, request) {
   const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
   const transcriptLines = buildTranscriptExcerpt(manifest);
 
+  const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
+
   const state = {
     repository_root: manifest.repoRoot,
     run_id: manifest.runId,
     request_id: request.id,
     controller_session_id: manifest.controller.sessionId,
-    claude_session_id: manifest.worker.sessionId,
-    claude_session_started: manifest.worker.hasStarted,
+    worker_session_id: manifest.worker.sessionId,
+    worker_session_started: manifest.worker.hasStarted,
+    worker_cli: workerCli,
     request_started_at: request.startedAt,
     current_loop_index: request.loops.length + 1,
     latest_user_message: request.userMessage,
     latest_stop_reason: manifest.stopReason,
-    latest_claude_prompt: lastWorker ? lastWorker.prompt : null,
-    latest_claude_exit_code: lastWorker ? lastWorker.exitCode : null,
-    latest_claude_result: lastWorker ? lastWorker.resultText : null,
+    latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
+    latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
+    latest_worker_result: lastWorker ? lastWorker.resultText : null,
     recent_transcript: transcriptLines,
   };
 
   return [
-    'You are the CONTROLLER agent — a senior developer who supervises Claude Code inside a terminal workflow.',
+    'You are the CONTROLLER agent — a senior developer who supervises a worker agent inside a terminal workflow.',
     '',
     'Roles:',
     '- The human user is your manager. They give you high-level instructions.',
     '- You are the senior developer. You THINK, PLAN, INVESTIGATE, and REVIEW.',
-    '- Claude Code is your junior developer. Claude writes code, edits files, and runs commands.',
+    '- The worker agent is your junior developer. The worker writes code, edits files, and runs commands.',
     '',
     'CRITICAL — You are NOT a pass-through:',
-    '- NEVER just forward the user\'s message to Claude Code verbatim.',
+    '- NEVER just forward the user\'s message to the worker verbatim.',
     '- ALWAYS break complex tasks into steps. Do one step at a time.',
     '- YOU do the investigation and analysis. Read files, run git diff, run tests, examine code.',
-    '- Only delegate to Claude Code when you have a SPECIFIC, FOCUSED instruction for it.',
-    '- After Claude finishes, YOU review the result. Check git diff, run tests, read changed files.',
-    '- If Claude\'s work has issues, send it back with SPECIFIC feedback about what to fix.',
+    '- Only delegate to the worker when you have a SPECIFIC, FOCUSED instruction for it.',
+    '- After the worker finishes, YOU review the result. Check git diff, run tests, read changed files.',
+    '- If the worker\'s work has issues, send it back with SPECIFIC feedback about what to fix.',
     '- Keep looping (investigate -> delegate -> review) until the task is truly done.',
     '',
     'Behavior contract:',
-    '- Each turn, you may either reply directly and stop, or delegate a focused task to Claude Code.',
-    '- If you delegate, the app launches Claude Code, streams its output, then calls you again.',
-    '- After Claude finishes, inspect the result (git diff, tests, etc.) before deciding next step.',
+    '- Each turn, you may either reply directly and stop, or delegate a focused task to the worker.',
+    '- If you delegate, the app launches the worker, streams its output, then calls you again.',
+    '- After the worker finishes, inspect the result (git diff, tests, etc.) before deciding next step.',
     '- For read-only tasks (summaries, explanations), skip verification.',
     '- When you stop, the shell waits for the next user instruction.',
     '',
     'Your job:',
     '- For simple chat or questions, reply yourself and stop. Do NOT delegate greetings or questions.',
     '- For repository work, first investigate yourself (read code, understand the problem).',
-    '- Then send Claude Code a SPECIFIC instruction like "In src/foo.js, the function bar() has a null check missing on line 42. Fix it by adding..." — not "find and fix bugs".',
-    '- You CAN and SHOULD use Codex tools to read files, run commands, inspect code, run tests.',
+    '- Then send the worker a SPECIFIC instruction like "In src/foo.js, the function bar() has a null check missing on line 42. Fix it by adding..." — not "find and fix bugs".',
+    '- You CAN and SHOULD use your tools to read files, run commands, inspect code, run tests.',
     '- Never edit SOURCE CODE files yourself. Never commit or push.',
-    '- You MAY stage changes with `git add` when you have reviewed and approved Claude Code\'s work. Staging = your approval stamp.',
-    '- You MAY create or edit .md files (e.g. .cc-manager/tasks/task-001.md) to write detailed instructions for Claude Code. For complex tasks, write a task .md file with full details, then tell Claude Code to read it.',
+    '- You MAY stage changes with `git add` when you have reviewed and approved the worker\'s work. Staging = your approval stamp.',
+    '- You MAY create or edit .md files (e.g. .cc-manager/tasks/task-001.md) to write detailed instructions for the worker. For complex tasks, write a task .md file with full details, then tell the worker to read it.',
     '- Keep controller_messages short, plain-text, user-visible. No markdown bullets, no JSON, no code fences. Prefer 1-6 messages.',
-    '- If the task is complete, stop. If Claude needs more work, delegate again with specific instructions.',
-    '- The app automatically reuses the existing Claude session.',
+    '- If the task is complete, stop. If the worker needs more work, delegate again with specific instructions.',
+    '- The app automatically reuses the existing worker session.',
     '',
     'Example workflows:',
     '- User says "Hi" -> Reply "Hi, how can I help?" and stop.',
-    '- User says "Fix the failing tests" -> You run the tests yourself, read the failures, identify the root cause, then tell Claude exactly what to fix. After Claude fixes it, you run the tests again to verify. If still failing, send Claude specific feedback.',
-    '- User says "Find a bug and fix it" -> You explore the code yourself, identify a real bug, then tell Claude exactly what the bug is and how to fix it. Review Claude\'s fix, run tests, iterate if needed.',
+    '- User says "Fix the failing tests" -> You run the tests yourself, read the failures, identify the root cause, then tell the worker exactly what to fix. After the worker fixes it, you run the tests again to verify. If still failing, send the worker specific feedback.',
+    '- User says "Find a bug and fix it" -> You explore the code yourself, identify a real bug, then tell the worker exactly what the bug is and how to fix it. Review the worker\'s fix, run tests, iterate if needed.',
     '',
     'Return JSON ONLY with these fields:',
     '- action: "delegate" or "stop"',
     '- agent_id: which worker agent to delegate to (null or "default" for the default worker, or a custom agent id). Always include this field.',
     '- controller_messages: array of short strings shown to the user in chat (visible conversation)',
-    '- claude_message: a non-empty string when action is delegate, otherwise null',
+    '- claude_message: the instruction string sent to the worker when action is delegate, otherwise null',
     '- stop_reason: a short string or null',
     '- progress_updates: array of short task-progress lines written to the progress log / top-right status bubble. Use these ONLY for substantive task milestones (e.g. "Running tests", "Fixing bug in auth.js", "Tests passing"). For greetings, summaries, acknowledgements, or no-op replies, leave this as an empty array [].',
     '',
@@ -231,9 +234,10 @@ function buildAgentsSection(manifest) {
   const agents = manifest.agents;
   if (!agents || Object.keys(agents).length === 0) return null;
 
+  const workerCli = manifest.worker && (manifest.worker.cli || manifest.worker.bin) || 'claude';
   const lines = [
     'Available worker agents (use agent_id in your JSON response to target a specific agent):',
-    '- "default": The default Claude Code worker (no special configuration)',
+    `- "default": The default worker (${workerCli}, no special configuration)`,
   ];
   for (const [id, agent] of Object.entries(agents)) {
     const name = agent.name || id;
@@ -247,7 +251,7 @@ function buildAgentsSection(manifest) {
 
 function buildDefaultWorkerAppendSystemPrompt() {
   return [
-    'You are Claude Code acting as the executor in a supervised workflow.',
+    'You are the worker agent acting as the executor in a supervised workflow.',
     'A controller agent will review your work after every run and may send you another message in the same session.',
     'Do the actual repository work yourself.',
     'While working, narrate concise progress updates in plain text so the terminal stream stays readable.',

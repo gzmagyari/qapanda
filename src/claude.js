@@ -127,8 +127,11 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let sawTextDelta = false;
 
+  // Resolve binary: agent-specific cli overrides default worker bin
+  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+
   const result = await spawnStreamingProcess({
-    command: manifest.worker.bin,
+    command: workerBin,
     args,
     cwd: manifest.repoRoot,
     stdinText: prompt,

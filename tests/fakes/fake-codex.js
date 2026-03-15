@@ -21,8 +21,8 @@ function getFlagValue(args, name) {
 function decide(prompt) {
   const latestUserMatch = prompt.match(/"latest_user_message":\s*"([^"]*)"/);
   const latestUser = latestUserMatch ? latestUserMatch[1] : '';
-  const latestClaudeResultMatch = prompt.match(/"latest_claude_result":\s*(null|"([\s\S]*?)")/);
-  const latestClaudeResult = latestClaudeResultMatch && latestClaudeResultMatch[2] ? latestClaudeResultMatch[2] : '';
+  const latestWorkerResultMatch = prompt.match(/"latest_worker_result":\s*(null|"([\s\S]*?)")/);
+  const latestClaudeResult = latestWorkerResultMatch && latestWorkerResultMatch[2] ? latestWorkerResultMatch[2] : '';
 
   if (/"latest_user_message":\s*"Hi"/.test(prompt)) {
     return {

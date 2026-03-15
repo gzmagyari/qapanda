@@ -14,7 +14,7 @@ const {
   saveManifest,
 } = require('./src/state');
 const { readText, summarizeError } = require('./src/utils');
-const { controllerLabelFor } = require('./src/render');
+const { controllerLabelFor, workerLabelFor } = require('./src/render');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 
@@ -78,6 +78,8 @@ class SessionManager {
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
+    this._workerCli = init.workerCli || 'claude';
+    this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { global: {}, project: {} }; // Set via setAgents() from extension.js
@@ -161,6 +163,20 @@ class SessionManager {
         this._syncConfig();
       }
     }
+    if (config.workerCli !== undefined) {
+      const newWorkerCli = config.workerCli || 'claude';
+      if (newWorkerCli !== this._workerCli) {
+        this._workerCli = newWorkerCli;
+        this._renderer.workerLabel = workerLabelFor(newWorkerCli);
+        if (this._activeManifest) {
+          this._activeManifest.worker.cli = newWorkerCli;
+          this._activeManifest.worker.bin = newWorkerCli;
+          saveManifest(this._activeManifest).catch(() => {});
+          this._renderer.banner(`Worker CLI switched to ${newWorkerCli}.`);
+        }
+        this._syncConfig();
+      }
+    }
     if (config.waitDelay !== undefined) {
       this._waitDelay = config.waitDelay || '';
       // Persist to manifest if attached
@@ -196,6 +212,9 @@ class SessionManager {
       this._activeManifest = await loadManifestFromDir(runDir);
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
+      }
+      if (this._activeManifest.worker && this._activeManifest.worker.cli) {
+        this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli);
       }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       return true;
@@ -560,6 +579,9 @@ class SessionManager {
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
       }
+      if (this._activeManifest.worker && this._activeManifest.worker.cli) {
+        this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli);
+      }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       await this.sendTranscript();
       this._renderer.requestStarted(this._activeManifest.runId);
@@ -813,6 +835,7 @@ class SessionManager {
     };
     if (this._controllerCli) opts.controllerCli = this._controllerCli;
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
+    if (this._workerCli) opts.workerCli = this._workerCli;
     if (this._workerModel) opts.workerModel = this._workerModel;
     // Split MCP servers by target role
     const controllerMcp = this._mcpServersForRole('controller');
@@ -851,6 +874,7 @@ class SessionManager {
       waitDelay: this._waitDelay || '',
       chatTarget: this._chatTarget || 'controller',
       controllerCli: this._controllerCli || 'codex',
+      workerCli: this._workerCli || 'claude',
     };
   }
 

@@ -68,7 +68,7 @@ test('simple greeting stops without launching Claude Code', async () => {
   assert.match(result.stdout, /Hi/);
   assert.match(result.stdout, /Hi, how can I help you\?/);
   assert.match(result.stdout, /STOP/);
-  assert.doesNotMatch(result.stdout, /Launching Claude Code/);
+  assert.doesNotMatch(result.stdout, /Launching Worker/);
 });
 
 test('relative binary paths are resolved from invocation directory, not repo root', async () => {
@@ -103,10 +103,10 @@ test('controller delegates to Claude, reviews, delegates again, then stops', asy
   assert.equal(first.code, 0, first.stderr);
   // Timeline UI renders labels on separate lines from content
   assert.match(first.stdout, /I will instruct Claude Code to fix the issues\./);
-  assert.match(first.stdout, /Launching Claude Code with: "Please fix all issues in this repository such that all unit tests pass\."/);
+  assert.match(first.stdout, /Launching Worker \(Claude\) with: "Please fix all issues in this repository such that all unit tests pass\."/);
   assert.match(first.stdout, /I will start fixing the issues\./);
   assert.match(first.stdout, /Let me review the work that was done\./);
-  assert.match(first.stdout, /Launching Claude Code \(same session\) with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
+  assert.match(first.stdout, /Launching Worker \(Claude\) \(same session\) with: "The changes in logic\.py introduced a critical bug\. Please fix it and rerun the unit tests\."/);
   assert.match(first.stdout, /All unit tests passing\. The task has been completed\. Waiting for next user instruction\./);
   assert.match(first.stdout, /STOP/);
 
@@ -126,5 +126,5 @@ test('controller delegates to Claude, reviews, delegates again, then stops', asy
   assert.match(second.stdout, /Good job\. Thank you/);
   assert.match(second.stdout, /No worries\. Let me know if you want me to do anything else\./);
   assert.match(second.stdout, /STOP/);
-  assert.doesNotMatch(second.stdout, /Launching Claude Code/);
+  assert.doesNotMatch(second.stdout, /Launching Worker/);
 });

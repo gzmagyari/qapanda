@@ -91,6 +91,12 @@ function controllerLabelFor(cli) {
   return cli === 'claude' ? 'Controller (Claude)' : 'Controller (Codex)';
 }
 
+function workerLabelFor(cli) {
+  if (!cli || cli === 'claude') return 'Worker (Claude)';
+  if (cli === 'codex') return 'Worker (Codex)';
+  return `Worker (${cli})`;
+}
+
 class Renderer {
   constructor(options = {}) {
     this.rawEvents = Boolean(options.rawEvents);
@@ -109,6 +115,8 @@ class Renderer {
     this._hasContent = false;
     // Controller label — set from manifest.controller.cli
     this.controllerLabel = 'Controller';
+    // Worker label — set from manifest.worker.cli
+    this.workerLabel = 'Worker';
   }
 
   write(text) {
@@ -305,14 +313,15 @@ class Renderer {
   }
 
   claude(text) {
-    this.line('Claude code', text, color.claude);
+    this.line(this.workerLabel, text, color.claude);
   }
 
-  launchClaude(prompt, sameSession, agentId) {
+  launchClaude(prompt, sameSession, agentId, agentCli) {
+    const backendLabel = this.workerLabel;
     const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
     const prefix = sameSession
-      ? `Launching Claude Code${agentLabel} (same session) with: `
-      : `Launching Claude Code${agentLabel} with: `;
+      ? `Launching ${backendLabel}${agentLabel} (same session) with: `
+      : `Launching ${backendLabel}${agentLabel} with: `;
     this.controller(`${prefix}"${truncate(prompt, 400)}"`);
   }
 
@@ -427,7 +436,7 @@ class Renderer {
       return;
     }
     if (summary.kind === 'text-delta') {
-      this.streamMarkdown('Claude code', summary.text, color.claude);
+      this.streamMarkdown(this.workerLabel, summary.text, color.claude);
       return;
     }
     if (summary.kind === 'tool-start') {
@@ -448,25 +457,25 @@ class Renderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this._ensureHeader('Claude code', color.claude);
+        this._ensureHeader(this.workerLabel, color.claude);
         this._contentLine(`${color.dim}${desc}${color.reset}`);
         this._toolCalls.delete(summary.index);
       }
       return;
     }
     if (summary.kind === 'assistant-text') {
-      this.mdLine('Claude code', summary.text, color.claude);
+      this.mdLine(this.workerLabel, summary.text, color.claude);
       return;
     }
     if (summary.kind === 'final-text') {
       if (!this.quiet) {
-        this.mdLine('Claude code', summary.text, color.claude);
+        this.mdLine(this.workerLabel, summary.text, color.claude);
       }
       return;
     }
     if (!this.quiet || summary.kind === 'error') {
       const c = summary.kind === 'error' ? color.error : color.claude;
-      this.line('Claude code', summary.text, c);
+      this.line(this.workerLabel, summary.text, c);
     }
   }
 
@@ -488,4 +497,5 @@ class Renderer {
 module.exports = {
   Renderer,
   controllerLabelFor,
+  workerLabelFor,
 };

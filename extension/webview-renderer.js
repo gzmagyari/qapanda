@@ -13,6 +13,8 @@ class WebviewRenderer {
     this._toolCalls = new Map();
     // Controller label — set from manifest.controller.cli
     this.controllerLabel = 'Controller';
+    // Worker label — set from manifest.worker.cli
+    this.workerLabel = 'Worker';
   }
 
   _post(msg) {
@@ -48,7 +50,7 @@ class WebviewRenderer {
 
   claude(text) {
     this.flushStream();
-    this._post({ type: 'claude', text });
+    this._post({ type: 'claude', text, label: this.workerLabel });
   }
 
   shell(text) {
@@ -85,12 +87,13 @@ class WebviewRenderer {
     }
   }
 
-  launchClaude(prompt, sameSession, agentId) {
+  launchClaude(prompt, sameSession, agentId, agentCli) {
     this.flushStream();
+    const backendLabel = this.workerLabel;
     const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
     const prefix = sameSession
-      ? `Launching Claude Code${agentLabel} (same session) with: `
-      : `Launching Claude Code${agentLabel} with: `;
+      ? `Launching ${backendLabel}${agentLabel} (same session) with: `
+      : `Launching ${backendLabel}${agentLabel} with: `;
     this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: this.controllerLabel });
   }
 
@@ -224,7 +227,7 @@ class WebviewRenderer {
     if (!summary) return;
 
     if (summary.kind === 'text-delta') {
-      this.streamMarkdown('Claude code', summary.text);
+      this.streamMarkdown(this.workerLabel, summary.text);
       return;
     }
     if (summary.kind === 'tool-start') {
@@ -245,18 +248,18 @@ class WebviewRenderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this._post({ type: 'toolCall', label: 'Claude code', text: desc });
+        this._post({ type: 'toolCall', label: this.workerLabel, text: desc });
         this._toolCalls.delete(summary.index);
       }
       return;
     }
     if (summary.kind === 'assistant-text') {
-      this.mdLine('Claude code', summary.text);
+      this.mdLine(this.workerLabel, summary.text);
       return;
     }
     if (summary.kind === 'final-text') {
       if (!this.quiet) {
-        this.mdLine('Claude code', summary.text);
+        this.mdLine(this.workerLabel, summary.text);
       }
       return;
     }
