@@ -317,8 +317,8 @@ class Renderer {
   }
 
   launchClaude(prompt, sameSession, agentId, agentCli) {
-    const backendLabel = this.workerLabel;
-    const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
+    const backendLabel = agentCli ? workerLabelFor(agentCli) : this.workerLabel;
+    const agentLabel = agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;

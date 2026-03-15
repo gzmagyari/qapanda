@@ -3,6 +3,7 @@ const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
+const { workerLabelFor } = require('./render');
 
 /**
  * @param {object} manifest
@@ -31,8 +32,9 @@ function buildClaudeArgs(manifest, options = {}) {
     args.push('--session-id', session.sessionId);
   }
 
-  if (manifest.worker.model) {
-    args.push('--model', manifest.worker.model);
+  const model = (agentConfig && agentConfig.model) || manifest.worker.model;
+  if (model) {
+    args.push('--model', model);
   }
 
   if (manifest.worker.allowedTools) {
@@ -127,14 +129,23 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let sawTextDelta = false;
 
-  // Resolve binary: agent-specific cli overrides default worker bin
+  // Resolve binary and display label
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  const prevWorkerLabel = renderer.workerLabel;
+  renderer.workerLabel = workerLabelFor(workerBin);
+
+  // Per-agent thinking: override CLAUDE_CODE_EFFORT_LEVEL if agent specifies it
+  let spawnEnv = process.env;
+  if (agentConfig && agentConfig.thinking) {
+    spawnEnv = { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: agentConfig.thinking };
+  }
 
   const result = await spawnStreamingProcess({
     command: workerBin,
     args,
     cwd: manifest.repoRoot,
     stdinText: prompt,
+    env: spawnEnv,
     abortSignal,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);
@@ -202,6 +213,8 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       }
     },
   });
+
+  renderer.workerLabel = prevWorkerLabel;
 
   if (result.aborted) {
     // Mark session as started so resume uses --resume instead of --session-id

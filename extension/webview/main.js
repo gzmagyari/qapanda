@@ -318,7 +318,7 @@
         details.innerHTML = '<em style="opacity:0.5">No description</em>';
       }
       if (agent.system_prompt) details.innerHTML += '<br><span class="mcp-detail-label">Prompt:</span> ' + escapeHtml(agent.system_prompt.slice(0, 80)) + (agent.system_prompt.length > 80 ? '...' : '');
-      if (agent.cli) details.innerHTML += '<br><span class="mcp-detail-label">CLI:</span> ' + escapeHtml(agent.cli);
+      if (agent.cli) details.innerHTML += '<br><span class="mcp-detail-label">CLI:</span> ' + escapeHtml(agent.cli) + (agent.model ? ' / ' + escapeHtml(agent.model) : '') + (agent.thinking ? ' / thinking:' + escapeHtml(agent.thinking) : '');
       const mcpCount = Object.keys(agent.mcps || {}).length;
       if (mcpCount) details.innerHTML += '<br><span class="mcp-detail-label">MCPs:</span> ' + mcpCount + ' server' + (mcpCount > 1 ? 's' : '');
 
@@ -339,6 +339,9 @@
       ? JSON.stringify(existing.mcps, null, 2) : '';
 
     const existingCli = existing ? (existing.cli || '') : '';
+    const existingModel = existing ? (existing.model || '') : '';
+    const existingThinking = existing ? (existing.thinking || '') : '';
+
     const cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
     const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
     const cliSelectHtml = '<select class="mcp-input" id="agent-f-cli">' +
@@ -350,12 +353,37 @@
       '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="agent-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
       '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
+      '<div class="agent-form-row"><label>Model</label><select class="mcp-input" id="agent-f-model"><option value="">Default</option></select>' +
+      '<select class="mcp-input" id="agent-f-thinking"><option value="">Thinking: default</option></select></div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt appended to the default worker prompt (NOT visible to controller)">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
       '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="agent-f-save">Save</button><button class="mcp-btn" id="agent-f-cancel">Cancel</button></div>';
 
     setTimeout(() => {
+      const cliEl = document.getElementById('agent-f-cli');
+      const modelEl = document.getElementById('agent-f-model');
+      const thinkingEl = document.getElementById('agent-f-thinking');
+
+      function isCodexCli(v) { return v === 'codex' || v === 'qa-remote-codex'; }
+
+      function updateAgentModelOptions() {
+        const cli = cliEl ? cliEl.value : '';
+        const useCodex = isCodexCli(cli);
+        const models = useCodex ? CODEX_MODELS : CLAUDE_MODELS;
+        const thinkings = useCodex ? CODEX_THINKING : CLAUDE_THINKING;
+        repopulateSelect(modelEl, models, modelEl ? modelEl.value : '');
+        repopulateSelect(thinkingEl, thinkings, thinkingEl ? thinkingEl.value : '');
+        if (modelEl) modelEl.options[0].text = 'Model: default';
+        if (thinkingEl) thinkingEl.options[0].text = 'Thinking: default';
+      }
+
+      // Populate on load with saved values
+      updateAgentModelOptions();
+      if (modelEl) modelEl.value = existingModel;
+      if (thinkingEl) thinkingEl.value = existingThinking;
+
+      if (cliEl) cliEl.addEventListener('change', updateAgentModelOptions);
       document.getElementById('agent-f-save').addEventListener('click', () => saveAgentForm(scope, editId));
       document.getElementById('agent-f-cancel').addEventListener('click', () => { agentEditingForm = null; renderAgentList(scope); });
     }, 0);
@@ -369,6 +397,8 @@
     const name = (document.getElementById('agent-f-name').value || '').trim();
     const description = (document.getElementById('agent-f-desc').value || '').trim();
     const cli = (document.getElementById('agent-f-cli') ? document.getElementById('agent-f-cli').value : '') || null;
+    const model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
+    const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
     const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
     const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
     const errorEl = document.getElementById('agent-f-error');
@@ -390,6 +420,8 @@
     const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
     const agentData = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
     if (cli) agentData.cli = cli;
+    if (model) agentData.model = model;
+    if (thinking) agentData.thinking = thinking;
     agents[id] = agentData;
 
     agentEditingForm = null;

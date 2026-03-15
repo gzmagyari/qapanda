@@ -1,5 +1,6 @@
 const { truncate } = require('./src/utils');
 const { summarizeClaudeEvent, summarizeCodexEvent } = require('./src/events');
+const { workerLabelFor } = require('./src/render');
 
 class WebviewRenderer {
   constructor(panel, options = {}) {
@@ -89,8 +90,8 @@ class WebviewRenderer {
 
   launchClaude(prompt, sameSession, agentId, agentCli) {
     this.flushStream();
-    const backendLabel = this.workerLabel;
-    const agentLabel = agentId && agentId !== 'default' ? ` [agent: ${agentId}]` : '';
+    const backendLabel = agentCli ? workerLabelFor(agentCli) : this.workerLabel;
+    const agentLabel = agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;

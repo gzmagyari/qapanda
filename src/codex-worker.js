@@ -3,6 +3,7 @@ const { readText, writeText, writeJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
+const { workerLabelFor } = require('./render');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
 
@@ -37,8 +38,14 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
     workerRecord.finalFile,
   );
 
-  if (manifest.worker.model) {
-    args.push('--model', manifest.worker.model);
+  const model = (agentConfig && agentConfig.model) || manifest.worker.model;
+  if (model) {
+    args.push('--model', model);
+  }
+
+  const thinking = agentConfig && agentConfig.thinking;
+  if (thinking) {
+    args.push('-c', `model_reasoning_effort="${thinking}"`);
   }
 
   // Pass MCP servers via -c config overrides (merge agent-specific on top of base worker MCPs)
@@ -95,8 +102,12 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     agentSession = manifest.worker.agentSessions[agentId];
   }
 
-  // Determine binary (agent cli or default worker bin)
+  // Determine binary and display label
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
+  const workerLabel = workerLabelFor(workerBin);
+  // Temporarily override renderer workerLabel for this agent turn
+  const prevWorkerLabel = renderer.workerLabel;
+  renderer.workerLabel = workerLabel;
 
   const args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession });
   const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
@@ -137,7 +148,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       const summary = summarizeCodexWorkerEvent(raw);
       if (summary && !manifest.settings.quiet) {
         if (summary.kind === 'reasoning') {
-          renderer.streamMarkdown('Worker', summary.text);
+          renderer.streamMarkdown(workerLabel, summary.text);
           renderer.flushStream();
         } else {
           renderer.claude(summary.text);
@@ -157,6 +168,8 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       }
     },
   });
+
+  renderer.workerLabel = prevWorkerLabel;
 
   if (result.aborted) {
     if (agentSession) {
