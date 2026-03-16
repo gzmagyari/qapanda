@@ -168,7 +168,7 @@ class WebviewRenderer {
     // Detect computer-control MCP tool calls from codex controller
     if (raw && raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
       const server = raw.item.server || '';
-      if (server.includes('computer-control') || server.includes('computer_control')) {
+      if (server.includes('computer-control') || server.includes('computer_control') || server.includes('chrome-devtools') || server.includes('chrome_devtools')) {
         this.computerUseDetected();
       }
     }
@@ -212,7 +212,7 @@ class WebviewRenderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        const isComputerUse = tc.name.startsWith('mcp__computer-control__');
+        const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
         this._post({ type: 'toolCall', label: this.controllerLabel, text: desc, isComputerUse });
         this._toolCalls.delete(summary.index);
       }
@@ -257,7 +257,7 @@ class WebviewRenderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        const isComputerUse = tc.name.startsWith('mcp__computer-control__');
+        const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
         this._post({ type: 'toolCall', label: this.workerLabel, text: desc, isComputerUse });
         this._toolCalls.delete(summary.index);
       }

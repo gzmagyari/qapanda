@@ -168,7 +168,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       // Detect computer-control MCP tool calls for inline VNC
       if (raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
         const server = raw.item.server || '';
-        if (server.includes('computer-control') || server.includes('computer_control')) {
+        if (server.includes('computer-control') || server.includes('computer_control') || server.includes('chrome-devtools') || server.includes('chrome_devtools')) {
           renderer.computerUseDetected();
         }
       }
