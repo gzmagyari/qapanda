@@ -265,17 +265,17 @@ function getWebviewHtml(panel, extensionUri) {
         <label>Target</label>
         <select id="cfg-chat-target">
           <option value="controller">Controller</option>
-          <option value="claude">Claude Code</option>
+          <option value="claude">Worker (Default)</option>
         </select>
       </div>
-      <div class="config-group">
+      <div class="config-group cfg-controller-only">
         <label>Controller CLI</label>
         <select id="cfg-controller-cli">
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
         </select>
       </div>
-      <div class="config-group">
+      <div class="config-group cfg-controller-only">
         <label>Controller</label>
         <select id="cfg-controller-model">
           <option value="">Model: default</option>
@@ -284,14 +284,14 @@ function getWebviewHtml(panel, extensionUri) {
           <option value="">Thinking: default</option>
         </select>
       </div>
-      <div class="config-group">
+      <div class="config-group cfg-worker-only">
         <label>Worker CLI</label>
         <select id="cfg-worker-cli">
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </div>
-      <div class="config-group">
+      <div class="config-group cfg-worker-only">
         <label>Worker</label>
         <select id="cfg-worker-model">
           <option value="">Model: default</option>
@@ -477,6 +477,10 @@ function activate(context) {
           Object.assign(panelConfig, msg.config);
           return;
         }
+        if (msg.type === 'setPanelTitle') {
+          panel.title = msg.title;
+          return;
+        }
         if (msg.type === 'ready') {
           // Restore panelId from webview persisted state if available
           if (msg.panelId) session._panelId = msg.panelId;
@@ -579,6 +583,10 @@ function activate(context) {
           if (msg.type === 'configChanged') {
             session.applyConfig(msg.config);
             Object.assign(panelConfig, msg.config);
+            return;
+          }
+          if (msg.type === 'setPanelTitle') {
+            panel.title = msg.title;
             return;
           }
           if (msg.type === 'mcpServersChanged') {

@@ -1058,6 +1058,7 @@
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
     if (config.chatTarget !== undefined && cfgChatTarget) cfgChatTarget.value = config.chatTarget;
+    updateConfigBarForTarget(cfgChatTarget ? cfgChatTarget.value : 'controller');
   }
 
   const CODEX_MODELS = [
@@ -1114,10 +1115,53 @@
     repopulateSelect(cfgWorkerThinking, workerThinking, cfgWorkerThinking ? cfgWorkerThinking.value : '');
   }
 
+  function labelForTarget(target) {
+    if (!target || target === 'controller') return 'CC Manager';
+    if (target === 'claude') return 'Worker (Default)';
+    if (target.startsWith('agent-')) {
+      const agentId = target.slice('agent-'.length);
+      const allAgents = { ...agentsGlobal, ...agentsProject };
+      const agent = allAgents[agentId];
+      return agent ? agent.name : agentId;
+    }
+    return 'CC Manager';
+  }
+
+  function updateConfigBarForTarget(target) {
+    const isController = !target || target === 'controller';
+    document.querySelectorAll('.cfg-controller-only').forEach(el => el.classList.toggle('tab-hidden', !isController));
+    document.querySelectorAll('.cfg-worker-only').forEach(el => el.classList.toggle('tab-hidden', isController));
+  }
+
+  function refreshTargetDropdown() {
+    if (!cfgChatTarget) return;
+    const currentValue = cfgChatTarget.value;
+    // Remove existing agent options
+    Array.from(cfgChatTarget.options).forEach(opt => {
+      if (opt.value.startsWith('agent-')) cfgChatTarget.removeChild(opt);
+    });
+    // Add enabled agents
+    const allAgents = { ...agentsGlobal, ...agentsProject };
+    for (const [id, agent] of Object.entries(allAgents)) {
+      if (agent && agent.enabled !== false) {
+        const opt = document.createElement('option');
+        opt.value = 'agent-' + id;
+        opt.textContent = agent.name || id;
+        cfgChatTarget.appendChild(opt);
+      }
+    }
+    // Restore previous value if still valid, otherwise reset to controller
+    const validValues = Array.from(cfgChatTarget.options).map(o => o.value);
+    cfgChatTarget.value = validValues.includes(currentValue) ? currentValue : 'controller';
+  }
+
   function onConfigChange() {
     updateControllerDropdowns();
+    const target = cfgChatTarget ? cfgChatTarget.value : 'controller';
+    updateConfigBarForTarget(target);
     const config = getConfig();
     vscode.postMessage({ type: 'configChanged', config });
+    vscode.postMessage({ type: 'setPanelTitle', title: labelForTarget(target) });
     saveState();
   }
 
@@ -1526,6 +1570,7 @@
         agentsProject = msg.agents.project || {};
         renderAgentList('global');
         renderAgentList('project');
+        refreshTargetDropdown();
       }
       saveState();
     },
@@ -1536,6 +1581,7 @@
         agentsProject = msg.agents.project || {};
         renderAgentList('global');
         renderAgentList('project');
+        refreshTargetDropdown();
       }
     },
 

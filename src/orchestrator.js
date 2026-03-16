@@ -393,12 +393,17 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       renderer,
     );
 
-    const workerResult = await runWorkerTurn({
+    const agentId = options.agentId || null;
+    const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
+    const runWorker = getWorkerRunner(manifest, agentConfig);
+
+    const workerResult = await runWorker({
       manifest,
       request,
       loop,
       workerRecord,
       prompt: userMessage,
+      agentId,
       renderer,
       abortSignal: signalController.signal,
       emitEvent: async (event) => {

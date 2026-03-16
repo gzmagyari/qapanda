@@ -497,8 +497,12 @@ class SessionManager {
       this._applyWorkerThinking();
 
       if (this._chatTarget === 'claude') {
-        // Direct-to-Claude: skip controller, no auto-pass scheduling
+        // Direct-to-default-worker: skip controller, no auto-pass scheduling
         await this._runDirectWorker(text);
+      } else if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
+        // Direct-to-agent: skip controller, use agent's session and CLI
+        const agentId = this._chatTarget.slice('agent-'.length);
+        await this._runDirectAgent(text, agentId);
       } else {
         await this._runLoop({ userMessage: text });
         this._scheduleNextPass();
@@ -507,7 +511,8 @@ class SessionManager {
       if (!isAbortError(error)) {
         this._renderer.banner(`Run error: ${formatRunError(error)}`);
         // Only schedule error retry for controller path
-        if (this._chatTarget !== 'claude') {
+        const isDirectMode = this._chatTarget === 'claude' || (this._chatTarget && this._chatTarget.startsWith('agent-'));
+        if (!isDirectMode) {
           this._scheduleErrorRetry();
         }
       } else {
@@ -916,6 +921,29 @@ class SessionManager {
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
+        abortSignal: this._abortController.signal,
+      });
+      if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
+        this._activeManifest.waitDelay = this._waitDelay || null;
+      }
+      await saveManifest(this._activeManifest);
+    } finally {
+      this._running = false;
+      this._abortController = null;
+      this._postMessage({ type: 'running', value: false });
+    }
+  }
+
+  async _runDirectAgent(userMessage, agentId) {
+    this._syncMcpToManifest();
+    this._running = true;
+    this._abortController = new AbortController();
+    this._postMessage({ type: 'running', value: true });
+
+    try {
+      this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
+        userMessage,
+        agentId,
         abortSignal: this._abortController.signal,
       });
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
