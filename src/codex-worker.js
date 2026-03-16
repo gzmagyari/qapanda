@@ -123,6 +123,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
           agentSession.hasStarted = false;
         }
       }
+      renderer.desktopReady(desktop.novncPort);
     } else {
       renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
     }
@@ -161,6 +162,14 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       // Capture session ID from thread.started
       if (raw.type === 'thread.started' && raw.thread_id) {
         discoveredSessionId = raw.thread_id;
+      }
+
+      // Detect computer-control MCP tool calls for inline VNC
+      if (raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
+        const server = raw.item.server || '';
+        if (server.includes('computer-control') || server.includes('computer_control')) {
+          renderer.computerUseDetected();
+        }
       }
 
       // Render using worker-specific summarizer (omits controller lifecycle noise)

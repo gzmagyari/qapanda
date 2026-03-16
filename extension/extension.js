@@ -5,7 +5,7 @@ const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 const { globalAgentsPath, projectAgentsPath, loadAgentsFile, saveAgentsFile, loadMergedAgents } = require('./agents-store');
-const { listInstances, stopInstance, restartInstance, ensureDesktop } = require('./src/remote-desktop');
+const { listInstances, stopInstance, restartInstance, ensureDesktop, getLinkedInstance } = require('./src/remote-desktop');
 
 const activePanels = new Set();
 
@@ -182,8 +182,9 @@ async function handleInstanceMessage(msg, repoRoot, panelId) {
   }
   if (msg.type === 'instanceStart') {
     await ensureDesktop(repoRoot, panelId);
+    const linked = getLinkedInstance(panelId);
     const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId };
+    return { type: 'instancesData', instances, panelId, novncPort: linked ? linked.novncPort : null };
   }
   if (msg.type === 'instanceStop') {
     await stopInstance(msg.name);
@@ -232,7 +233,7 @@ function getWebviewHtml(panel, extensionUri) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; frame-src http://localhost:*;">
   <link rel="stylesheet" href="${styleUri}">
   <title>CC Manager</title>
 </head>
@@ -244,6 +245,7 @@ function getWebviewHtml(panel, extensionUri) {
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
       <button class="tab-btn" data-tab="instances">Instances</button>
+      <button class="tab-btn" data-tab="computer">Computer</button>
     </div>
 
     <div id="tab-agent">
@@ -389,6 +391,14 @@ function getWebviewHtml(panel, extensionUri) {
         </div>
       </div>
     </div><!-- /tab-instances -->
+
+    <div id="tab-computer" class="tab-hidden">
+      <div id="computer-placeholder" class="computer-placeholder">
+        <p>No desktop instance linked to this session.</p>
+        <p><small>Start a remote agent or launch an instance from the Instances tab.</small></p>
+      </div>
+      <iframe id="computer-vnc-frame" class="computer-vnc-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    </div><!-- /tab-computer -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -468,9 +478,19 @@ function activate(context) {
           return;
         }
         if (msg.type === 'ready') {
+          // Restore panelId from webview persisted state if available
+          if (msg.panelId) session._panelId = msg.panelId;
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot);
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData });
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
+          // Re-populate remote-desktop cache if a container is still running for this panel
+          if (msg.panelId) {
+            ensureDesktop(repoRoot, session.panelId).then(desktop => {
+              if (desktop) {
+                try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
+              }
+            }).catch(() => {});
+          }
           return;
         }
         if (msg.type === 'mcpServersChanged') {
@@ -496,6 +516,9 @@ function activate(context) {
         const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
         if (instanceReply) {
           try { panel.webview.postMessage(instanceReply); } catch {}
+          if (instanceReply.novncPort) {
+            try { panel.webview.postMessage({ type: 'desktopReady', novncPort: instanceReply.novncPort }); } catch {}
+          }
           return;
         }
         session.handleMessage(msg);
@@ -581,12 +604,25 @@ function activate(context) {
           const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
           if (instanceReply) {
             try { panel.webview.postMessage(instanceReply); } catch {}
+            if (instanceReply.novncPort) {
+              try { panel.webview.postMessage({ type: 'desktopReady', novncPort: instanceReply.novncPort }); } catch {}
+            }
             return;
           }
           if (msg.type === 'ready') {
+            // Restore panelId from webview persisted state if available
+            if (msg.panelId) session._panelId = msg.panelId;
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot);
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData });
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
+            // Re-populate remote-desktop cache if a container is still running for this panel
+            if (msg.panelId) {
+              ensureDesktop(repoRoot, session.panelId).then(desktop => {
+                if (desktop) {
+                  try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
+                }
+              }).catch(() => {});
+            }
             // Reattach to saved run if the webview had one before reload
             const runId = msg.runId || savedRunId;
             if (runId) {

@@ -165,6 +165,13 @@ class WebviewRenderer {
       this._post({ type: 'rawEvent', source: 'controller', raw });
       return;
     }
+    // Detect computer-control MCP tool calls from codex controller
+    if (raw && raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
+      const server = raw.item.server || '';
+      if (server.includes('computer-control') || server.includes('computer_control')) {
+        this.computerUseDetected();
+      }
+    }
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
     if (summary.kind === 'reasoning') {
@@ -205,7 +212,8 @@ class WebviewRenderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this._post({ type: 'toolCall', label: this.controllerLabel, text: desc });
+        const isComputerUse = tc.name.startsWith('mcp__computer-control__');
+        this._post({ type: 'toolCall', label: this.controllerLabel, text: desc, isComputerUse });
         this._toolCalls.delete(summary.index);
       }
       return;
@@ -249,7 +257,8 @@ class WebviewRenderer {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
-        this._post({ type: 'toolCall', label: this.workerLabel, text: desc });
+        const isComputerUse = tc.name.startsWith('mcp__computer-control__');
+        this._post({ type: 'toolCall', label: this.workerLabel, text: desc, isComputerUse });
         this._toolCalls.delete(summary.index);
       }
       return;
@@ -268,6 +277,18 @@ class WebviewRenderer {
       const msgType = summary.kind === 'error' ? 'error' : 'claude';
       this._post({ type: msgType, text: summary.text });
     }
+  }
+
+  desktopReady(novncPort) {
+    this._post({ type: 'desktopReady', novncPort });
+  }
+
+  desktopGone() {
+    this._post({ type: 'desktopGone' });
+  }
+
+  computerUseDetected() {
+    this._post({ type: 'computerUseDetected' });
   }
 }
 

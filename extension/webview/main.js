@@ -17,6 +17,7 @@
     agents: document.getElementById('tab-agents'),
     mcp: document.getElementById('tab-mcp'),
     instances: document.getElementById('tab-instances'),
+    computer: document.getElementById('tab-computer'),
   };
 
   tabBar.addEventListener('click', (e) => {
@@ -684,6 +685,59 @@
     if (task) showTaskForm(task);
   }
 
+  // ── VNC / Computer Tab ───────────────────────────────────────────────
+  let panelId = null;  // set by initConfig, persisted for container linking
+  let novncPort = null;
+  let inlineVncEntry = null;
+
+  function updateComputerTab() {
+    const placeholder = document.getElementById('computer-placeholder');
+    const frame = document.getElementById('computer-vnc-frame');
+    if (!placeholder || !frame) return;
+    if (novncPort) {
+      const url = `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
+      placeholder.style.display = 'none';
+      frame.style.display = 'block';
+      if (!frame.src || !frame.src.includes(':' + novncPort + '/')) {
+        frame.src = url;
+      }
+    } else {
+      placeholder.style.display = '';
+      frame.style.display = 'none';
+      frame.src = '';
+    }
+  }
+
+  function showInlineVnc() {
+    if (inlineVncEntry || !novncPort) return;
+    hideThinking();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'inline-vnc-wrapper';
+
+    const header = document.createElement('div');
+    header.className = 'inline-vnc-header';
+    header.textContent = 'Live Desktop';
+    wrapper.appendChild(header);
+
+    const iframe = document.createElement('iframe');
+    iframe.className = 'inline-vnc-frame';
+    iframe.src = `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+    wrapper.appendChild(iframe);
+
+    messagesEl.appendChild(wrapper);
+    inlineVncEntry = wrapper;
+    autoScroll();
+  }
+
+  function removeInlineVnc() {
+    if (inlineVncEntry && inlineVncEntry.parentNode) {
+      inlineVncEntry.parentNode.removeChild(inlineVncEntry);
+    }
+    inlineVncEntry = null;
+  }
+
   // ── Instance Management ──────────────────────────────────────────────
   let instancesList = [];
   let instancesLoading = false;
@@ -835,9 +889,12 @@
   let currentRunId = null;
 
   function saveState() {
-    // Persist run ID and config per panel. Chat history is restored from
-    // transcript.jsonl on disk, so messageLog is NOT persisted.
-    vscode.setState({ runId: currentRunId, config: getConfig() });
+    // Persist run ID, config, and desktop info per panel. Chat history is
+    // restored from transcript.jsonl on disk, so messageLog is NOT persisted.
+    const state = { runId: currentRunId, config: getConfig() };
+    if (novncPort) state.novncPort = novncPort;
+    if (panelId) state.panelId = panelId;
+    vscode.setState(state);
   }
 
   function logMessage(msg) {
@@ -1288,6 +1345,9 @@
     toolCall(msg) {
       streamingEntry = null;
       addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call');
+      if (msg.isComputerUse && novncPort && !inlineVncEntry) {
+        showInlineVnc();
+      }
     },
 
     stop(msg) {
@@ -1332,6 +1392,7 @@
       } else {
         isRunning = false;
         hideThinking();
+        removeInlineVnc();
         btnSend.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
@@ -1341,6 +1402,9 @@
 
     initConfig(msg) {
       setConfig(msg.config);
+      if (msg.panelId && !panelId) {
+        panelId = msg.panelId;
+      }
       if (msg.mcpServers) {
         mcpGlobal = msg.mcpServers.global || {};
         mcpProject = msg.mcpServers.project || {};
@@ -1374,6 +1438,25 @@
       instancesList = msg.instances || [];
       setInstancesLoading(false);
       renderInstances();
+    },
+
+    desktopReady(msg) {
+      novncPort = msg.novncPort || null;
+      updateComputerTab();
+      saveState();
+    },
+
+    desktopGone() {
+      novncPort = null;
+      updateComputerTab();
+      removeInlineVnc();
+      saveState();
+    },
+
+    computerUseDetected() {
+      if (novncPort && !inlineVncEntry) {
+        showInlineVnc();
+      }
     },
 
     tasksData(msg) {
@@ -1456,6 +1539,13 @@
     currentRunId = savedState.runId || null;
     if (savedState.config) {
       setConfig(savedState.config);
+    }
+    if (savedState.panelId) {
+      panelId = savedState.panelId;
+    }
+    if (savedState.novncPort) {
+      novncPort = savedState.novncPort;
+      updateComputerTab();
     }
   }
 
@@ -1651,5 +1741,5 @@
   textarea.focus();
 
   // Request persisted config from extension host, include saved runId for reattach
-  vscode.postMessage({ type: 'ready', runId: currentRunId });
+  vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId });
 })();

@@ -148,6 +148,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
           args = buildClaudeArgs(manifest, { agentConfig, agentSession });
         }
       }
+      renderer.desktopReady(desktop.novncPort);
       args = injectRemotePort(workerBin, args, desktop);
     } else {
       renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');

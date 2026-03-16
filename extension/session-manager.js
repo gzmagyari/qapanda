@@ -62,7 +62,7 @@ class SessionManager {
     this._renderer = renderer;
     this._repoRoot = options.repoRoot || process.cwd();
     this._stateRoot = options.stateRoot || defaultStateRoot(this._repoRoot);
-    this._panelId = require('node:crypto').randomUUID();
+    this._panelId = options.panelId || require('node:crypto').randomUUID();
     this._runOptions = options.runOptions || {};
     this._activeManifest = null;
     this._abortController = null;
