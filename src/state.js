@@ -327,6 +327,17 @@ function attachWorkerRecord(manifest, loop) {
   return loop.worker;
 }
 
+/** Case-insensitive agent lookup — controller may return wrong-case agent_id. */
+function lookupAgentConfig(agents, agentId) {
+  if (!agents || !agentId) return null;
+  if (agents[agentId]) return agents[agentId];
+  const lower = agentId.toLowerCase();
+  for (const [key, val] of Object.entries(agents)) {
+    if (key.toLowerCase() === lower) return val;
+  }
+  return null;
+}
+
 module.exports = {
   WAIT_OPTIONS,
   attachWorkerRecord,
@@ -338,6 +349,7 @@ module.exports = {
   listRunManifests,
   loadManifestFromDir,
   manifestPath,
+  lookupAgentConfig,
   normalizeRunOptions,
   parseWaitDelay,
   prepareNewRun,

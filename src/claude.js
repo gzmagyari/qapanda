@@ -5,6 +5,7 @@ const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
+const { lookupAgentConfig } = require('./state');
 
 /**
  * @param {object} manifest
@@ -66,12 +67,17 @@ function buildClaudeArgs(manifest, options = {}) {
     args.push('--add-dir', dir);
   }
 
-  // System prompt: agent-specific or default
-  const appendSystemPrompt = agentConfig
-    ? buildAgentWorkerSystemPrompt(agentConfig)
-    : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
-  if (appendSystemPrompt) {
-    args.push('--append-system-prompt', appendSystemPrompt);
+  // System prompt: agent with custom prompt uses --system-prompt (full replacement),
+  // otherwise --append-system-prompt adds to Claude Code's default system prompt
+  if (agentConfig && agentConfig.system_prompt) {
+    args.push('--system-prompt', agentConfig.system_prompt);
+  } else {
+    const appendSystemPrompt = agentConfig
+      ? buildAgentWorkerSystemPrompt(agentConfig)
+      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
+    if (appendSystemPrompt) {
+      args.push('--append-system-prompt', appendSystemPrompt);
+    }
   }
 
   // Pass MCP servers via --mcp-config with inline JSON (prefer role-specific, fall back to shared)
@@ -98,6 +104,7 @@ function buildClaudeArgs(manifest, options = {}) {
   }
 
   // Prompt is passed via stdin to avoid Windows cmd.exe command-line length limits
+  console.error('[DEBUG claude.js] buildClaudeArgs agentConfig:', JSON.stringify(agentConfig), 'args:', args.join(' '));
   return args;
 }
 
@@ -110,7 +117,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let agentSession = null;
 
   if (isCustomAgent) {
-    agentConfig = (manifest.agents || {})[agentId] || null;
+    agentConfig = lookupAgentConfig(manifest.agents, agentId);
     if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
     if (!manifest.worker.agentSessions[agentId]) {
       manifest.worker.agentSessions[agentId] = {

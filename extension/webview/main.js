@@ -358,7 +358,7 @@
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
       '<div class="agent-form-row"><label>Model</label><select class="mcp-input" id="agent-f-model"><option value="">Default</option></select>' +
       '<select class="mcp-input" id="agent-f-thinking"><option value="">Thinking: default</option></select></div>' +
-      '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt appended to the default worker prompt (NOT visible to controller)">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
+      '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
       '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="agent-f-save">Save</button><button class="mcp-btn" id="agent-f-cancel">Cancel</button></div>';
@@ -688,18 +688,24 @@
   // ── VNC / Computer Tab ───────────────────────────────────────────────
   let panelId = null;  // set by initConfig, persisted for container linking
   let novncPort = null;
-  let inlineVncEntry = null;
+  // Split-view state
+  let splitVncWrapper = null;
+  let splitVncLeft = null;
+  let splitVncCollapsed = false;
+
+  function vncUrl() {
+    return `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
+  }
 
   function updateComputerTab() {
     const placeholder = document.getElementById('computer-placeholder');
     const frame = document.getElementById('computer-vnc-frame');
     if (!placeholder || !frame) return;
     if (novncPort) {
-      const url = `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
       placeholder.style.display = 'none';
       frame.style.display = 'block';
       if (!frame.src || !frame.src.includes(':' + novncPort + '/')) {
-        frame.src = url;
+        frame.src = vncUrl();
       }
     } else {
       placeholder.style.display = '';
@@ -708,34 +714,121 @@
     }
   }
 
-  function showInlineVnc() {
-    if (inlineVncEntry || !novncPort) return;
+  function showSplitVnc() {
+    if (splitVncWrapper || !novncPort || !currentSection) return;
     hideThinking();
 
+    // Remember insertion point
+    const nextSib = currentSection.nextSibling;
+
+    // Build wrapper
     const wrapper = document.createElement('div');
-    wrapper.className = 'inline-vnc-wrapper';
+    wrapper.className = 'split-vnc-wrapper';
 
+    // Header with label + toggle
     const header = document.createElement('div');
-    header.className = 'inline-vnc-header';
-    header.textContent = 'Live Desktop';
-    wrapper.appendChild(header);
+    header.className = 'split-vnc-header';
+    const label = document.createElement('span');
+    label.textContent = 'Live Desktop';
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'split-vnc-toggle';
+    toggleBtn.textContent = 'Collapse';
+    toggleBtn.addEventListener('click', toggleSplitVnc);
+    header.append(label, toggleBtn);
 
+    // Body with left (entries) + right (VNC)
+    const body = document.createElement('div');
+    body.className = 'split-vnc-body';
+
+    const left = document.createElement('div');
+    left.className = 'split-vnc-left';
+
+    const right = document.createElement('div');
+    right.className = 'split-vnc-right';
     const iframe = document.createElement('iframe');
-    iframe.className = 'inline-vnc-frame';
-    iframe.src = `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
+    iframe.src = vncUrl();
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
-    wrapper.appendChild(iframe);
+    right.appendChild(iframe);
 
-    messagesEl.appendChild(wrapper);
-    inlineVncEntry = wrapper;
+    body.append(left, right);
+    wrapper.append(header, body);
+
+    // Move the current section into the left column
+    left.appendChild(currentSection);
+
+    // Insert wrapper where the section was
+    messagesEl.insertBefore(wrapper, nextSib);
+
+    splitVncWrapper = wrapper;
+    splitVncLeft = left;
+    splitVncCollapsed = false;
     autoScroll();
   }
 
-  function removeInlineVnc() {
-    if (inlineVncEntry && inlineVncEntry.parentNode) {
-      inlineVncEntry.parentNode.removeChild(inlineVncEntry);
+  function toggleSplitVnc() {
+    if (!splitVncWrapper) return;
+    splitVncCollapsed = !splitVncCollapsed;
+    if (splitVncCollapsed) {
+      splitVncWrapper.classList.add('split-vnc-collapsed');
+      splitVncWrapper.querySelector('.split-vnc-toggle').textContent = 'Show Desktop';
+    } else {
+      splitVncWrapper.classList.remove('split-vnc-collapsed');
+      splitVncWrapper.querySelector('.split-vnc-toggle').textContent = 'Collapse';
     }
-    inlineVncEntry = null;
+  }
+
+  function teardownSplitVnc(leaveBar) {
+    if (!splitVncWrapper) return;
+
+    // Move all children from the left column back into #messages before the wrapper.
+    // Track the last moved child so we can place the bar right after it.
+    let lastMoved = null;
+    if (splitVncLeft) {
+      while (splitVncLeft.firstChild) {
+        lastMoved = splitVncLeft.firstChild;
+        splitVncWrapper.parentNode.insertBefore(lastMoved, splitVncWrapper);
+      }
+    }
+
+    if (leaveBar && novncPort && lastMoved) {
+      // Insert bar right after the last agent section (not at end of chat)
+      const bar = document.createElement('div');
+      bar.className = 'split-vnc-bar';
+      bar.innerHTML = '<span>\u25b6 Show Desktop</span>';
+      bar.addEventListener('click', () => {
+        if (!novncPort) return;
+        // Show VNC iframe after the bar
+        const frame = document.createElement('div');
+        frame.className = 'inline-vnc-wrapper';
+        const hdr = document.createElement('div');
+        hdr.className = 'split-vnc-header';
+        const lbl = document.createElement('span');
+        lbl.textContent = 'Desktop Snapshot';
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'split-vnc-toggle';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', () => {
+          frame.remove();
+          bar.style.display = '';  // Show the bar again
+        });
+        hdr.append(lbl, closeBtn);
+        const ifr = document.createElement('iframe');
+        ifr.className = 'inline-vnc-frame';
+        ifr.src = vncUrl();
+        ifr.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+        frame.append(hdr, ifr);
+        bar.style.display = 'none';  // Hide bar while frame is open
+        bar.insertAdjacentElement('afterend', frame);
+      });
+      lastMoved.insertAdjacentElement('afterend', bar);
+      splitVncWrapper.remove();
+    } else {
+      splitVncWrapper.remove();
+    }
+
+    splitVncWrapper = null;
+    splitVncLeft = null;
+    splitVncCollapsed = false;
   }
 
   // ── Instance Management ──────────────────────────────────────────────
@@ -1057,7 +1150,8 @@
     const content = document.createElement('div');
     content.className = 'thinking-content';
     thinkingEl.appendChild(content);
-    messagesEl.appendChild(thinkingEl);
+    const target = splitVncLeft || messagesEl;
+    target.appendChild(thinkingEl);
     thinkingTick = 0;
     updateThinkingText(content);
     thinkingInterval = setInterval(() => updateThinkingText(content), 120);
@@ -1106,10 +1200,16 @@
 
   function shouldAutoScroll() {
     const threshold = 60;
+    if (splitVncLeft) {
+      return splitVncLeft.scrollHeight - splitVncLeft.scrollTop - splitVncLeft.clientHeight < threshold;
+    }
     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
   }
 
   function scrollToBottom() {
+    if (splitVncLeft) {
+      splitVncLeft.scrollTop = splitVncLeft.scrollHeight;
+    }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -1213,6 +1313,11 @@
 
   function ensureSection(label) {
     if (currentActor === label) return;
+    // If split view is active and the actor is changing away from the worker,
+    // teardown the split view now (places "Show Desktop" right after the worker's output)
+    if (splitVncWrapper && currentActor && currentActor !== label) {
+      teardownSplitVnc(true);
+    }
     closeSection();
 
     currentActor = label;
@@ -1224,7 +1329,9 @@
     header.textContent = label;
     section.appendChild(header);
 
-    messagesEl.appendChild(section);
+    // During split-view, new sections go into the left column
+    const target = splitVncLeft || messagesEl;
+    target.appendChild(section);
     currentSection = section;
     hasContent = false;
   }
@@ -1345,8 +1452,8 @@
     toolCall(msg) {
       streamingEntry = null;
       addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call');
-      if (msg.isComputerUse && novncPort && !inlineVncEntry) {
-        showInlineVnc();
+      if (msg.isComputerUse && novncPort && !splitVncWrapper) {
+        showSplitVnc();
       }
     },
 
@@ -1368,6 +1475,7 @@
     },
 
     clear() {
+      teardownSplitVnc(false);
       streamingEntry = null;
       closeSection();
       messagesEl.innerHTML = '';
@@ -1392,7 +1500,9 @@
       } else {
         isRunning = false;
         hideThinking();
-        removeInlineVnc();
+        // Split VNC is torn down by ensureSection() when the actor changes.
+        // As a fallback, teardown here too in case no new section was created.
+        if (splitVncWrapper) teardownSplitVnc(true);
         btnSend.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
@@ -1449,13 +1559,13 @@
     desktopGone() {
       novncPort = null;
       updateComputerTab();
-      removeInlineVnc();
+      teardownSplitVnc(false);
       saveState();
     },
 
     computerUseDetected() {
-      if (novncPort && !inlineVncEntry) {
-        showInlineVnc();
+      if (novncPort && !splitVncWrapper) {
+        showSplitVnc();
       }
     },
 

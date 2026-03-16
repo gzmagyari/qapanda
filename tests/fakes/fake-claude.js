@@ -91,7 +91,7 @@ async function main() {
     '--output-format', '--model', '--session-id', '--resume',
     '--allowedTools', '--tools', '--disallowedTools',
     '--permission-prompt-tool', '--max-turns', '--max-budget-usd',
-    '--add-dir', '--append-system-prompt',
+    '--add-dir', '--append-system-prompt', '--json-schema',
   ]);
 
   // Validate --session-id is a valid UUID (matches real Claude CLI behavior)
@@ -134,7 +134,7 @@ async function main() {
     const decision = decideAsController(prompt);
     const json = JSON.stringify(decision, null, 2);
     emitText(json + '\n');
-    emit({ type: 'result_message', session_id: sessionId, result: json });
+    emit({ type: 'result_message', session_id: sessionId, result: '', structured_output: decision });
     return;
   }
 

@@ -263,9 +263,8 @@ function buildDefaultWorkerAppendSystemPrompt() {
 }
 
 function buildAgentWorkerSystemPrompt(agentConfig) {
-  const base = buildDefaultWorkerAppendSystemPrompt();
-  if (!agentConfig || !agentConfig.system_prompt) return base;
-  return base + '\n\n' + agentConfig.system_prompt;
+  if (agentConfig && agentConfig.system_prompt) return agentConfig.system_prompt;
+  return buildDefaultWorkerAppendSystemPrompt();
 }
 
 module.exports = {

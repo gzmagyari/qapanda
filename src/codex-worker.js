@@ -5,6 +5,7 @@ const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
+const { lookupAgentConfig } = require('./state');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
 
@@ -92,7 +93,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   let agentSession = null;
 
   if (isCustomAgent) {
-    agentConfig = (manifest.agents || {})[agentId] || null;
+    agentConfig = lookupAgentConfig(manifest.agents, agentId);
     if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
     if (!manifest.worker.agentSessions[agentId]) {
       manifest.worker.agentSessions[agentId] = {

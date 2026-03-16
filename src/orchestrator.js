@@ -1,5 +1,5 @@
 const { appendJsonl, appendText, nowIso, readText, summarizeError, truncate } = require('./utils');
-const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, saveManifest } = require('./state');
+const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, lookupAgentConfig, saveManifest } = require('./state');
 const { runControllerTurn: runCodexControllerTurn } = require('./codex');
 const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn } = require('./claude');
@@ -233,7 +233,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
       const delegateAgentId = controllerResult.decision.agent_id || null;
       const delegateAgentConfig = delegateAgentId && delegateAgentId !== 'default'
-        ? ((manifest.agents || {})[delegateAgentId] || null)
+        ? lookupAgentConfig(manifest.agents, delegateAgentId)
         : null;
       const delegateCli = (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli || 'claude';
       const workerSameSession = delegateAgentId && delegateAgentId !== 'default'

@@ -1,8 +1,8 @@
-const { writeText, parsePossiblyFencedJson, randomId } = require('./utils');
+const { writeText, randomId } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
-const { validateControllerDecision } = require('./schema');
+const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 
 function buildClaudeControllerArgs(manifest, loop) {
   const args = [
@@ -27,6 +27,9 @@ function buildClaudeControllerArgs(manifest, loop) {
     args.push('--model', manifest.controller.model);
   }
 
+  // Enforce structured JSON output — works with both --session-id and --resume in -p mode
+  args.push('--json-schema', JSON.stringify(controllerDecisionSchema));
+
   return args;
 }
 
@@ -39,7 +42,7 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
 
   let accumulatedText = '';
   let lastAssistantMessage = '';
-  let finalResultText = '';
+  let structuredOutput = null;
   let sawTextDelta = false;
 
   const result = await spawnStreamingProcess({
@@ -69,7 +72,7 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
         discoveredSessionId = raw.session_id;
       }
 
-      // Accumulate text from streaming deltas
+      // Accumulate text from streaming deltas (for rendering only)
       if (raw.type === 'stream_event') {
         const event = raw.event || {};
         if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
@@ -86,13 +89,10 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
         if (text) lastAssistantMessage = text;
       }
 
+      // Capture structured_output from the result event (set by --json-schema)
       if (raw.type === 'result_message' || raw.type === 'result') {
-        if (typeof raw.result === 'string') {
-          finalResultText = raw.result;
-        } else if (typeof raw.result?.text === 'string') {
-          finalResultText = raw.result.text;
-        } else {
-          finalResultText = extractTextFromClaudeContent(raw.message?.content || raw.content);
+        if (raw.structured_output && typeof raw.structured_output === 'object') {
+          structuredOutput = raw.structured_output;
         }
       }
 
@@ -135,9 +135,11 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
     throw new Error(`Claude controller exited with code ${result.code}. See ${loop.controller.stderrFile}`);
   }
 
-  // Parse the final text as controller decision JSON
-  const rawText = finalResultText || lastAssistantMessage || accumulatedText || '';
-  const decision = validateControllerDecision(parsePossiblyFencedJson(rawText));
+  // Use structured_output from --json-schema (guaranteed valid JSON on resume and fresh sessions)
+  if (!structuredOutput) {
+    throw new Error('Claude controller did not return structured JSON output.');
+  }
+  const decision = validateControllerDecision(structuredOutput);
   loop.controller.decision = decision;
   request.latestControllerDecision = decision;
 
