@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
-const { globalAgentsPath, projectAgentsPath, loadAgentsFile, saveAgentsFile, loadMergedAgents } = require('./agents-store');
+const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store');
 const { listInstances, stopInstance, restartInstance, ensureDesktop, getLinkedInstance } = require('./src/remote-desktop');
 
 const activePanels = new Set();
@@ -162,15 +162,31 @@ function handleTaskMessage(msg, repoRoot) {
   return null;
 }
 
-function handleAgentMessage(msg, repoRoot) {
+function handleAgentMessage(msg, repoRoot, extensionPath) {
   if (msg.type === 'agentsLoad') {
-    return { type: 'agentsData', agents: loadMergedAgents(repoRoot) };
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
   }
   if (msg.type === 'agentSave') {
     const scope = msg.scope; // 'global' or 'project'
     const filePath = scope === 'global' ? globalAgentsPath() : projectAgentsPath(repoRoot);
     saveAgentsFile(filePath, msg.agents);
-    return { type: 'agentsData', agents: loadMergedAgents(repoRoot) };
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
+  }
+  if (msg.type === 'agentSaveSystem') {
+    // Save user override for a system agent
+    const overridePath = systemAgentsOverridePath();
+    const existing = loadAgentsFile(overridePath);
+    existing[msg.id] = msg.agent;
+    saveAgentsFile(overridePath, existing);
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
+  }
+  if (msg.type === 'agentRestoreSystem') {
+    // Remove user override to restore bundled default
+    const overridePath = systemAgentsOverridePath();
+    const existing = loadAgentsFile(overridePath);
+    delete existing[msg.id];
+    saveAgentsFile(overridePath, existing);
+    return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
   }
   return null;
 }
@@ -285,14 +301,14 @@ function getWebviewHtml(panel, extensionUri) {
         </select>
       </div>
       <div class="config-group cfg-worker-only">
-        <label>Worker CLI</label>
+        <label>Default Worker CLI</label>
         <select id="cfg-worker-cli">
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </div>
       <div class="config-group cfg-worker-only">
-        <label>Worker</label>
+        <label>Default Worker</label>
         <select id="cfg-worker-model">
           <option value="">Model: default</option>
         </select>
@@ -300,7 +316,7 @@ function getWebviewHtml(panel, extensionUri) {
           <option value="">Thinking: default</option>
         </select>
       </div>
-      <div class="config-group">
+      <div class="config-group cfg-controller-only">
         <label>Wait</label>
         <select id="cfg-wait-delay">
           <option value="">None</option>
@@ -336,6 +352,13 @@ function getWebviewHtml(panel, extensionUri) {
 
     <div id="tab-agents" class="tab-hidden">
       <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>System Agents</h3>
+            <span class="mcp-section-path">Built-in agents shipped with the extension</span>
+          </div>
+          <div id="agent-list-system" class="mcp-list"></div>
+        </div>
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Global Agents</h3>
@@ -467,8 +490,9 @@ function activate(context) {
       extensionPath: context.extensionUri.fsPath,
     });
     // Initialize MCP servers and agents from disk
+    const extensionPath1 = context.extensionUri.fsPath;
     session.setMcpServers(loadMergedMcpServers(repoRoot));
-    session.setAgents(loadMergedAgents(repoRoot));
+    session.setAgents(loadMergedAgents(repoRoot, extensionPath1));
 
     panel.webview.onDidReceiveMessage(
       async (msg) => {
@@ -485,7 +509,7 @@ function activate(context) {
           // Restore panelId from webview persisted state if available
           if (msg.panelId) session._panelId = msg.panelId;
           const mcpData = loadMergedMcpServers(repoRoot);
-          const agentsData = loadMergedAgents(repoRoot);
+          const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
           // Re-populate remote-desktop cache if a container is still running for this panel
           if (msg.panelId) {
@@ -510,10 +534,10 @@ function activate(context) {
         const taskReply = handleTaskMessage(msg, repoRoot);
         if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
         // Agent CRUD messages
-        const agentReply = handleAgentMessage(msg, repoRoot);
+        const agentReply = handleAgentMessage(msg, repoRoot, extensionPath1);
         if (agentReply) {
           try { panel.webview.postMessage(agentReply); } catch {}
-          session.setAgents(loadMergedAgents(repoRoot));
+          session.setAgents(loadMergedAgents(repoRoot, extensionPath1));
           return;
         }
         // Instance management messages (async)
@@ -575,8 +599,9 @@ function activate(context) {
         initialConfig: panelConfig,
         extensionPath: context.extensionUri.fsPath,
       });
+      const extensionPath2 = context.extensionUri.fsPath;
       session.setMcpServers(loadMergedMcpServers(repoRoot));
-      session.setAgents(loadMergedAgents(repoRoot));
+      session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
@@ -602,10 +627,10 @@ function activate(context) {
           const taskReply = handleTaskMessage(msg, repoRoot);
           if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
           // Agent CRUD messages
-          const agentReply = handleAgentMessage(msg, repoRoot);
+          const agentReply = handleAgentMessage(msg, repoRoot, extensionPath2);
           if (agentReply) {
             try { panel.webview.postMessage(agentReply); } catch {}
-            session.setAgents(loadMergedAgents(repoRoot));
+            session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
             return;
           }
           // Instance management messages (async)
@@ -621,7 +646,7 @@ function activate(context) {
             // Restore panelId from webview persisted state if available
             if (msg.panelId) session._panelId = msg.panelId;
             const mcpData = loadMergedMcpServers(repoRoot);
-            const agentsData = loadMergedAgents(repoRoot);
+            const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
             // Re-populate remote-desktop cache if a container is still running for this panel
             if (msg.panelId) {

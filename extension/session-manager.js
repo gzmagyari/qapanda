@@ -83,7 +83,7 @@ class SessionManager {
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
-    this._agentsData = { global: {}, project: {} }; // Set via setAgents() from extension.js
+    this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
@@ -91,15 +91,15 @@ class SessionManager {
     this._mcpData = mcpData || { global: {}, project: {} };
   }
 
-  /** Update the agents data (both scopes). Called from extension.js. */
+  /** Update the agents data (system + global + project scopes). Called from extension.js. */
   setAgents(agentsData) {
-    this._agentsData = agentsData || { global: {}, project: {} };
+    this._agentsData = agentsData || { system: {}, global: {}, project: {} };
   }
 
-  /** Return enabled agents merged from global + project. */
+  /** Return enabled agents merged from system + global + project (project wins). */
   _enabledAgents() {
     const result = {};
-    const all = { ...this._agentsData.global, ...this._agentsData.project };
+    const all = { ...(this._agentsData.system || {}), ...(this._agentsData.global || {}), ...(this._agentsData.project || {}) };
     for (const [id, agent] of Object.entries(all)) {
       if (agent && agent.enabled !== false) {
         result[id] = agent;

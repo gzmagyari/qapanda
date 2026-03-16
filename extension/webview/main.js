@@ -246,20 +246,31 @@
   });
 
   // ── Agents Management ──────────────────────────────────────────────
+  let agentsSystem = {};
+  let agentsSystemMeta = {}; // { [id]: { hasUserOverride, removed, bundled } }
   let agentsGlobal = {};
   let agentsProject = {};
   let agentEditingForm = null; // { scope, id } or null
 
   function renderAgentList(scope) {
     const listEl = document.getElementById('agent-list-' + scope);
-    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    if (!listEl) return;
+    const isSystem = scope === 'system';
+    const agents = isSystem ? agentsSystem : (scope === 'global' ? agentsGlobal : agentsProject);
     listEl.innerHTML = '';
 
+    // For system scope, also show removed agents (so user can restore them)
+    const removedSystemIds = isSystem
+      ? Object.entries(agentsSystemMeta).filter(([, m]) => m.removed).map(([id]) => id)
+      : [];
+
     const ids = Object.keys(agents);
-    if (ids.length === 0 && !(agentEditingForm && agentEditingForm.scope === scope && !agentEditingForm.id)) {
+    const allIds = isSystem ? [...new Set([...ids, ...removedSystemIds])] : ids;
+
+    if (allIds.length === 0 && !(agentEditingForm && agentEditingForm.scope === scope && !agentEditingForm.id)) {
       const empty = document.createElement('div');
       empty.className = 'mcp-empty';
-      empty.textContent = 'No agents configured';
+      empty.textContent = isSystem ? 'No system agents' : 'No agents configured';
       listEl.appendChild(empty);
     }
 
@@ -267,47 +278,94 @@
       listEl.appendChild(createAgentForm(scope, null));
     }
 
-    for (const id of ids) {
-      const agent = agents[id];
+    for (const id of allIds) {
+      const meta = isSystem ? (agentsSystemMeta[id] || {}) : {};
+      const isRemoved = isSystem && meta.removed;
+      const agent = isRemoved ? meta.bundled : agents[id];
+      if (!agent) continue;
+
       if (agentEditingForm && agentEditingForm.scope === scope && agentEditingForm.id === id) {
         listEl.appendChild(createAgentForm(scope, id));
         continue;
       }
 
       const card = document.createElement('div');
-      card.className = 'mcp-card' + (agent.enabled === false ? ' mcp-disabled' : '');
+      card.className = 'mcp-card' + (agent.enabled === false || isRemoved ? ' mcp-disabled' : '');
 
       const header = document.createElement('div');
       header.className = 'mcp-card-header';
 
       const toggle = document.createElement('input');
       toggle.type = 'checkbox';
-      toggle.checked = agent.enabled !== false;
+      toggle.checked = !isRemoved && agent.enabled !== false;
       toggle.className = 'mcp-toggle';
       toggle.style.accentColor = 'var(--vscode-focusBorder, #007fd4)';
       toggle.style.cursor = 'pointer';
+      toggle.disabled = isRemoved;
       toggle.addEventListener('change', () => {
-        agent.enabled = toggle.checked;
-        notifyAgentChanged(scope);
-        renderAgentList(scope);
+        if (isSystem) {
+          const override = { ...(meta.hasUserOverride ? agents[id] : agent), enabled: toggle.checked };
+          vscode.postMessage({ type: 'agentSaveSystem', id, agent: override });
+        } else {
+          agent.enabled = toggle.checked;
+          notifyAgentChanged(scope);
+          renderAgentList(scope);
+        }
       });
 
       const nameEl = document.createElement('span');
       nameEl.className = 'mcp-name';
       nameEl.textContent = (agent.name || id) + ' (' + id + ')';
 
+      // Badge for system agents
+      if (isSystem) {
+        const badge = document.createElement('span');
+        badge.style.cssText = 'font-size:10px;opacity:0.6;margin-left:6px;font-style:italic;';
+        badge.textContent = isRemoved ? 'removed' : (meta.hasUserOverride ? 'customized' : 'built-in');
+        nameEl.appendChild(badge);
+      }
+
       const actions = document.createElement('span');
       actions.className = 'mcp-actions';
-      const editBtn = document.createElement('button');
-      editBtn.className = 'mcp-btn';
-      editBtn.textContent = 'Edit';
-      editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
-      const delBtn = document.createElement('button');
-      delBtn.className = 'mcp-btn mcp-btn-danger';
-      delBtn.textContent = 'Delete';
-      delBtn.addEventListener('click', () => { delete agents[id]; notifyAgentChanged(scope); renderAgentList(scope); });
-      actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
+
+      if (isSystem) {
+        if (!isRemoved) {
+          const editBtn = document.createElement('button');
+          editBtn.className = 'mcp-btn';
+          editBtn.textContent = 'Edit';
+          editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
+          actions.appendChild(editBtn);
+        }
+        if (!isRemoved) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'mcp-btn mcp-btn-danger';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'agentSaveSystem', id, agent: { removed: true } });
+          });
+          actions.appendChild(delBtn);
+        }
+        if (isRemoved || meta.hasUserOverride) {
+          const restoreBtn = document.createElement('button');
+          restoreBtn.className = 'mcp-btn';
+          restoreBtn.textContent = isRemoved ? 'Restore' : 'Restore default';
+          restoreBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'agentRestoreSystem', id });
+          });
+          actions.appendChild(restoreBtn);
+        }
+      } else {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'mcp-btn';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
+        const delBtn = document.createElement('button');
+        delBtn.className = 'mcp-btn mcp-btn-danger';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => { delete agents[id]; notifyAgentChanged(scope); renderAgentList(scope); });
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+      }
 
       header.appendChild(toggle);
       header.appendChild(nameEl);
@@ -332,7 +390,7 @@
   }
 
   function createAgentForm(scope, editId) {
-    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    const agents = scope === 'system' ? agentsSystem : (scope === 'global' ? agentsGlobal : agentsProject);
     const existing = editId ? agents[editId] : null;
 
     const form = document.createElement('div');
@@ -395,7 +453,8 @@
   }
 
   function saveAgentForm(scope, editId) {
-    const agents = scope === 'global' ? agentsGlobal : agentsProject;
+    const isSystem = scope === 'system';
+    const agents = isSystem ? agentsSystem : (scope === 'global' ? agentsGlobal : agentsProject);
     const id = (document.getElementById('agent-f-id').value || '').trim();
     const name = (document.getElementById('agent-f-name').value || '').trim();
     const description = (document.getElementById('agent-f-desc').value || '').trim();
@@ -419,17 +478,23 @@
       }
     }
 
-    if (editId && editId !== id) delete agents[editId];
     const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
     const agentData = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
     if (cli) agentData.cli = cli;
     if (model) agentData.model = model;
     if (thinking) agentData.thinking = thinking;
-    agents[id] = agentData;
 
     agentEditingForm = null;
-    notifyAgentChanged(scope);
-    renderAgentList(scope);
+
+    if (isSystem) {
+      // Save as user override for the system agent
+      vscode.postMessage({ type: 'agentSaveSystem', id: editId || id, agent: agentData });
+    } else {
+      if (editId && editId !== id) delete agents[editId];
+      agents[id] = agentData;
+      notifyAgentChanged(scope);
+      renderAgentList(scope);
+    }
   }
 
   function notifyAgentChanged(scope) {
@@ -1120,7 +1185,7 @@
     if (target === 'claude') return 'Worker (Default)';
     if (target.startsWith('agent-')) {
       const agentId = target.slice('agent-'.length);
-      const allAgents = { ...agentsGlobal, ...agentsProject };
+      const allAgents = { ...agentsSystem, ...agentsGlobal, ...agentsProject };
       const agent = allAgents[agentId];
       return agent ? agent.name : agentId;
     }
@@ -1129,8 +1194,10 @@
 
   function updateConfigBarForTarget(target) {
     const isController = !target || target === 'controller';
+    const isAgent = target && target.startsWith('agent-');
     document.querySelectorAll('.cfg-controller-only').forEach(el => el.classList.toggle('tab-hidden', !isController));
-    document.querySelectorAll('.cfg-worker-only').forEach(el => el.classList.toggle('tab-hidden', isController));
+    // Worker dropdowns visible for controller + default worker, hidden for agents
+    document.querySelectorAll('.cfg-worker-only').forEach(el => el.classList.toggle('tab-hidden', isAgent));
   }
 
   function refreshTargetDropdown() {
@@ -1140,8 +1207,8 @@
     Array.from(cfgChatTarget.options).forEach(opt => {
       if (opt.value.startsWith('agent-')) cfgChatTarget.removeChild(opt);
     });
-    // Add enabled agents
-    const allAgents = { ...agentsGlobal, ...agentsProject };
+    // Add enabled agents (system < global < project for display, project wins for duplicates)
+    const allAgents = { ...agentsSystem, ...agentsGlobal, ...agentsProject };
     for (const [id, agent] of Object.entries(allAgents)) {
       if (agent && agent.enabled !== false) {
         const opt = document.createElement('option');
@@ -1566,8 +1633,11 @@
         renderMcpList('project');
       }
       if (msg.agents) {
+        agentsSystem = msg.agents.system || {};
+        agentsSystemMeta = msg.agents.systemMeta || {};
         agentsGlobal = msg.agents.global || {};
         agentsProject = msg.agents.project || {};
+        renderAgentList('system');
         renderAgentList('global');
         renderAgentList('project');
         refreshTargetDropdown();
@@ -1577,8 +1647,11 @@
 
     agentsData(msg) {
       if (msg.agents) {
+        agentsSystem = msg.agents.system || {};
+        agentsSystemMeta = msg.agents.systemMeta || {};
         agentsGlobal = msg.agents.global || {};
         agentsProject = msg.agents.project || {};
+        renderAgentList('system');
         renderAgentList('global');
         renderAgentList('project');
         refreshTargetDropdown();
