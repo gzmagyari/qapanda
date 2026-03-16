@@ -119,6 +119,13 @@ function clearPanel(panelId) {
 }
 
 /**
+ * Get the cached desktop info for a panelId, or null.
+ */
+function getLinkedInstance(panelId) {
+  return _cache.get(panelId) || null;
+}
+
+/**
  * Check if a CLI name is a remote backend.
  */
 function isRemoteCli(cli) {
@@ -133,10 +140,74 @@ function injectRemotePort(cli, args, desktop) {
   return [`--remote-port=${desktop.apiPort}`, ...args];
 }
 
+/**
+ * Helper to run a shell command and return { code, stdout, stderr }.
+ */
+function _exec(cmd, timeout = 30000) {
+  return new Promise((resolve) => {
+    exec(cmd, { timeout }, (err, stdout, stderr) => {
+      resolve({ code: err ? (err.code || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
+    });
+  });
+}
+
+/**
+ * List all running qa-desktop instances.
+ * Annotates each with `linkedPanelId` if a cached panel maps to it.
+ */
+async function listInstances(currentPanelId) {
+  try {
+    const result = await _exec('qa-desktop ls --json');
+    if (result.code !== 0) return [];
+    const instances = JSON.parse(result.stdout.trim());
+
+    // Build reverse map: container name -> panelId
+    const nameToPanel = {};
+    for (const [panelId, desktop] of _cache.entries()) {
+      nameToPanel[desktop.name] = panelId;
+    }
+
+    return instances.map((inst) => ({
+      ...inst,
+      linkedPanelId: nameToPanel[inst.name] || null,
+      isLinked: nameToPanel[inst.name] === currentPanelId,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Stop a running instance by name.
+ */
+async function stopInstance(name) {
+  const result = await _exec(`qa-desktop down "${name}"`);
+  // Remove from cache if present
+  for (const [key, desktop] of _cache.entries()) {
+    if (desktop.name === name) {
+      _cache.delete(key);
+      break;
+    }
+  }
+  return result.code === 0;
+}
+
+/**
+ * Restart an instance: stop then start, wait for healthy.
+ */
+async function restartInstance(name, repoRoot, panelId) {
+  await stopInstance(name);
+  return ensureDesktop(repoRoot, panelId);
+}
+
 module.exports = {
   ensureDesktop,
   clearPanel,
+  getLinkedInstance,
   isRemoteCli,
   injectRemotePort,
   instanceName,
+  listInstances,
+  stopInstance,
+  restartInstance,
 };

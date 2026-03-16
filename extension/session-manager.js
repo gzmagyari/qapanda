@@ -197,6 +197,14 @@ class SessionManager {
     return this._running;
   }
 
+  get panelId() {
+    return this._panelId;
+  }
+
+  get repoRoot() {
+    return this._repoRoot;
+  }
+
   /** Return the currently attached run ID, or null. */
   getRunId() {
     return this._activeManifest ? this._activeManifest.runId : null;

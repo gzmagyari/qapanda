@@ -5,6 +5,7 @@ const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 const { globalAgentsPath, projectAgentsPath, loadAgentsFile, saveAgentsFile, loadMergedAgents } = require('./agents-store');
+const { listInstances, stopInstance, restartInstance, ensureDesktop } = require('./src/remote-desktop');
 
 const activePanels = new Set();
 
@@ -174,6 +175,51 @@ function handleAgentMessage(msg, repoRoot) {
   return null;
 }
 
+async function handleInstanceMessage(msg, repoRoot, panelId) {
+  if (msg.type === 'instancesLoad') {
+    const instances = await listInstances(panelId);
+    return { type: 'instancesData', instances, panelId };
+  }
+  if (msg.type === 'instanceStart') {
+    await ensureDesktop(repoRoot, panelId);
+    const instances = await listInstances(panelId);
+    return { type: 'instancesData', instances, panelId };
+  }
+  if (msg.type === 'instanceStop') {
+    await stopInstance(msg.name);
+    const instances = await listInstances(panelId);
+    return { type: 'instancesData', instances, panelId };
+  }
+  if (msg.type === 'instanceRestart') {
+    await restartInstance(msg.name, repoRoot, panelId);
+    const instances = await listInstances(panelId);
+    return { type: 'instancesData', instances, panelId };
+  }
+  if (msg.type === 'instanceStopAll') {
+    const current = await listInstances(panelId);
+    for (const inst of current) {
+      await stopInstance(inst.name);
+    }
+    return { type: 'instancesData', instances: [], panelId };
+  }
+  if (msg.type === 'instanceRestartAll') {
+    const current = await listInstances(panelId);
+    for (const inst of current) {
+      await restartInstance(inst.name, repoRoot, panelId);
+    }
+    const instances = await listInstances(panelId);
+    return { type: 'instancesData', instances, panelId };
+  }
+  if (msg.type === 'instanceOpenVnc') {
+    const port = msg.novncPort;
+    if (port) {
+      vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}/vnc.html?autoconnect=true&resize=scale`));
+    }
+    return null;
+  }
+  return null;
+}
+
 function getWebviewHtml(panel, extensionUri) {
   const webviewDir = vscode.Uri.joinPath(extensionUri, 'webview');
   const styleUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'style.css'));
@@ -197,6 +243,7 @@ function getWebviewHtml(panel, extensionUri) {
       <button class="tab-btn" data-tab="tasks">Tasks</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
+      <button class="tab-btn" data-tab="instances">Instances</button>
     </div>
 
     <div id="tab-agent">
@@ -326,6 +373,22 @@ function getWebviewHtml(panel, extensionUri) {
         </div>
       </div>
     </div><!-- /tab-mcp -->
+
+    <div id="tab-instances" class="tab-hidden">
+      <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Docker Instances</h3>
+            <span class="mcp-section-path">qa-desktop containers</span>
+            <div style="flex:1"></div>
+            <button class="instance-action-btn" data-action="start">Start for this session</button>
+            <button class="instance-action-btn instance-btn-secondary" data-action="restartAll">Restart All</button>
+            <button class="instance-action-btn instance-btn-secondary" data-action="stopAll">Stop All</button>
+          </div>
+          <div id="instance-list" class="mcp-list"></div>
+        </div>
+      </div>
+    </div><!-- /tab-instances -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -398,7 +461,7 @@ function activate(context) {
     session.setAgents(loadMergedAgents(repoRoot));
 
     panel.webview.onDidReceiveMessage(
-      (msg) => {
+      async (msg) => {
         if (msg.type === 'configChanged') {
           session.applyConfig(msg.config);
           Object.assign(panelConfig, msg.config);
@@ -427,6 +490,12 @@ function activate(context) {
         if (agentReply) {
           try { panel.webview.postMessage(agentReply); } catch {}
           session.setAgents(loadMergedAgents(repoRoot));
+          return;
+        }
+        // Instance management messages (async)
+        const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
+        if (instanceReply) {
+          try { panel.webview.postMessage(instanceReply); } catch {}
           return;
         }
         session.handleMessage(msg);
@@ -506,6 +575,12 @@ function activate(context) {
           if (agentReply) {
             try { panel.webview.postMessage(agentReply); } catch {}
             session.setAgents(loadMergedAgents(repoRoot));
+            return;
+          }
+          // Instance management messages (async)
+          const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
+          if (instanceReply) {
+            try { panel.webview.postMessage(instanceReply); } catch {}
             return;
           }
           if (msg.type === 'ready') {

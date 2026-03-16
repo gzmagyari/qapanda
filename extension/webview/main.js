@@ -16,6 +16,7 @@
     tasks: document.getElementById('tab-tasks'),
     agents: document.getElementById('tab-agents'),
     mcp: document.getElementById('tab-mcp'),
+    instances: document.getElementById('tab-instances'),
   };
 
   tabBar.addEventListener('click', (e) => {
@@ -30,6 +31,7 @@
     }
     if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
     if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
+    if (tab === 'instances') vscode.postMessage({ type: 'instancesLoad' });
   });
 
   // ── MCP Server Management ─────────────────────────────────────────
@@ -682,6 +684,140 @@
     if (task) showTaskForm(task);
   }
 
+  // ── Instance Management ──────────────────────────────────────────────
+  let instancesList = [];
+  let instancesLoading = false;
+
+  function setInstancesLoading(loading) {
+    instancesLoading = loading;
+    const listEl = document.getElementById('instance-list');
+    const overlay = document.getElementById('instance-loading');
+    if (!listEl) return;
+    if (loading) {
+      if (!overlay) {
+        const el = document.createElement('div');
+        el.id = 'instance-loading';
+        el.className = 'instance-loading-overlay';
+        el.innerHTML = '<div class="instance-spinner"></div><span>Working...</span>';
+        listEl.parentElement.style.position = 'relative';
+        listEl.parentElement.appendChild(el);
+      }
+      // Disable all buttons in the tab
+      document.querySelectorAll('#tab-instances button').forEach(b => { b.disabled = true; });
+    } else {
+      const el = document.getElementById('instance-loading');
+      if (el) el.remove();
+      document.querySelectorAll('#tab-instances button').forEach(b => { b.disabled = false; });
+    }
+  }
+
+  function instanceAction(msgType, extra) {
+    if (instancesLoading) return;
+    setInstancesLoading(true);
+    vscode.postMessage({ type: msgType, ...extra });
+  }
+
+  function renderInstances() {
+    const listEl = document.getElementById('instance-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    // Check if this session has a linked container
+    const hasLinked = instancesList.some(i => i.isLinked);
+
+    if (instancesList.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.innerHTML = 'No instances running.<br><small>Use a qa-remote-* agent to auto-start, or click "Start for this session" above.</small>';
+      listEl.appendChild(empty);
+      return;
+    }
+
+    for (const inst of instancesList) {
+      const card = document.createElement('div');
+      card.className = 'mcp-card' + (inst.isLinked ? ' instance-linked' : '');
+
+      const header = document.createElement('div');
+      header.className = 'mcp-card-header';
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.gap = '8px';
+
+      const statusBadge = document.createElement('span');
+      const isUp = inst.status && inst.status.toLowerCase().startsWith('up');
+      statusBadge.className = 'instance-status ' + (isUp ? 'instance-status-up' : 'instance-status-down');
+      statusBadge.textContent = isUp ? 'Up' : 'Down';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'mcp-name';
+      nameEl.style.flex = '1';
+      nameEl.textContent = inst.name;
+      if (inst.isLinked) {
+        const badge = document.createElement('span');
+        badge.className = 'instance-session-badge';
+        badge.textContent = 'this session';
+        nameEl.appendChild(document.createTextNode(' '));
+        nameEl.appendChild(badge);
+      }
+
+      const actions = document.createElement('span');
+      actions.style.display = 'flex';
+      actions.style.gap = '4px';
+
+      const vncBtn = document.createElement('button');
+      vncBtn.className = 'mcp-btn';
+      vncBtn.textContent = 'Open VNC';
+      vncBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'instanceOpenVnc', novncPort: inst.novnc_port });
+      });
+
+      const restartBtn = document.createElement('button');
+      restartBtn.className = 'mcp-btn';
+      restartBtn.textContent = 'Restart';
+      restartBtn.addEventListener('click', () => instanceAction('instanceRestart', { name: inst.name }));
+
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'mcp-btn mcp-btn-danger';
+      stopBtn.textContent = 'Stop';
+      stopBtn.addEventListener('click', () => instanceAction('instanceStop', { name: inst.name }));
+
+      actions.append(vncBtn, restartBtn, stopBtn);
+      header.append(statusBadge, nameEl, actions);
+
+      const details = document.createElement('div');
+      details.className = 'instance-details';
+      details.innerHTML =
+        '<span class="instance-detail-label">API:</span> ' + inst.api_port +
+        ' &nbsp; <span class="instance-detail-label">VNC:</span> ' + inst.vnc_port +
+        ' &nbsp; <span class="instance-detail-label">noVNC:</span> ' + inst.novnc_port +
+        (inst.container_id ? ' &nbsp; <span class="instance-detail-label">ID:</span> ' + inst.container_id : '');
+
+      card.append(header, details);
+      listEl.appendChild(card);
+    }
+
+    // Update the "Start for this session" button text based on whether we have a linked instance
+    const startBtn = document.querySelector('.instance-action-btn[data-action="start"]');
+    if (startBtn) {
+      startBtn.textContent = hasLinked ? 'Restart this session' : 'Start for this session';
+      startBtn.dataset.action = hasLinked ? 'restartLinked' : 'start';
+    }
+  }
+
+  // Toolbar buttons
+  const instancesTab = document.getElementById('tab-instances');
+  if (instancesTab) {
+    instancesTab.addEventListener('click', (e) => {
+      const btn = e.target.closest('.instance-action-btn');
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.action;
+      if (action === 'start') instanceAction('instanceStart');
+      if (action === 'restartLinked') instanceAction('instanceStart');
+      if (action === 'stopAll') instanceAction('instanceStopAll');
+      if (action === 'restartAll') instanceAction('instanceRestartAll');
+    });
+  }
+
   // Config dropdowns
   const cfgControllerModel = document.getElementById('cfg-controller-model');
   const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
@@ -1232,6 +1368,12 @@
     syncConfig(msg) {
       setConfig(msg.config);
       saveState();
+    },
+
+    instancesData(msg) {
+      instancesList = msg.instances || [];
+      setInstancesLoading(false);
+      renderInstances();
     },
 
     tasksData(msg) {

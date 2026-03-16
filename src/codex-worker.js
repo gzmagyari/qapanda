@@ -116,7 +116,12 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
     if (desktop) {
       if (desktop.isNew) {
-        renderer.banner(`Desktop container started (API port ${desktop.apiPort})`);
+        renderer.banner(`Desktop container started (API port ${desktop.apiPort}, noVNC port ${desktop.novncPort})`);
+        // New container = old sessions are gone. Reset so we don't resume a dead session.
+        if (agentSession && agentSession.hasStarted) {
+          agentSession.sessionId = crypto.randomUUID();
+          agentSession.hasStarted = false;
+        }
       }
     } else {
       renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
