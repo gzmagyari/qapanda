@@ -200,8 +200,76 @@ async function restartInstance(name, repoRoot, panelId) {
   return ensureDesktop(repoRoot, panelId);
 }
 
+/**
+ * Check if a container already exists for this panel WITHOUT creating one.
+ * Returns desktop info if found and healthy, null otherwise.
+ */
+async function findExistingDesktop(repoRoot, panelId) {
+  const cacheKey = panelId || repoRoot;
+
+  // Check cache first
+  if (_cache.has(cacheKey)) {
+    const cached = _cache.get(cacheKey);
+    const healthy = await _waitForHealthy(cached.apiPort, 3000);
+    if (healthy) return cached;
+    _cache.delete(cacheKey);
+  }
+
+  // Check if container exists via qa-desktop ls
+  const name = instanceName(repoRoot, panelId);
+  try {
+    const result = await _exec('qa-desktop ls --json');
+    if (result.code !== 0) return null;
+    const instances = JSON.parse(result.stdout.trim());
+    const match = instances.find(i => i.name === name && i.status && i.status.toLowerCase().includes('up'));
+    if (!match) return null;
+
+    // Found it — verify healthy and cache
+    const healthy = await _waitForHealthy(match.api_port, 5000);
+    if (!healthy) return null;
+
+    const desktop = {
+      name: match.name,
+      apiPort: match.api_port,
+      vncPort: match.vnc_port,
+      novncPort: match.novnc_port,
+      containerId: match.container_id,
+    };
+    _cache.set(cacheKey, desktop);
+    return desktop;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send an immediate cancel to the container API, killing all active subprocesses.
+ * Used when cc-manager aborts a remote CLI run.
+ */
+async function cancelRemoteRun(apiPort) {
+  if (!apiPort) return;
+  const http = require('node:http');
+  return new Promise((resolve) => {
+    const req = http.request(`http://localhost:${apiPort}/api/cancel`, {
+      method: 'POST',
+      timeout: 5000,
+    }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
 module.exports = {
   ensureDesktop,
+  findExistingDesktop,
+  cancelRemoteRun,
   clearPanel,
   getLinkedInstance,
   isRemoteCli,

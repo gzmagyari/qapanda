@@ -5,7 +5,7 @@ const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store');
-const { listInstances, stopInstance, restartInstance, ensureDesktop, getLinkedInstance } = require('./src/remote-desktop');
+const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, instanceName } = require('./src/remote-desktop');
 
 const activePanels = new Set();
 
@@ -511,9 +511,9 @@ function activate(context) {
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
-          // Re-populate remote-desktop cache if a container is still running for this panel
+          // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
-            ensureDesktop(repoRoot, session.panelId).then(desktop => {
+            findExistingDesktop(repoRoot, session.panelId).then(desktop => {
               if (desktop) {
                 try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
               }
@@ -560,6 +560,9 @@ function activate(context) {
     panel.onDidDispose(
       () => {
         activePanels.delete(panel);
+        // Stop the Docker container linked to this panel
+        const name = instanceName(repoRoot, session.panelId);
+        stopInstance(name).catch(() => {});
         session.dispose();
       },
       null,
@@ -648,9 +651,9 @@ function activate(context) {
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
-            // Re-populate remote-desktop cache if a container is still running for this panel
+            // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
-              ensureDesktop(repoRoot, session.panelId).then(desktop => {
+              findExistingDesktop(repoRoot, session.panelId).then(desktop => {
                 if (desktop) {
                   try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
                 }
@@ -682,6 +685,8 @@ function activate(context) {
       panel.onDidDispose(
         () => {
           activePanels.delete(panel);
+          const name = instanceName(repoRoot, session.panelId);
+          stopInstance(name).catch(() => {});
           session.dispose();
         },
         null,

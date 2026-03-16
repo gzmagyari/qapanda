@@ -1,4 +1,4 @@
-const { spawn, execSync } = require('node:child_process');
+const { spawn, execSync, exec } = require('node:child_process');
 const readline = require('node:readline');
 
 /**
@@ -22,11 +22,8 @@ function winEscapeArg(arg) {
 function killProcessTree(pid) {
   if (!pid) return;
   if (process.platform === 'win32') {
-    try {
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 10000 });
-    } catch {
-      // Process may already be dead
-    }
+    // Run taskkill asynchronously so it never blocks the caller
+    exec(`taskkill /F /T /PID ${pid}`, { timeout: 10000 }, () => {});
   } else {
     try {
       process.kill(pid, 'SIGTERM');
@@ -103,6 +100,7 @@ function spawnStreamingProcess({
     });
 
     let aborted = false;
+    let resolved = false;
     const stdoutLines = [];
     const stderrLines = [];
 
@@ -125,9 +123,24 @@ function spawnStreamingProcess({
 
     child.on('error', reject);
 
+    const doResolve = (result) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(result);
+      }
+    };
+
     const onAbort = () => {
       aborted = true;
+      // Destroy stdio streams first — unblocks readline immediately without waiting for process death
+      try { child.stdout.destroy(); } catch {}
+      try { child.stderr.destroy(); } catch {}
+      try { child.stdin.destroy(); } catch {}
       killProcessTree(child.pid);
+      // Resolve immediately — don't wait for streams to drain after kill
+      stdoutReader.close();
+      stderrReader.close();
+      doResolve({ code: null, signal: 'SIGTERM', aborted: true, stdoutLines, stderrLines });
     };
 
     if (abortSignal) {
@@ -147,7 +160,7 @@ function spawnStreamingProcess({
     child.on('close', (code, signal) => {
       stdoutReader.close();
       stderrReader.close();
-      resolve({ code, signal, aborted, stdoutLines, stderrLines });
+      doResolve({ code, signal, aborted, stdoutLines, stderrLines });
     });
   });
 }

@@ -4,7 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
-const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
+const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
@@ -114,7 +114,13 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   // Ensure remote desktop is running and inject --remote-port for qa-remote-* backends
   let desktop = null;
   if (isRemoteCli(workerBin)) {
+    if (abortSignal && abortSignal.aborted) {
+      throw new Error('Codex worker process was interrupted.');
+    }
     desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    if (abortSignal && abortSignal.aborted) {
+      throw new Error('Codex worker process was interrupted.');
+    }
     if (desktop) {
       if (desktop.isNew) {
         renderer.banner(`Desktop container started (API port ${desktop.apiPort}, noVNC port ${desktop.novncPort})`);
@@ -125,6 +131,11 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
         }
       }
       renderer.desktopReady(desktop.novncPort);
+      // On abort, also send HTTP cancel directly to the container for immediate stop
+      if (abortSignal) {
+        const onRemoteAbort = () => cancelRemoteRun(desktop.apiPort).catch(() => {});
+        abortSignal.addEventListener('abort', onRemoteAbort, { once: true });
+      }
     } else {
       renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
     }

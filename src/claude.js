@@ -4,7 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
-const { isRemoteCli, injectRemotePort, ensureDesktop } = require('./remote-desktop');
+const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 
 /**
@@ -144,7 +144,15 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
 
   // Ensure remote desktop is running and inject --remote-port for qa-remote-* backends
   if (isRemoteCli(workerBin)) {
+    // If already aborted before we even start the desktop, bail out
+    if (abortSignal && abortSignal.aborted) {
+      throw new Error('Claude Code process was interrupted.');
+    }
     const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    // Check again — abort may have fired during ensureDesktop
+    if (abortSignal && abortSignal.aborted) {
+      throw new Error('Claude Code process was interrupted.');
+    }
     if (desktop) {
       if (desktop.isNew) {
         renderer.banner(`Desktop container started (API port ${desktop.apiPort}, noVNC port ${desktop.novncPort})`);
@@ -157,6 +165,11 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       }
       renderer.desktopReady(desktop.novncPort);
       args = injectRemotePort(workerBin, args, desktop);
+      // On abort, also send HTTP cancel directly to the container for immediate stop
+      if (abortSignal) {
+        const onRemoteAbort = () => cancelRemoteRun(desktop.apiPort).catch(() => {});
+        abortSignal.addEventListener('abort', onRemoteAbort, { once: true });
+      }
     } else {
       renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
     }
