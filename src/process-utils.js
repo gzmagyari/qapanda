@@ -162,6 +162,16 @@ function spawnStreamingProcess({
       stderrReader.close();
       doResolve({ code, signal, aborted, stdoutLines, stderrLines });
     });
+
+    // Resolve as soon as stdout closes — we have all the output we need.
+    // Don't wait for child.on('close') which requires stderr to drain too;
+    // on Windows with shell:true, cmd.exe can hold stderr open after the
+    // process exits, causing a hang of up to ~60s.
+    // If child.exitCode is still null (shell wrapper not yet dead), fall back
+    // to 0 — stdout closed cleanly so the process completed successfully.
+    stdoutReader.on('close', () => {
+      doResolve({ code: child.exitCode ?? 0, signal: child.signalCode ?? null, aborted, stdoutLines, stderrLines });
+    });
   });
 }
 

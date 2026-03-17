@@ -72,7 +72,7 @@ async function ensureDesktop(repoRoot, panelId) {
     const safePath = repoRoot.replace(/\\/g, '/');
     const cmd = `qa-desktop up "${name}" --workspace "${safePath}" --json`;
     const result = await new Promise((resolve) => {
-      exec(cmd, { cwd: repoRoot, timeout: 30000 }, (err, stdout, stderr) => {
+      exec(cmd, { cwd: repoRoot, timeout: 300000 }, (err, stdout, stderr) => {
         resolve({ code: err ? (err.code || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
       });
     });
