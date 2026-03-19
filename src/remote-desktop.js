@@ -137,7 +137,7 @@ function isRemoteCli(cli) {
  */
 function injectRemotePort(cli, args, desktop) {
   if (!isRemoteCli(cli) || !desktop) return args;
-  return [`--remote-port=${desktop.apiPort}`, ...args];
+  return [`--remote-port=${desktop.apiPort}`, `--remote-cwd=/workspace`, ...args];
 }
 
 /**
