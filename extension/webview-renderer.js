@@ -293,6 +293,10 @@ class WebviewRenderer {
     this._post({ type: 'computerUseDetected' });
   }
 
+  chromeDevtoolsDetected() {
+    this._post({ type: 'toolCall', label: this.workerLabel, text: 'Using Chrome DevTools', isComputerUse: false, isChromeDevtools: true });
+  }
+
   chromeReady(chromePort) {
     this._post({ type: 'chromeReady', chromePort });
   }

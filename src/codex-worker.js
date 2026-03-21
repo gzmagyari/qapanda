@@ -59,7 +59,10 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
     if (!server || !server.command) continue;
     args.push('-c', `mcp_servers.${name}.command="${tomlEsc(server.command)}"`);
     if (Array.isArray(server.args) && server.args.length > 0) {
-      const argsToml = `[${server.args.map((a) => `"${tomlEsc(a)}"`).join(', ')}]`;
+      const resolvedArgs = manifest.chromeDebugPort
+        ? server.args.map(a => a.replace('{CHROME_DEBUG_PORT}', String(manifest.chromeDebugPort)))
+        : server.args;
+      const argsToml = `[${resolvedArgs.map((a) => `"${tomlEsc(a)}"`).join(', ')}]`;
       args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
     }
     if (server.env && typeof server.env === 'object') {
@@ -150,15 +153,34 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let finalResultText = '';
 
-  // Strip ELECTRON_RUN_AS_NODE which VSCode extension host sets
+  // Strip ELECTRON_RUN_AS_NODE and use a clean CODEX_HOME with auth but no MCPs
+  // so only our explicitly passed MCP servers are loaded
   const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
+  const codexHome = require('path').join(require('os').tmpdir(), 'cc-codex-home');
+  const realCodexHome = require('path').join(require('os').homedir(), '.codex');
+  try {
+    require('fs').mkdirSync(codexHome, { recursive: true });
+    // Copy auth files but not config.toml (which has MCP definitions)
+    for (const f of ['auth.json', 'cap_sid']) {
+      const src = require('path').join(realCodexHome, f);
+      const dst = require('path').join(codexHome, f);
+      if (require('fs').existsSync(src)) require('fs').copyFileSync(src, dst);
+    }
+  } catch {}
+  cleanEnv.CODEX_HOME = codexHome;
+  // Codex doesn't exit after turn.completed — use a local abort controller to force-kill
+  const localAbort = new AbortController();
+  let turnDone = false;
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => { if (!localAbort.signal.aborted) localAbort.abort(); }, { once: true });
+  }
   const result = await spawnStreamingProcess({
     command: workerBin,
     args,
     cwd: manifest.repoRoot,
     stdinText,
     env: cleanEnv,
-    abortSignal,
+    abortSignal: localAbort.signal,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);
       Promise.resolve(emitEvent({
@@ -180,11 +202,20 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
         discoveredSessionId = raw.thread_id;
       }
 
-      // Detect computer-control MCP tool calls for inline VNC
+      // Codex doesn't exit after completing — force-kill when turn is done
+      if (raw.type === 'turn.completed') {
+        turnDone = true;
+        setTimeout(() => { if (!localAbort.signal.aborted) localAbort.abort(); }, 500);
+      }
+
+      // Detect computer-control / chrome-devtools MCP tool calls for inline widgets
       if (raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
         const server = raw.item.server || '';
-        if (server.includes('computer-control') || server.includes('computer_control') || server.includes('chrome-devtools') || server.includes('chrome_devtools')) {
+        if (server.includes('computer-control') || server.includes('computer_control')) {
           renderer.computerUseDetected();
+        }
+        if (server.includes('chrome-devtools') || server.includes('chrome_devtools')) {
+          renderer.chromeDevtoolsDetected();
         }
       }
 
@@ -215,7 +246,8 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
 
   renderer.workerLabel = prevWorkerLabel;
 
-  if (result.aborted) {
+  if (result.aborted && !turnDone) {
+    // User-initiated abort, not turn-completed cleanup
     if (agentSession) {
       agentSession.sessionId = discoveredSessionId;
       agentSession.hasStarted = true;

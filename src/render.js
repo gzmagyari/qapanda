@@ -493,6 +493,10 @@ class Renderer {
   close() {
     this.flushStream();
   }
+
+  chromeDevtoolsDetected() {
+    // No-op for terminal renderer; webview renderer shows Chrome split widget
+  }
 }
 
 module.exports = {
