@@ -91,7 +91,8 @@ function controllerLabelFor(cli) {
   return cli === 'claude' ? 'Controller (Claude)' : 'Controller (Codex)';
 }
 
-function workerLabelFor(cli) {
+function workerLabelFor(cli, agentName) {
+  if (agentName) return agentName;
   if (!cli || cli === 'claude') return 'Worker (Claude)';
   if (cli === 'codex') return 'Worker (Codex)';
   return `Worker (${cli})`;
@@ -316,9 +317,9 @@ class Renderer {
     this.line(this.workerLabel, text, color.claude);
   }
 
-  launchClaude(prompt, sameSession, agentId, agentCli) {
-    const backendLabel = agentCli ? workerLabelFor(agentCli) : this.workerLabel;
-    const agentLabel = agentId && agentId !== 'default' ? ` [${agentId}]` : '';
+  launchClaude(prompt, sameSession, agentId, agentCli, agentName) {
+    const backendLabel = agentCli ? workerLabelFor(agentCli, agentName) : this.workerLabel;
+    const agentLabel = !agentName && agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;

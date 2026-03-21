@@ -106,7 +106,8 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
 
   // Determine binary and display label
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
-  const workerLabel = workerLabelFor(workerBin);
+  const agentName = agentConfig && agentConfig.name;
+  const workerLabel = workerLabelFor(workerBin, agentName);
   // Temporarily override renderer workerLabel for this agent turn
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabel;

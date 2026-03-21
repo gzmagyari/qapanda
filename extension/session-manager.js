@@ -124,7 +124,7 @@ class SessionManager {
     // Auto-inject built-in MCP servers as HTTP (reachable from containers via host.docker.internal)
     const mcpHost = isRemote ? 'host.docker.internal' : 'localhost';
     if (this._tasksMcpPort) {
-      result['cc-tasks'] = { type: 'url', url: `http://${mcpHost}:${this._tasksMcpPort}/mcp` };
+      result['cc-tasks'] = { type: 'http', url: `http://${mcpHost}:${this._tasksMcpPort}/mcp` };
     } else if (this._extensionPath) {
       // Fallback to stdio for local-only use
       result['cc-tasks'] = {
@@ -134,7 +134,7 @@ class SessionManager {
       };
     }
     if (this._qaDesktopMcpPort) {
-      result['qa-desktop'] = { type: 'url', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
+      result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
     return result;
   }
@@ -522,6 +522,9 @@ class SessionManager {
       } else if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
         // Direct-to-agent: skip controller, use agent's session and CLI
         const agentId = this._chatTarget.slice('agent-'.length);
+        const agents = this._enabledAgents();
+        const agent = agents[agentId];
+        this._renderer.workerLabel = workerLabelFor(agent && agent.cli, agent && agent.name);
         await this._runDirectAgent(text, agentId);
       } else {
         await this._runLoop({ userMessage: text });
@@ -967,6 +970,7 @@ class SessionManager {
     if (!this._chromePort) {
       try {
         const { ensureChrome, startScreencast } = require('./chrome-manager');
+        this._renderer.banner('Starting headless Chrome\u2026');
         const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
@@ -1050,10 +1054,10 @@ class SessionManager {
 
   async _runDirectAgent(userMessage, agentId) {
     this._syncMcpToManifest();
-    await this._ensureChromeIfNeeded(agentId);
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
+    await this._ensureChromeIfNeeded(agentId);
 
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {

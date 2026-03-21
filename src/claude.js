@@ -89,9 +89,9 @@ function buildClaudeArgs(manifest, options = {}) {
     const mcpConfig = { mcpServers: {} };
     for (const [name, server] of Object.entries(mcpServers)) {
       if (!server) continue;
-      // Support URL-based MCP servers (HTTP transport for container access)
-      if (server.type === 'url' && server.url) {
-        mcpConfig.mcpServers[name] = { type: 'url', url: server.url };
+      // Support HTTP MCP servers (for container access via host.docker.internal)
+      if (server.url) {
+        mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
         continue;
       }
       if (!server.command) continue;
@@ -145,8 +145,9 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
 
   // Resolve binary and display label
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  const agentName = agentConfig && agentConfig.name;
   const prevWorkerLabel = renderer.workerLabel;
-  renderer.workerLabel = workerLabelFor(workerBin);
+  renderer.workerLabel = workerLabelFor(workerBin, agentName);
 
   // Ensure remote desktop is running and inject --remote-port for qa-remote-* backends
   if (isRemoteCli(workerBin)) {
@@ -154,6 +155,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Claude Code process was interrupted.');
     }
+    renderer.banner('Starting desktop container\u2026');
     const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId, manifest.useSnapshot !== false);
     // Check again — abort may have fired during ensureDesktop
     if (abortSignal && abortSignal.aborted) {

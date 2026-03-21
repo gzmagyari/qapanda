@@ -88,10 +88,10 @@ class WebviewRenderer {
     }
   }
 
-  launchClaude(prompt, sameSession, agentId, agentCli) {
+  launchClaude(prompt, sameSession, agentId, agentCli, agentName) {
     this.flushStream();
-    const backendLabel = agentCli ? workerLabelFor(agentCli) : this.workerLabel;
-    const agentLabel = agentId && agentId !== 'default' ? ` [${agentId}]` : '';
+    const backendLabel = agentCli ? workerLabelFor(agentCli, agentName) : this.workerLabel;
+    const agentLabel = !agentName && agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;

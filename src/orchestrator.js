@@ -239,7 +239,8 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       const workerSameSession = delegateAgentId && delegateAgentId !== 'default'
         ? !!((manifest.worker.agentSessions || {})[delegateAgentId] || {}).hasStarted
         : manifest.worker.hasStarted;
-      renderer.launchClaude(controllerResult.decision.claude_message, workerSameSession, delegateAgentId, delegateCli);
+      const delegateAgentName = delegateAgentConfig ? delegateAgentConfig.name : null;
+      renderer.launchClaude(controllerResult.decision.claude_message, workerSameSession, delegateAgentId, delegateCli, delegateAgentName);
       await emitEvent(
         manifest,
         {
