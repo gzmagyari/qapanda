@@ -968,6 +968,9 @@
     chromeImgEl.className = 'chrome-screencast-img';
     chromeImgEl.alt = 'Chrome Screencast';
     chromeImgEl.tabIndex = 0;
+    // Initialize with current frame from Browser tab if available
+    const existingFrame = document.getElementById('browser-chrome-frame');
+    if (existingFrame && existingFrame.src) chromeImgEl.src = existingFrame.src;
     attachChromeInputListeners(chromeImgEl);
     right.appendChild(chromeImgEl);
 
@@ -1050,6 +1053,8 @@
     splitChromeLeft = null;
     splitChromeCollapsed = false;
     chromeImgEl = null;
+    // Force scroll to bottom — layout changed so shouldAutoScroll() would give wrong result
+    requestAnimationFrame(scrollToBottom);
   }
 
   // ── Chrome Input Forwarding ──────────────────────────────────────────
