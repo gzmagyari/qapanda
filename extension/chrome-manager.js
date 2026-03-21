@@ -120,6 +120,8 @@ async function ensureChrome(panelId) {
     '--disable-background-networking',
     '--disable-sync',
     '--no-proxy-server',
+    '--disable-blink-features=AutomationControlled',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     '--window-size=1280,720',
     `--user-data-dir=${userDataDir}`,
     'https://www.google.com',
@@ -146,7 +148,7 @@ async function ensureChrome(panelId) {
     return null;
   }
 
-  _instances.set(panelId, { port, process: proc, ws: null, frameCallback: null, nextId: 1 });
+  _instances.set(panelId, { port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1 });
   _dbg(`ensureChrome: Chrome started on port ${port}`);
   return { port };
 }
@@ -154,9 +156,10 @@ async function ensureChrome(panelId) {
 /**
  * Start streaming screencast frames via CDP.
  * @param {string} panelId
- * @param {function} onFrame - (base64JpegData: string) => void
+ * @param {function} onFrame - (base64JpegData: string, metadata: object) => void
+ * @param {function} [onNav] - (url: string) => void — called on navigation
  */
-async function startScreencast(panelId, onFrame) {
+async function startScreencast(panelId, onFrame, onNav) {
   _dbg(`startScreencast called, panelId=${panelId}`);
   const instance = _instances.get(panelId);
   if (!instance) { _dbg('startScreencast: no instance found'); return; }
@@ -207,17 +210,22 @@ async function startScreencast(panelId, onFrame) {
         const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
         if (msg.method === 'Page.screencastFrame') {
           frameCount++;
+          const { data, metadata, sessionId } = msg.params;
           if (frameCount <= 3 || frameCount % 100 === 0) {
-            _dbg(`startScreencast: frame #${frameCount}, dataLen=${msg.params.data.length}`);
+            _dbg(`startScreencast: frame #${frameCount}, dataLen=${data.length}, meta=${JSON.stringify(metadata)}`);
           }
-          const { data, sessionId } = msg.params;
           ws.send(JSON.stringify({
             id: instance.nextId++,
             method: 'Page.screencastFrameAck',
             params: { sessionId },
           }));
           if (instance.frameCallback) {
-            instance.frameCallback(data);
+            instance.frameCallback(data, metadata);
+          }
+        } else if (msg.method === 'Page.frameNavigated') {
+          const frame = msg.params && msg.params.frame;
+          if (frame && !frame.parentId && frame.url && instance.navCallback) {
+            instance.navCallback(frame.url);
           }
         } else if (msg.id) {
           _dbg(`startScreencast: CDP response id=${msg.id} error=${msg.error ? JSON.stringify(msg.error) : 'none'}`);
@@ -236,6 +244,7 @@ async function startScreencast(panelId, onFrame) {
 
     instance.ws = ws;
     instance.frameCallback = onFrame;
+    instance.navCallback = onNav || null;
     _dbg('startScreencast: setup complete, waiting for frames...');
   } catch (err) {
     _dbg(`startScreencast: EXCEPTION: ${err.message}\n${err.stack}`);
@@ -281,11 +290,37 @@ function getChromePort(panelId) {
   return inst ? inst.port : null;
 }
 
+/**
+ * Send a CDP input command to Chrome for a panel.
+ */
+function sendInput(panelId, cdpMethod, cdpParams) {
+  const instance = _instances.get(panelId);
+  if (!instance || !instance.ws) return;
+  try {
+    instance.ws.send(JSON.stringify({
+      id: instance.nextId++,
+      method: cdpMethod,
+      params: cdpParams,
+    }));
+  } catch {}
+}
+
+/**
+ * Kill all Chrome instances and clean up temp dirs.
+ */
+function killAll() {
+  for (const panelId of _instances.keys()) {
+    killChrome(panelId);
+  }
+}
+
 module.exports = {
   ensureChrome,
   startScreencast,
   stopScreencast,
   killChrome,
+  killAll,
   getChromePort,
+  sendInput,
   _dbg,
 };

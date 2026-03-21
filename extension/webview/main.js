@@ -39,8 +39,17 @@
       vscode.postMessage({ type: 'instancesLoad', _actionId: instancesActionId });
     }
     if (tab === 'browser') {
-      const ph = document.getElementById('browser-placeholder');
-      if (ph && !chromePort) ph.innerHTML = '<p>Starting Chrome\u2026</p>';
+      if (!chromePort) {
+        const ph = document.getElementById('browser-placeholder');
+        if (ph) {
+          ph.innerHTML = '<div class="browser-loading"><div class="browser-loading-spinner"></div><p>Starting Chrome\u2026</p></div>';
+          ph.style.display = '';
+        }
+        // Hide nav bar and frame while loading
+        hideBrowserNav();
+        const fr = document.getElementById('browser-chrome-frame');
+        if (fr) fr.style.display = 'none';
+      }
       vscode.postMessage({ type: 'browserStart' });
     }
   });
@@ -958,6 +967,8 @@
     chromeImgEl = document.createElement('img');
     chromeImgEl.className = 'chrome-screencast-img';
     chromeImgEl.alt = 'Chrome Screencast';
+    chromeImgEl.tabIndex = 0;
+    attachChromeInputListeners(chromeImgEl);
     right.appendChild(chromeImgEl);
 
     body.append(left, right);
@@ -1039,6 +1050,188 @@
     splitChromeLeft = null;
     splitChromeCollapsed = false;
     chromeImgEl = null;
+  }
+
+  // ── Chrome Input Forwarding ──────────────────────────────────────────
+
+  // Updated from screencast metadata each frame
+  let chromeMeta = { deviceWidth: 1280, deviceHeight: 720, offsetTop: 0, pageScaleFactor: 1 };
+
+  function chromeCoords(imgEl, clientX, clientY) {
+    const rect = imgEl.getBoundingClientRect();
+    // Use the image's actual rendered pixel dimensions (naturalWidth/Height)
+    const natW = imgEl.naturalWidth || chromeMeta.deviceWidth;
+    const natH = imgEl.naturalHeight || chromeMeta.deviceHeight;
+    const imgAspect = natW / natH;
+    const elAspect = rect.width / rect.height;
+    let renderW, renderH, offsetX, offsetY;
+    if (elAspect > imgAspect) {
+      // Pillarboxed (extra space on left/right)
+      renderH = rect.height;
+      renderW = renderH * imgAspect;
+      offsetX = (rect.width - renderW) / 2;
+      offsetY = 0;
+    } else {
+      // Letterboxed (extra space on top/bottom)
+      renderW = rect.width;
+      renderH = renderW / imgAspect;
+      offsetX = 0;
+      offsetY = (rect.height - renderH) / 2;
+    }
+    // Map from rendered image position to Chrome's device coordinates
+    const x = Math.round(((clientX - rect.left - offsetX) / renderW) * chromeMeta.deviceWidth);
+    const y = Math.round(((clientY - rect.top - offsetY) / renderH) * chromeMeta.deviceHeight);
+    return {
+      x: Math.max(0, Math.min(chromeMeta.deviceWidth, x)),
+      y: Math.max(0, Math.min(chromeMeta.deviceHeight, y)),
+    };
+  }
+
+  function chromeMouseFlags(e) {
+    let button = 'none';
+    if (e.button === 0) button = 'left';
+    else if (e.button === 1) button = 'middle';
+    else if (e.button === 2) button = 'right';
+    let buttons = 0;
+    if (e.buttons & 1) buttons |= 1;
+    if (e.buttons & 2) buttons |= 2;
+    if (e.buttons & 4) buttons |= 4;
+    return { button, buttons };
+  }
+
+  function sendChromeInput(cdpMethod, cdpParams) {
+    vscode.postMessage({ type: 'chromeInput', cdpMethod, cdpParams });
+  }
+
+  function attachChromeInputListeners(imgEl) {
+    imgEl.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      imgEl.focus();
+      const { x, y } = chromeCoords(imgEl, e.clientX, e.clientY);
+      const { button, buttons } = chromeMouseFlags(e);
+      sendChromeInput('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x, y, button, buttons, clickCount: 1,
+        modifiers: chromeModifiers(e),
+      });
+    });
+
+    imgEl.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      const { x, y } = chromeCoords(imgEl, e.clientX, e.clientY);
+      const { button, buttons } = chromeMouseFlags(e);
+      sendChromeInput('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x, y, button, buttons, clickCount: 1,
+        modifiers: chromeModifiers(e),
+      });
+    });
+
+    imgEl.addEventListener('mousemove', (e) => {
+      const { x, y } = chromeCoords(imgEl, e.clientX, e.clientY);
+      sendChromeInput('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x, y, button: 'none', buttons: 0,
+        modifiers: chromeModifiers(e),
+      });
+    });
+
+    imgEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const { x, y } = chromeCoords(imgEl, e.clientX, e.clientY);
+      sendChromeInput('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY,
+        modifiers: chromeModifiers(e),
+      });
+    }, { passive: false });
+
+    imgEl.addEventListener('keydown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      sendChromeInput('Input.dispatchKeyEvent', chromeKeyParams('keyDown', e));
+    });
+
+    imgEl.addEventListener('keyup', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      sendChromeInput('Input.dispatchKeyEvent', chromeKeyParams('keyUp', e));
+    });
+
+    imgEl.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  function chromeModifiers(e) {
+    let m = 0;
+    if (e.altKey) m |= 1;
+    if (e.ctrlKey) m |= 2;
+    if (e.metaKey) m |= 4;
+    if (e.shiftKey) m |= 8;
+    return m;
+  }
+
+  function chromeKeyParams(type, e) {
+    return {
+      type,
+      modifiers: chromeModifiers(e),
+      key: e.key,
+      code: e.code,
+      windowsVirtualKeyCode: e.keyCode,
+      nativeVirtualKeyCode: e.keyCode,
+      text: type === 'keyDown' && e.key.length === 1 ? e.key : undefined,
+      unmodifiedText: type === 'keyDown' && e.key.length === 1 ? e.key : undefined,
+    };
+  }
+
+  // Attach to Browser tab image
+  const browserFrame = document.getElementById('browser-chrome-frame');
+  if (browserFrame) attachChromeInputListeners(browserFrame);
+
+  // ── Browser Navigation Bar ─────────────────────────────────────────
+
+  function showBrowserNav() {
+    const nav = document.getElementById('browser-nav');
+    if (nav) nav.style.display = '';
+  }
+  function hideBrowserNav() {
+    const nav = document.getElementById('browser-nav');
+    if (nav) nav.style.display = 'none';
+  }
+
+  function browserNavigate(url) {
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    sendChromeInput('Page.navigate', { url });
+  }
+
+  const browserUrlInput = document.getElementById('browser-url');
+  const browserGoBtn = document.getElementById('browser-go');
+  const browserBackBtn = document.getElementById('browser-back');
+  const browserForwardBtn = document.getElementById('browser-forward');
+  const browserReloadBtn = document.getElementById('browser-reload');
+
+  if (browserUrlInput) {
+    browserUrlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        browserNavigate(browserUrlInput.value.trim());
+        browserFrame && browserFrame.focus();
+      }
+      // Don't let key events propagate to Chrome input listeners
+      e.stopPropagation();
+    });
+    browserUrlInput.addEventListener('keyup', (e) => e.stopPropagation());
+  }
+  if (browserGoBtn) {
+    browserGoBtn.addEventListener('click', () => {
+      browserNavigate(browserUrlInput && browserUrlInput.value.trim());
+      browserFrame && browserFrame.focus();
+    });
+  }
+  if (browserBackBtn) {
+    browserBackBtn.addEventListener('click', () => sendChromeInput('Runtime.evaluate', { expression: 'history.back()' }));
+  }
+  if (browserForwardBtn) {
+    browserForwardBtn.addEventListener('click', () => sendChromeInput('Runtime.evaluate', { expression: 'history.forward()' }));
+  }
+  if (browserReloadBtn) {
+    browserReloadBtn.addEventListener('click', () => sendChromeInput('Page.reload', {}));
   }
 
   // ── Instance Management ──────────────────────────────────────────────
@@ -1249,7 +1442,6 @@
     // restored from transcript.jsonl on disk, so messageLog is NOT persisted.
     const state = { runId: currentRunId, config: getConfig() };
     if (novncPort) state.novncPort = novncPort;
-    if (chromePort) state.chromePort = chromePort;
     if (panelId) state.panelId = panelId;
     vscode.setState(state);
   }
@@ -1916,12 +2108,19 @@
 
     chromeReady(msg) {
       chromePort = msg.chromePort || null;
-      updateBrowserTab();
+      // Don't show nav/frame yet — wait for first chromeFrame
       saveState();
     },
 
     chromeFrame(msg) {
-      // Update the split widget <img> and Browser tab <img> with the new frame
+      if (msg.metadata) {
+        chromeMeta = {
+          deviceWidth: msg.metadata.deviceWidth || 1280,
+          deviceHeight: msg.metadata.deviceHeight || 720,
+          offsetTop: msg.metadata.offsetTop || 0,
+          pageScaleFactor: msg.metadata.pageScaleFactor || 1,
+        };
+      }
       const dataUrl = 'data:image/jpeg;base64,' + msg.data;
       if (chromeImgEl) chromeImgEl.src = dataUrl;
       const tabImg = document.getElementById('browser-chrome-frame');
@@ -1931,12 +2130,19 @@
       }
       const ph = document.getElementById('browser-placeholder');
       if (ph) ph.style.display = 'none';
+      showBrowserNav();
+    },
+
+    chromeUrl(msg) {
+      const urlInput = document.getElementById('browser-url');
+      if (urlInput && msg.url) urlInput.value = msg.url;
     },
 
     chromeGone() {
       chromePort = null;
       chromeImgEl = null;
       updateBrowserTab();
+      hideBrowserNav();
       teardownSplitChrome(false);
       saveState();
     },
@@ -2029,10 +2235,7 @@
       novncPort = savedState.novncPort;
       updateComputerTab();
     }
-    if (savedState.chromePort) {
-      chromePort = savedState.chromePort;
-      updateBrowserTab();
-    }
+    // Don't restore chromePort — Chrome process dies on reload and must be restarted
   }
 
   // ── Suggestions / Autocomplete ────────────────────────────────────

@@ -479,11 +479,18 @@ function getWebviewHtml(panel, extensionUri) {
       <iframe id="computer-vnc-frame" class="computer-vnc-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
     </div><!-- /tab-computer -->
     <div id="tab-browser" class="tab-hidden">
+      <div id="browser-nav" class="browser-nav" style="display:none;">
+        <button id="browser-back" class="browser-nav-btn" title="Back">\u2190</button>
+        <button id="browser-forward" class="browser-nav-btn" title="Forward">\u2192</button>
+        <button id="browser-reload" class="browser-nav-btn" title="Reload">\u21BB</button>
+        <input id="browser-url" class="browser-url-input" type="text" placeholder="Enter URL..." spellcheck="false" />
+        <button id="browser-go" class="browser-nav-btn" title="Go">Go</button>
+      </div>
       <div id="browser-placeholder" class="computer-placeholder">
         <p>No Chrome instance linked to this session.</p>
-        <p><small>Chrome starts automatically when a local agent uses Chrome DevTools MCP.</small></p>
+        <p><small>Click this tab to start a headless Chrome instance.</small></p>
       </div>
-      <img id="browser-chrome-frame" class="browser-chrome-frame" style="display:none;" alt="Chrome Screencast" />
+      <img id="browser-chrome-frame" class="browser-chrome-frame" tabindex="0" style="display:none;" alt="Chrome Screencast" />
     </div><!-- /tab-browser -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
@@ -788,6 +795,7 @@ function activate(context) {
 function deactivate() {
   stopTasksMcpServer().catch(() => {});
   stopQaDesktopMcpServer().catch(() => {});
+  try { require('./chrome-manager').killAll(); } catch {}
 }
 
 module.exports = { activate, deactivate };

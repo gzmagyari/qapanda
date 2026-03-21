@@ -480,6 +480,12 @@ class SessionManager {
       await this._startChromeDirect();
       return;
     }
+
+    if (msg.type === 'chromeInput') {
+      const { sendInput } = require('./chrome-manager');
+      sendInput(this._panelId, msg.cdpMethod, msg.cdpParams);
+      return;
+    }
   }
 
   abort() {
@@ -965,8 +971,10 @@ class SessionManager {
         if (chrome) {
           this._chromePort = chrome.port;
           this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
-          startScreencast(this._panelId, (frameData) => {
-            this._postMessage({ type: 'chromeFrame', data: frameData });
+          startScreencast(this._panelId, (frameData, metadata) => {
+            this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
+          }, (url) => {
+            this._postMessage({ type: 'chromeUrl', url });
           });
           // Inject the chrome port into the active manifest's worker MCP servers
           if (this._activeManifest && this._activeManifest.workerMcpServers) {
@@ -1001,8 +1009,10 @@ class SessionManager {
         this._chromePort = chrome.port;
         this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
         _dbg('[session-manager] sent chromeReady, starting screencast...');
-        startScreencast(this._panelId, (frameData) => {
-          this._postMessage({ type: 'chromeFrame', data: frameData });
+        startScreencast(this._panelId, (frameData, metadata) => {
+          this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
+        }, (url) => {
+          this._postMessage({ type: 'chromeUrl', url });
         });
         _dbg('[session-manager] screencast started');
       } else {
