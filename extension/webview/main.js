@@ -2122,7 +2122,8 @@
         };
       }
       const dataUrl = 'data:image/jpeg;base64,' + msg.data;
-      if (chromeImgEl) chromeImgEl.src = dataUrl;
+      const splitImg = chromeImgEl || document.querySelector('.chrome-screencast-img');
+      if (splitImg) splitImg.src = dataUrl;
       const tabImg = document.getElementById('browser-chrome-frame');
       if (tabImg) {
         tabImg.src = dataUrl;

@@ -150,11 +150,14 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let finalResultText = '';
 
+  // Strip ELECTRON_RUN_AS_NODE which VSCode extension host sets
+  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
   const result = await spawnStreamingProcess({
     command: workerBin,
     args,
     cwd: manifest.repoRoot,
     stdinText,
+    env: cleanEnv,
     abortSignal,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);

@@ -974,26 +974,23 @@ class SessionManager {
         const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
+          if (this._activeManifest) this._activeManifest.chromeDebugPort = chrome.port;
           this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
           startScreencast(this._panelId, (frameData, metadata) => {
             this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
           }, (url) => {
             this._postMessage({ type: 'chromeUrl', url });
           });
-          // Replace {CHROME_DEBUG_PORT} placeholder in all chrome-devtools MCP args
-          if (this._activeManifest && this._activeManifest.workerMcpServers) {
-            for (const [name, server] of Object.entries(this._activeManifest.workerMcpServers)) {
-              if (name.includes('chrome-devtools') || name.includes('chrome_devtools')) {
-                if (server.args) {
-                  server.args = server.args.map(a => a.replace('{CHROME_DEBUG_PORT}', String(chrome.port)));
-                }
-              }
-            }
-          }
+          // Port is stored on manifest.chromeDebugPort for buildClaudeArgs to use
         }
       } catch (err) {
         console.error('[session-manager] Failed to start Chrome:', err.message);
       }
+    }
+
+    // Always ensure the port is on the manifest for buildClaudeArgs to use
+    if (this._chromePort && this._activeManifest) {
+      this._activeManifest.chromeDebugPort = this._chromePort;
     }
   }
 

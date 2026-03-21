@@ -24,6 +24,8 @@ function buildClaudeArgs(manifest, options = {}) {
     '--verbose',
     '--include-partial-messages',
     '--dangerously-skip-permissions',
+    '--setting-sources', 'local',
+    '--strict-mcp-config',
   ];
 
   // Use agent-specific session if provided, otherwise default worker session
@@ -67,21 +69,8 @@ function buildClaudeArgs(manifest, options = {}) {
     args.push('--add-dir', dir);
   }
 
-  // System prompt: agent with custom prompt uses --system-prompt (full replacement),
-  // otherwise --append-system-prompt adds to Claude Code's default system prompt
-  if (agentConfig && agentConfig.system_prompt) {
-    args.push('--system-prompt', agentConfig.system_prompt);
-  } else {
-    const appendSystemPrompt = agentConfig
-      ? buildAgentWorkerSystemPrompt(agentConfig)
-      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
-    if (appendSystemPrompt) {
-      args.push('--append-system-prompt', appendSystemPrompt);
-    }
-  }
-
   // Pass MCP servers via --mcp-config with inline JSON (prefer role-specific, fall back to shared)
-  // Merge agent-specific MCPs on top of base worker MCPs
+  // IMPORTANT: must come BEFORE --system-prompt because multiline prompts break cmd.exe on Windows
   const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
   const agentMcps = (agentConfig && agentConfig.mcps) || {};
   const mcpServers = { ...baseMcpServers, ...agentMcps };
@@ -105,7 +94,26 @@ function buildClaudeArgs(manifest, options = {}) {
       }
     }
     if (Object.keys(mcpConfig.mcpServers).length > 0) {
-      args.push('--mcp-config', JSON.stringify(mcpConfig));
+      let mcpJson = JSON.stringify(mcpConfig);
+      // Replace {CHROME_DEBUG_PORT} placeholder with actual port
+      if (manifest.chromeDebugPort) {
+        mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
+      }
+      args.push('--mcp-config', mcpJson);
+    }
+  }
+
+  // System prompt: agent with custom prompt uses --system-prompt (full replacement),
+  // otherwise --append-system-prompt adds to Claude Code's default system prompt
+  // NOTE: must be LAST because multiline text breaks cmd.exe arg parsing on Windows
+  if (agentConfig && agentConfig.system_prompt) {
+    args.push('--system-prompt', agentConfig.system_prompt);
+  } else {
+    const appendSystemPrompt = agentConfig
+      ? buildAgentWorkerSystemPrompt(agentConfig)
+      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
+    if (appendSystemPrompt) {
+      args.push('--append-system-prompt', appendSystemPrompt);
     }
   }
 
@@ -184,10 +192,19 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   }
 
   // Per-agent thinking: override CLAUDE_CODE_EFFORT_LEVEL if agent specifies it
-  let spawnEnv = process.env;
+  // Strip ELECTRON_RUN_AS_NODE which VSCode extension host sets — it breaks Claude CLI behavior
+  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
+  let spawnEnv = cleanEnv;
   if (agentConfig && agentConfig.thinking) {
-    spawnEnv = { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: agentConfig.thinking };
+    spawnEnv = { ...cleanEnv, CLAUDE_CODE_EFFORT_LEVEL: agentConfig.thinking };
   }
+
+  // Debug: log the exact command and key env vars
+  try {
+    const _shellArgs = args.map(a => a.includes(' ') || a.includes('"') || a.includes('{') ? "'" + a.replace(/'/g, "'\\''") + "'" : a);
+    const _envInfo = `PATH_has_claude=${(spawnEnv.PATH || '').includes('claude')}, CLAUDE_CONFIG_DIR=${spawnEnv.CLAUDE_CONFIG_DIR || 'unset'}, CLAUDE_CODE_SIMPLE=${spawnEnv.CLAUDE_CODE_SIMPLE || 'unset'}, NODE_OPTIONS=${spawnEnv.NODE_OPTIONS || 'unset'}, ELECTRON_RUN_AS_NODE=${spawnEnv.ELECTRON_RUN_AS_NODE || 'unset'}`;
+    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-chrome-debug.log'), `[${new Date().toISOString()}] CWD: ${manifest.repoRoot}\nENV: ${_envInfo}\nCMD: ${workerBin} ${_shellArgs.join(' ')}\n\n`);
+  } catch {}
 
   const result = await spawnStreamingProcess({
     command: workerBin,
@@ -209,6 +226,10 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       if (!raw) {
         renderer.claude(`(unparsed claude line) ${line}`);
         return;
+      }
+      // Debug: log the init event to see what MCPs Claude actually loaded
+      if (raw.type === 'system' && raw.mcp_servers) {
+        try { require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-chrome-debug.log'), `\nINIT_MCP_SERVERS: ${JSON.stringify(raw.mcp_servers)}\n`); } catch {}
       }
       if (raw.session_id) {
         discoveredSessionId = raw.session_id;
