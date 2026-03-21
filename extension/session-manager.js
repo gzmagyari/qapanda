@@ -976,13 +976,13 @@ class SessionManager {
           }, (url) => {
             this._postMessage({ type: 'chromeUrl', url });
           });
-          // Inject the chrome port into the active manifest's worker MCP servers
+          // Replace {CHROME_DEBUG_PORT} placeholder in all chrome-devtools MCP args
           if (this._activeManifest && this._activeManifest.workerMcpServers) {
             for (const [name, server] of Object.entries(this._activeManifest.workerMcpServers)) {
               if (name.includes('chrome-devtools') || name.includes('chrome_devtools')) {
-                if (!server.args) server.args = [];
-                server.args = server.args.filter(a => !a.startsWith('--browser-url'));
-                server.args.push(`--browser-url=http://127.0.0.1:${chrome.port}`);
+                if (server.args) {
+                  server.args = server.args.map(a => a.replace('{CHROME_DEBUG_PORT}', String(chrome.port)));
+                }
               }
             }
           }
