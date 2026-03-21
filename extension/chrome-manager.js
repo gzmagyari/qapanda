@@ -148,9 +148,69 @@ async function ensureChrome(panelId) {
     return null;
   }
 
-  _instances.set(panelId, { port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1 });
+  _instances.set(panelId, { port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
   _dbg(`ensureChrome: Chrome started on port ${port}`);
   return { port };
+}
+
+// Resolve WebSocket constructor (works in both VSCode extension host and Node.js)
+function _getWS() {
+  if (typeof WebSocket !== 'undefined') return WebSocket;
+  try { return require('ws'); } catch {}
+  try { return require('node:ws'); } catch {}
+  return null;
+}
+
+// Connect screencast WebSocket to a specific CDP page target
+function _connectToTarget(instance, target) {
+  const WS = _getWS();
+  if (!WS) { _dbg('_connectToTarget: no WebSocket available'); return; }
+
+  // Close old WebSocket if any
+  if (instance.ws) {
+    try { instance.ws.onclose = null; instance.ws.close(); } catch {}
+    instance.ws = null;
+  }
+
+  _dbg(`_connectToTarget: connecting to ${target.webSocketDebuggerUrl} (id=${target.id})`);
+  const ws = new WS(target.webSocketDebuggerUrl);
+
+  ws.onopen = () => {
+    _dbg('_connectToTarget: WebSocket OPEN');
+    ws.send(JSON.stringify({ id: instance.nextId++, method: 'Page.enable', params: {} }));
+    ws.send(JSON.stringify({
+      id: instance.nextId++,
+      method: 'Page.startScreencast',
+      params: { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
+    }));
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
+      if (msg.method === 'Page.screencastFrame') {
+        const { data, metadata, sessionId } = msg.params;
+        ws.send(JSON.stringify({
+          id: instance.nextId++,
+          method: 'Page.screencastFrameAck',
+          params: { sessionId },
+        }));
+        if (instance.frameCallback) instance.frameCallback(data, metadata);
+      } else if (msg.method === 'Page.frameNavigated') {
+        const frame = msg.params && msg.params.frame;
+        if (frame && !frame.parentId && frame.url && instance.navCallback) {
+          instance.navCallback(frame.url);
+        }
+      }
+    } catch {}
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => { if (instance.ws === ws) instance.ws = null; };
+
+  instance.ws = ws;
+  instance.currentTargetId = target.id;
+  if (instance.knownTargetIds) instance.knownTargetIds.add(target.id);
 }
 
 /**
@@ -164,88 +224,48 @@ async function startScreencast(panelId, onFrame, onNav) {
   const instance = _instances.get(panelId);
   if (!instance) { _dbg('startScreencast: no instance found'); return; }
 
+  instance.frameCallback = onFrame;
+  instance.navCallback = onNav || null;
+
   try {
-    const targetsUrl = `http://127.0.0.1:${instance.port}/json`;
-    _dbg(`startScreencast: fetching targets from ${targetsUrl}`);
-    const targets = await _httpGet(targetsUrl);
-    _dbg(`startScreencast: got ${targets.length} targets: ${JSON.stringify(targets.map(t => ({ type: t.type, url: t.url })))}`);
+    const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`);
     const page = targets.find(t => t.type === 'page');
     if (!page || !page.webSocketDebuggerUrl) {
-      _dbg(`startScreencast: no page target found`);
+      _dbg('startScreencast: no page target found');
       return;
     }
 
-    _dbg(`startScreencast: connecting to CDP ws: ${page.webSocketDebuggerUrl}`);
+    _connectToTarget(instance, page);
 
-    // Check WebSocket availability
-    let WS;
-    if (typeof WebSocket !== 'undefined') {
-      WS = WebSocket;
-      _dbg('startScreencast: using global WebSocket');
-    } else {
-      try { WS = require('ws'); _dbg('startScreencast: using ws module'); } catch (e) {
-        _dbg(`startScreencast: ws module not available: ${e.message}`);
-        try { WS = require('node:ws'); _dbg('startScreencast: using node:ws'); } catch (e2) {
-          _dbg(`startScreencast: node:ws not available either: ${e2.message}. NO WEBSOCKET AVAILABLE.`);
-          return;
-        }
-      }
-    }
-
-    const ws = new WS(page.webSocketDebuggerUrl);
-    let frameCount = 0;
-
-    ws.onopen = () => {
-      _dbg('startScreencast: WebSocket OPEN, sending Page.enable + Page.startScreencast');
-      ws.send(JSON.stringify({ id: instance.nextId++, method: 'Page.enable', params: {} }));
-      ws.send(JSON.stringify({
-        id: instance.nextId++,
-        method: 'Page.startScreencast',
-        params: { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
-      }));
-    };
-
-    ws.onmessage = (event) => {
+    // Poll for tab changes every 2 seconds — follow genuinely new tabs, recover from closed tabs
+    instance.knownTargetIds.add(page.id);
+    instance.tabPoller = setInterval(async () => {
       try {
-        const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
-        if (msg.method === 'Page.screencastFrame') {
-          frameCount++;
-          const { data, metadata, sessionId } = msg.params;
-          if (frameCount <= 3 || frameCount % 100 === 0) {
-            _dbg(`startScreencast: frame #${frameCount}, dataLen=${data.length}, meta=${JSON.stringify(metadata)}`);
-          }
-          ws.send(JSON.stringify({
-            id: instance.nextId++,
-            method: 'Page.screencastFrameAck',
-            params: { sessionId },
-          }));
-          if (instance.frameCallback) {
-            instance.frameCallback(data, metadata);
-          }
-        } else if (msg.method === 'Page.frameNavigated') {
-          const frame = msg.params && msg.params.frame;
-          if (frame && !frame.parentId && frame.url && instance.navCallback) {
-            instance.navCallback(frame.url);
-          }
-        } else if (msg.id) {
-          _dbg(`startScreencast: CDP response id=${msg.id} error=${msg.error ? JSON.stringify(msg.error) : 'none'}`);
+        const latest = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
+        if (!latest) return;
+        const pages = latest.filter(t => t.type === 'page');
+        if (pages.length === 0) return;
+
+        const currentId = instance.currentTargetId;
+        const currentExists = pages.some(p => p.id === currentId);
+
+        // Find a tab we've never seen before
+        const brandNewTarget = pages.find(p => !instance.knownTargetIds.has(p.id));
+
+        // Track all current tabs
+        for (const p of pages) instance.knownTargetIds.add(p.id);
+
+        // Switch to brand-new tab, or fall back if current tab was closed
+        const switchTo = brandNewTarget || (!currentExists ? pages[pages.length - 1] : null);
+        if (switchTo && switchTo.id !== currentId) {
+          _dbg(`tabPoller: switching from ${currentId} to ${switchTo.id} (url=${switchTo.url})`);
+          _connectToTarget(instance, switchTo);
+          if (instance.navCallback && switchTo.url) instance.navCallback(switchTo.url);
         }
-      } catch (e) { _dbg(`startScreencast: onmessage error: ${e.message}`); }
-    };
+      } catch {}
+    }, 2000);
 
-    ws.onerror = (err) => {
-      _dbg(`startScreencast: WebSocket ERROR: ${err.message || JSON.stringify(err)}`);
-    };
-
-    ws.onclose = (ev) => {
-      _dbg(`startScreencast: WebSocket CLOSED code=${ev.code || ev} reason=${ev.reason || ''}`);
-      instance.ws = null;
-    };
-
-    instance.ws = ws;
-    instance.frameCallback = onFrame;
-    instance.navCallback = onNav || null;
-    _dbg('startScreencast: setup complete, waiting for frames...');
+    _dbg('startScreencast: setup complete, polling for tab changes');
   } catch (err) {
     _dbg(`startScreencast: EXCEPTION: ${err.message}\n${err.stack}`);
   }
@@ -258,6 +278,7 @@ function stopScreencast(panelId) {
   const instance = _instances.get(panelId);
   if (!instance) return;
   instance.frameCallback = null;
+  if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
   if (instance.ws) {
     try {
       instance.ws.send(JSON.stringify({ id: instance.nextId++, method: 'Page.stopScreencast', params: {} }));
@@ -272,6 +293,7 @@ function killChrome(panelId) {
   const instance = _instances.get(panelId);
   if (!instance) return;
   instance.frameCallback = null;
+  if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
   if (instance.ws) {
     try { instance.ws.close(); } catch {}
   }
