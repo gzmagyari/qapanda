@@ -117,7 +117,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Codex worker process was interrupted.');
     }
-    desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId, manifest.useSnapshot !== false);
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Codex worker process was interrupted.');
     }

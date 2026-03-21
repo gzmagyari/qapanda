@@ -18,6 +18,7 @@
     mcp: document.getElementById('tab-mcp'),
     instances: document.getElementById('tab-instances'),
     computer: document.getElementById('tab-computer'),
+    browser: document.getElementById('tab-browser'),
   };
 
   tabBar.addEventListener('click', (e) => {
@@ -32,7 +33,16 @@
     }
     if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
     if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
-    if (tab === 'instances') vscode.postMessage({ type: 'instancesLoad' });
+    if (tab === 'instances') {
+      instancesActionId++;
+      setInstancesLoading(true);
+      vscode.postMessage({ type: 'instancesLoad', _actionId: instancesActionId });
+    }
+    if (tab === 'browser') {
+      const ph = document.getElementById('browser-placeholder');
+      if (ph && !chromePort) ph.innerHTML = '<p>Starting Chrome\u2026</p>';
+      vscode.postMessage({ type: 'browserStart' });
+    }
   });
 
   // ── MCP Server Management ─────────────────────────────────────────
@@ -758,6 +768,13 @@
   let splitVncLeft = null;
   let splitVncCollapsed = false;
 
+  // Chrome screencast state (for local agents)
+  let chromePort = null;
+  let splitChromeWrapper = null;
+  let splitChromeLeft = null;
+  let splitChromeCollapsed = false;
+  let chromeImgEl = null; // <img> element receiving screencast frames
+
   function vncUrl() {
     return `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
   }
@@ -896,11 +913,145 @@
     splitVncCollapsed = false;
   }
 
+  // ── Chrome screencast (Browser tab + split widget) ───────────────────
+
+  function updateBrowserTab() {
+    const placeholder = document.getElementById('browser-placeholder');
+    const frame = document.getElementById('browser-chrome-frame');
+    if (!placeholder || !frame) return;
+    if (chromePort) {
+      placeholder.style.display = 'none';
+      frame.style.display = 'block';
+    } else {
+      placeholder.innerHTML = '<p>No Chrome instance linked to this session.</p><p><small>Click this tab to start a headless Chrome instance.</small></p>';
+      placeholder.style.display = '';
+      frame.style.display = 'none';
+    }
+  }
+
+  function showSplitChrome() {
+    if (splitChromeWrapper || !chromePort || !currentSection) return;
+    hideThinking();
+
+    const nextSib = currentSection.nextSibling;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'split-vnc-wrapper';
+
+    const header = document.createElement('div');
+    header.className = 'split-vnc-header';
+    const label = document.createElement('span');
+    label.textContent = 'Live Browser';
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'split-vnc-toggle';
+    toggleBtn.textContent = 'Collapse';
+    toggleBtn.addEventListener('click', toggleSplitChrome);
+    header.append(label, toggleBtn);
+
+    const body = document.createElement('div');
+    body.className = 'split-vnc-body';
+
+    const left = document.createElement('div');
+    left.className = 'split-vnc-left';
+
+    const right = document.createElement('div');
+    right.className = 'split-vnc-right';
+    chromeImgEl = document.createElement('img');
+    chromeImgEl.className = 'chrome-screencast-img';
+    chromeImgEl.alt = 'Chrome Screencast';
+    right.appendChild(chromeImgEl);
+
+    body.append(left, right);
+    wrapper.append(header, body);
+
+    left.appendChild(currentSection);
+
+    const target = splitVncLeft || splitChromeLeft || messagesEl;
+    target.insertBefore(wrapper, nextSib);
+
+    splitChromeWrapper = wrapper;
+    splitChromeLeft = left;
+    splitChromeCollapsed = false;
+    autoScroll();
+  }
+
+  function toggleSplitChrome() {
+    if (!splitChromeWrapper) return;
+    splitChromeCollapsed = !splitChromeCollapsed;
+    if (splitChromeCollapsed) {
+      splitChromeWrapper.classList.add('split-vnc-collapsed');
+      splitChromeWrapper.querySelector('.split-vnc-toggle').textContent = 'Show Browser';
+    } else {
+      splitChromeWrapper.classList.remove('split-vnc-collapsed');
+      splitChromeWrapper.querySelector('.split-vnc-toggle').textContent = 'Collapse';
+    }
+  }
+
+  function teardownSplitChrome(leaveBar) {
+    if (!splitChromeWrapper) return;
+
+    let lastMoved = null;
+    if (splitChromeLeft) {
+      while (splitChromeLeft.firstChild) {
+        lastMoved = splitChromeLeft.firstChild;
+        splitChromeWrapper.parentNode.insertBefore(lastMoved, splitChromeWrapper);
+      }
+    }
+
+    if (leaveBar && chromePort && lastMoved) {
+      const bar = document.createElement('div');
+      bar.className = 'split-vnc-bar';
+      bar.innerHTML = '<span>\u25b6 Show Browser</span>';
+      bar.addEventListener('click', () => {
+        if (!chromePort) return;
+        const frame = document.createElement('div');
+        frame.className = 'inline-vnc-wrapper';
+        const hdr = document.createElement('div');
+        hdr.className = 'split-vnc-header';
+        const lbl = document.createElement('span');
+        lbl.textContent = 'Browser Snapshot';
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'split-vnc-toggle';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', () => {
+          frame.remove();
+          bar.style.display = '';
+        });
+        hdr.append(lbl, closeBtn);
+        const img = document.createElement('img');
+        img.className = 'inline-vnc-frame';
+        img.style.height = '400px';
+        img.style.objectFit = 'contain';
+        img.alt = 'Chrome Snapshot';
+        // Use the last received frame from the Browser tab
+        const tabImg = document.getElementById('browser-chrome-frame');
+        if (tabImg && tabImg.src) img.src = tabImg.src;
+        frame.append(hdr, img);
+        bar.style.display = 'none';
+        bar.insertAdjacentElement('afterend', frame);
+      });
+      lastMoved.insertAdjacentElement('afterend', bar);
+      splitChromeWrapper.remove();
+    } else {
+      splitChromeWrapper.remove();
+    }
+
+    splitChromeWrapper = null;
+    splitChromeLeft = null;
+    splitChromeCollapsed = false;
+    chromeImgEl = null;
+  }
+
   // ── Instance Management ──────────────────────────────────────────────
   let instancesList = [];
   let instancesLoading = false;
+  let instancesActionId = 0;
+  let useSnapshot = false;
+  let workspaceSnapshotExists = false;
+  let workspaceSnapshotTag = '';
 
-  function setInstancesLoading(loading) {
+  function setInstancesLoading(loading, actionId) {
+    // If clearing the loader, only do so if this response matches the current action
+    if (!loading && actionId !== undefined && actionId !== instancesActionId) return;
     instancesLoading = loading;
     const listEl = document.getElementById('instance-list');
     const overlay = document.getElementById('instance-loading');
@@ -925,8 +1076,9 @@
 
   function instanceAction(msgType, extra) {
     if (instancesLoading) return;
+    instancesActionId++;
     setInstancesLoading(true);
-    vscode.postMessage({ type: msgType, ...extra });
+    vscode.postMessage({ type: msgType, ...extra, _actionId: instancesActionId });
   }
 
   function renderInstances() {
@@ -936,6 +1088,24 @@
 
     // Check if this session has a linked container
     const hasLinked = instancesList.some(i => i.isLinked);
+
+    // Update snapshot status row in header
+    const snapInfoEl = document.getElementById('snapshot-info');
+    if (snapInfoEl) {
+      snapInfoEl.innerHTML = '';
+      if (workspaceSnapshotExists) {
+        const badge = document.createElement('span');
+        badge.className = 'instance-snapshot-badge';
+        badge.textContent = 'snapshot saved';
+        badge.title = workspaceSnapshotTag;
+        const delBtn = document.createElement('button');
+        delBtn.className = 'mcp-btn mcp-btn-del-snapshot';
+        delBtn.textContent = 'Delete snapshot';
+        delBtn.style.fontSize = '11px';
+        delBtn.addEventListener('click', () => instanceAction('instanceSnapshotDelete', { name: '_workspace_' }));
+        snapInfoEl.append(badge, delBtn);
+      }
+    }
 
     if (instancesList.length === 0) {
       const empty = document.createElement('div');
@@ -971,6 +1141,13 @@
         nameEl.appendChild(document.createTextNode(' '));
         nameEl.appendChild(badge);
       }
+      if (inst.snapshotExists) {
+        const snapBadge = document.createElement('span');
+        snapBadge.className = 'instance-snapshot-badge';
+        snapBadge.textContent = 'snapshot';
+        nameEl.appendChild(document.createTextNode(' '));
+        nameEl.appendChild(snapBadge);
+      }
 
       const actions = document.createElement('span');
       actions.style.display = 'flex';
@@ -983,6 +1160,22 @@
         vscode.postMessage({ type: 'instanceOpenVnc', novncPort: inst.novnc_port });
       });
 
+      const snapBtn = document.createElement('button');
+      snapBtn.className = 'mcp-btn mcp-btn-snapshot';
+      snapBtn.textContent = 'Snapshot';
+      snapBtn.title = inst.snapshotExists ? 'Overwrite existing snapshot' : 'Save container state as snapshot';
+      snapBtn.addEventListener('click', () => instanceAction('instanceSnapshot', { name: inst.name }));
+
+      if (inst.snapshotExists) {
+        const delSnapBtn = document.createElement('button');
+        delSnapBtn.className = 'mcp-btn mcp-btn-del-snapshot';
+        delSnapBtn.textContent = 'Del snapshot';
+        delSnapBtn.addEventListener('click', () => instanceAction('instanceSnapshotDelete', { name: inst.name }));
+        actions.append(vncBtn, snapBtn, delSnapBtn);
+      } else {
+        actions.append(vncBtn, snapBtn);
+      }
+
       const restartBtn = document.createElement('button');
       restartBtn.className = 'mcp-btn';
       restartBtn.textContent = 'Restart';
@@ -993,7 +1186,7 @@
       stopBtn.textContent = 'Stop';
       stopBtn.addEventListener('click', () => instanceAction('instanceStop', { name: inst.name }));
 
-      actions.append(vncBtn, restartBtn, stopBtn);
+      actions.append(restartBtn, stopBtn);
       header.append(statusBadge, nameEl, actions);
 
       const details = document.createElement('div');
@@ -1030,6 +1223,11 @@
     });
   }
 
+  // Use-snapshot checkbox
+  document.getElementById('use-snapshot-checkbox')?.addEventListener('change', (e) => {
+    vscode.postMessage({ type: 'instanceSettingsSave', useSnapshot: e.target.checked });
+  });
+
   // Config dropdowns
   const cfgControllerModel = document.getElementById('cfg-controller-model');
   const cfgControllerThinking = document.getElementById('cfg-controller-thinking');
@@ -1051,6 +1249,7 @@
     // restored from transcript.jsonl on disk, so messageLog is NOT persisted.
     const state = { runId: currentRunId, config: getConfig() };
     if (novncPort) state.novncPort = novncPort;
+    if (chromePort) state.chromePort = chromePort;
     if (panelId) state.panelId = panelId;
     vscode.setState(state);
   }
@@ -1261,7 +1460,7 @@
     const content = document.createElement('div');
     content.className = 'thinking-content';
     thinkingEl.appendChild(content);
-    const target = splitVncLeft || messagesEl;
+    const target = splitVncLeft || splitChromeLeft || messagesEl;
     target.appendChild(thinkingEl);
     thinkingTick = 0;
     updateThinkingText(content);
@@ -1311,15 +1510,17 @@
 
   function shouldAutoScroll() {
     const threshold = 60;
-    if (splitVncLeft) {
-      return splitVncLeft.scrollHeight - splitVncLeft.scrollTop - splitVncLeft.clientHeight < threshold;
+    const scrollEl = splitVncLeft || splitChromeLeft;
+    if (scrollEl) {
+      return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < threshold;
     }
     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
   }
 
   function scrollToBottom() {
-    if (splitVncLeft) {
-      splitVncLeft.scrollTop = splitVncLeft.scrollHeight;
+    const scrollEl = splitVncLeft || splitChromeLeft;
+    if (scrollEl) {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -1429,6 +1630,9 @@
     if (splitVncWrapper && currentActor && currentActor !== label) {
       teardownSplitVnc(true);
     }
+    if (splitChromeWrapper && currentActor && currentActor !== label) {
+      teardownSplitChrome(true);
+    }
     closeSection();
 
     currentActor = label;
@@ -1441,7 +1645,7 @@
     section.appendChild(header);
 
     // During split-view, new sections go into the left column
-    const target = splitVncLeft || messagesEl;
+    const target = splitVncLeft || splitChromeLeft || messagesEl;
     target.appendChild(section);
     currentSection = section;
     hasContent = false;
@@ -1566,6 +1770,10 @@
       if (msg.isComputerUse && novncPort && !splitVncWrapper) {
         showSplitVnc();
       }
+      // Chrome split for local agents (no VNC, but chromePort available)
+      if (msg.isChromeDevtools && chromePort && !splitChromeWrapper && !novncPort) {
+        showSplitChrome();
+      }
     },
 
     stop(msg) {
@@ -1614,6 +1822,7 @@
         // Split VNC is torn down by ensureSection() when the actor changes.
         // As a fallback, teardown here too in case no new section was created.
         if (splitVncWrapper) teardownSplitVnc(true);
+        if (splitChromeWrapper) teardownSplitChrome(true);
         btnSend.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
@@ -1665,7 +1874,24 @@
 
     instancesData(msg) {
       instancesList = msg.instances || [];
-      setInstancesLoading(false);
+      if (msg.useSnapshot !== undefined) {
+        useSnapshot = msg.useSnapshot;
+        const cb = document.getElementById('use-snapshot-checkbox');
+        if (cb) cb.checked = useSnapshot;
+      }
+      if (msg.snapshotExists !== undefined) {
+        workspaceSnapshotExists = msg.snapshotExists;
+        workspaceSnapshotTag = msg.snapshotTag || '';
+      }
+      setInstancesLoading(false, msg._actionId);
+      renderInstances();
+    },
+
+    instanceSettings(msg) {
+      useSnapshot = msg.useSnapshot;
+      const cb = document.getElementById('use-snapshot-checkbox');
+      if (cb) cb.checked = useSnapshot;
+      setInstancesLoading(false, msg._actionId);
       renderInstances();
     },
 
@@ -1686,6 +1912,33 @@
       if (novncPort && !splitVncWrapper) {
         showSplitVnc();
       }
+    },
+
+    chromeReady(msg) {
+      chromePort = msg.chromePort || null;
+      updateBrowserTab();
+      saveState();
+    },
+
+    chromeFrame(msg) {
+      // Update the split widget <img> and Browser tab <img> with the new frame
+      const dataUrl = 'data:image/jpeg;base64,' + msg.data;
+      if (chromeImgEl) chromeImgEl.src = dataUrl;
+      const tabImg = document.getElementById('browser-chrome-frame');
+      if (tabImg) {
+        tabImg.src = dataUrl;
+        tabImg.style.display = 'block';
+      }
+      const ph = document.getElementById('browser-placeholder');
+      if (ph) ph.style.display = 'none';
+    },
+
+    chromeGone() {
+      chromePort = null;
+      chromeImgEl = null;
+      updateBrowserTab();
+      teardownSplitChrome(false);
+      saveState();
     },
 
     tasksData(msg) {
@@ -1775,6 +2028,10 @@
     if (savedState.novncPort) {
       novncPort = savedState.novncPort;
       updateComputerTab();
+    }
+    if (savedState.chromePort) {
+      chromePort = savedState.chromePort;
+      updateBrowserTab();
     }
   }
 

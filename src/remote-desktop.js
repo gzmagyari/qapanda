@@ -28,21 +28,39 @@ function instanceName(repoRoot, panelId) {
 /**
  * Wait for the container's API to become healthy.
  */
-async function _waitForHealthy(apiPort, maxWaitMs = 90000) {
+async function _waitForHealthy(apiPort, maxWaitMs = 1200000, containerName = null) {
   const http = require('node:http');
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const ok = await new Promise((resolve) => {
-      const req = http.get(`http://localhost:${apiPort}/healthz`, { timeout: 3000 }, (res) => {
-        resolve(res.statusCode === 200);
+    // If we have a container name, check health from inside via docker exec to avoid
+    // Docker Desktop for Windows port-proxy delay (can take 2-3 min on snapshot starts)
+    if (containerName) {
+      const r = await _exec(`docker exec ${containerName} curl -fsS http://127.0.0.1:8765/healthz`, 5000);
+      if (r.code === 0) return true;
+    } else {
+      const ok = await new Promise((resolve) => {
+        const req = http.get(`http://127.0.0.1:${apiPort}/healthz`, { timeout: 3000 }, (res) => {
+          resolve(res.statusCode === 200);
+        });
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
       });
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-    });
-    if (ok) return true;
+      if (ok) return true;
+    }
     await new Promise((r) => setTimeout(r, 2000));
   }
   return false;
+}
+
+/**
+ * Check if a snapshot image exists for a workspace.
+ * @param {string} workspace
+ * @returns {Promise<{exists: boolean, tag: string}>}
+ */
+async function getSnapshotExists(workspace) {
+  const safe = workspace.replace(/\\/g, '/');
+  const r = await _exec(`qa-desktop snapshot-exists --workspace "${safe}"`);
+  try { return JSON.parse(r.stdout.trim()); } catch { return { exists: false, tag: '' }; }
 }
 
 /**
@@ -50,9 +68,10 @@ async function _waitForHealthy(apiPort, maxWaitMs = 90000) {
  *
  * @param {string} repoRoot — workspace path
  * @param {string} [panelId] — unique panel identifier for per-panel isolation
+ * @param {boolean} [useSnapshot=true] — whether to use snapshot image if available
  * @returns {{ apiPort, vncPort, novncPort, name, containerId, isNew }} or null
  */
-async function ensureDesktop(repoRoot, panelId) {
+async function ensureDesktop(repoRoot, panelId, useSnapshot = true) {
   const cacheKey = panelId || repoRoot;
 
   // Return cached result if container is still healthy
@@ -70,7 +89,8 @@ async function ensureDesktop(repoRoot, panelId) {
 
   try {
     const safePath = repoRoot.replace(/\\/g, '/');
-    const cmd = `qa-desktop up "${name}" --workspace "${safePath}" --json`;
+    const noSnapshotFlag = useSnapshot ? '' : ' --no-snapshot';
+    const cmd = `qa-desktop up "${name}" --workspace "${safePath}"${noSnapshotFlag} --json`;
     const result = await new Promise((resolve) => {
       exec(cmd, { cwd: repoRoot, timeout: 300000 }, (err, stdout, stderr) => {
         resolve({ code: err ? (err.code || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
@@ -153,9 +173,12 @@ function _exec(cmd, timeout = 30000) {
 
 /**
  * List all running qa-desktop instances.
- * Annotates each with `linkedPanelId` if a cached panel maps to it.
+ * Annotates each with `linkedPanelId` if a cached panel maps to it,
+ * and `snapshotExists`/`snapshotTag` if a snapshot exists for the workspace.
+ * @param {string} currentPanelId
+ * @param {string} [workspace] — workspace path for snapshot lookup
  */
-async function listInstances(currentPanelId) {
+async function listInstances(currentPanelId, workspace) {
   try {
     const result = await _exec('qa-desktop ls --json');
     if (result.code !== 0) return [];
@@ -167,10 +190,21 @@ async function listInstances(currentPanelId) {
       nameToPanel[desktop.name] = panelId;
     }
 
+    // Check snapshot existence once for the workspace (shared across all instances)
+    let snapshotExists = false;
+    let snapshotTag = '';
+    if (workspace) {
+      const snap = await getSnapshotExists(workspace);
+      snapshotExists = snap.exists;
+      snapshotTag = snap.tag;
+    }
+
     return instances.map((inst) => ({
       ...inst,
       linkedPanelId: nameToPanel[inst.name] || null,
       isLinked: nameToPanel[inst.name] === currentPanelId,
+      snapshotExists,
+      snapshotTag,
     }));
   } catch {
     return [];
@@ -225,7 +259,7 @@ async function findExistingDesktop(repoRoot, panelId) {
     if (!match) return null;
 
     // Found it — verify healthy and cache
-    const healthy = await _waitForHealthy(match.api_port, 5000);
+    const healthy = await _waitForHealthy(match.api_port, 1200000);
     if (!healthy) return null;
 
     const desktop = {
@@ -272,6 +306,7 @@ module.exports = {
   cancelRemoteRun,
   clearPanel,
   getLinkedInstance,
+  getSnapshotExists,
   isRemoteCli,
   injectRemotePort,
   instanceName,

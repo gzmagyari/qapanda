@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/xampp/htdocs/QAAgentDesktop/**)",
+      "Bash(qa-desktop snapshot-exists:*)",
+      "Bash(docker exec:*)"
+    ]
+  }
+}

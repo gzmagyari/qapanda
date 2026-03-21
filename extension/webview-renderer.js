@@ -213,7 +213,8 @@ class WebviewRenderer {
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
         const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
-        this._post({ type: 'toolCall', label: this.controllerLabel, text: desc, isComputerUse });
+        const isChromeDevtools = tc.name.startsWith('mcp__chrome-devtools__');
+        this._post({ type: 'toolCall', label: this.controllerLabel, text: desc, isComputerUse, isChromeDevtools });
         this._toolCalls.delete(summary.index);
       }
       return;
@@ -258,7 +259,8 @@ class WebviewRenderer {
         try { input = JSON.parse(tc.inputJson); } catch {}
         const desc = this._formatToolCall(tc.name, input);
         const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
-        this._post({ type: 'toolCall', label: this.workerLabel, text: desc, isComputerUse });
+        const isChromeDevtools = tc.name.startsWith('mcp__chrome-devtools__');
+        this._post({ type: 'toolCall', label: this.workerLabel, text: desc, isComputerUse, isChromeDevtools });
         this._toolCalls.delete(summary.index);
       }
       return;
@@ -289,6 +291,18 @@ class WebviewRenderer {
 
   computerUseDetected() {
     this._post({ type: 'computerUseDetected' });
+  }
+
+  chromeReady(chromePort) {
+    this._post({ type: 'chromeReady', chromePort });
+  }
+
+  chromeFrame(base64Data) {
+    this._post({ type: 'chromeFrame', data: base64Data });
+  }
+
+  chromeGone() {
+    this._post({ type: 'chromeGone' });
   }
 }
 

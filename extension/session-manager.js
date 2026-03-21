@@ -109,7 +109,7 @@ class SessionManager {
   }
 
   /** Return servers visible to a given role, stripped of the target field. */
-  _mcpServersForRole(role) {
+  _mcpServersForRole(role, isRemote = false) {
     const result = {};
     const all = { ...this._mcpData.global, ...this._mcpData.project };
     for (const [name, server] of Object.entries(all)) {
@@ -121,13 +121,20 @@ class SessionManager {
         result[name] = rest;
       }
     }
-    // Auto-inject built-in cc-tasks MCP server
-    if (this._extensionPath) {
+    // Auto-inject built-in MCP servers as HTTP (reachable from containers via host.docker.internal)
+    const mcpHost = isRemote ? 'host.docker.internal' : 'localhost';
+    if (this._tasksMcpPort) {
+      result['cc-tasks'] = { type: 'url', url: `http://${mcpHost}:${this._tasksMcpPort}/mcp` };
+    } else if (this._extensionPath) {
+      // Fallback to stdio for local-only use
       result['cc-tasks'] = {
         command: 'node',
         args: [path.join(this._extensionPath, 'tasks-mcp-server.js')],
         env: { TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json') },
       };
+    }
+    if (this._qaDesktopMcpPort) {
+      result['qa-desktop'] = { type: 'url', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
     return result;
   }
@@ -464,6 +471,13 @@ class SessionManager {
 
     if (msg.type === 'userInput') {
       await this._handleInput(String(msg.text || '').trim());
+      return;
+    }
+
+    if (msg.type === 'browserStart') {
+      const _sdbg = require('./chrome-manager')._dbg || (() => {});
+      _sdbg('[session-manager] browserStart received');
+      await this._startChromeDirect();
       return;
     }
   }
@@ -851,13 +865,21 @@ class SessionManager {
       stateRoot: this._stateRoot,
       panelId: this._panelId,
     };
+    // Read useSnapshot from per-workspace config so remote agents respect the checkbox
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(this._repoRoot, '.cc-manager', 'config.json'), 'utf8'));
+      opts.useSnapshot = cfg.useSnapshot !== false;
+    } catch {
+      opts.useSnapshot = true;
+    }
     if (this._controllerCli) opts.controllerCli = this._controllerCli;
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
     if (this._workerCli) opts.workerCli = this._workerCli;
     if (this._workerModel) opts.workerModel = this._workerModel;
-    // Split MCP servers by target role
-    const controllerMcp = this._mcpServersForRole('controller');
-    const workerMcp = this._mcpServersForRole('worker');
+    // Split MCP servers by target role; workers using qa-remote-* backends need host.docker.internal URLs
+    const workerIsRemote = typeof this._workerCli === 'string' && this._workerCli.startsWith('qa-remote');
+    const controllerMcp = this._mcpServersForRole('controller', false);
+    const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     if (Object.keys(controllerMcp).length > 0) opts.controllerMcpServers = controllerMcp;
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
     const agents = this._enabledAgents();
@@ -903,8 +925,9 @@ class SessionManager {
   /** Sync current MCP server config and agents into the active manifest before each run. */
   _syncMcpToManifest() {
     if (!this._activeManifest) return;
-    const controllerMcp = this._mcpServersForRole('controller');
-    const workerMcp = this._mcpServersForRole('worker');
+    const workerIsRemote = typeof this._workerCli === 'string' && this._workerCli.startsWith('qa-remote');
+    const controllerMcp = this._mcpServersForRole('controller', false);
+    const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
     this._activeManifest.workerMcpServers = Object.keys(workerMcp).length > 0 ? workerMcp : null;
     // Sync enabled agents
@@ -912,8 +935,89 @@ class SessionManager {
     if (!this._activeManifest.worker.agentSessions) this._activeManifest.worker.agentSessions = {};
   }
 
+  /** Start headless Chrome if a local agent needs chrome-devtools MCP. */
+  async _ensureChromeIfNeeded(agentId) {
+    // Determine which CLI will run
+    let cli = this._workerCli || 'claude';
+    if (agentId) {
+      const agents = this._enabledAgents();
+      const agent = agents[agentId];
+      if (agent && agent.cli) cli = agent.cli;
+    }
+    // Remote agents have their own Chrome inside the container
+    if (typeof cli === 'string' && cli.startsWith('qa-remote')) return;
+
+    // Check if any MCP server looks like chrome-devtools
+    const mcpServers = this._activeManifest
+      ? (this._activeManifest.workerMcpServers || {})
+      : {};
+    const agentMcps = agentId ? ((this._enabledAgents()[agentId] || {}).mcps || {}) : {};
+    const allMcps = { ...mcpServers, ...agentMcps };
+    const hasChromeDevtools = Object.keys(allMcps).some(n =>
+      n.includes('chrome-devtools') || n.includes('chrome_devtools')
+    );
+    if (!hasChromeDevtools) return;
+
+    if (!this._chromePort) {
+      try {
+        const { ensureChrome, startScreencast } = require('./chrome-manager');
+        const chrome = await ensureChrome(this._panelId);
+        if (chrome) {
+          this._chromePort = chrome.port;
+          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+          startScreencast(this._panelId, (frameData) => {
+            this._postMessage({ type: 'chromeFrame', data: frameData });
+          });
+          // Inject the chrome port into the active manifest's worker MCP servers
+          if (this._activeManifest && this._activeManifest.workerMcpServers) {
+            for (const [name, server] of Object.entries(this._activeManifest.workerMcpServers)) {
+              if (name.includes('chrome-devtools') || name.includes('chrome_devtools')) {
+                if (!server.args) server.args = [];
+                server.args = server.args.filter(a => !a.startsWith('--browser-url'));
+                server.args.push(`--browser-url=http://127.0.0.1:${chrome.port}`);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[session-manager] Failed to start Chrome:', err.message);
+      }
+    }
+  }
+
+  /** Start headless Chrome directly (e.g. from Browser tab click). */
+  async _startChromeDirect() {
+    const { ensureChrome, startScreencast, _dbg } = require('./chrome-manager');
+    _dbg(`[session-manager] _startChromeDirect called, panelId=${this._panelId}, existing chromePort=${this._chromePort}`);
+    if (this._chromePort) {
+      _dbg('[session-manager] Chrome already running, sending chromeReady');
+      this._postMessage({ type: 'chromeReady', chromePort: this._chromePort });
+      return;
+    }
+    try {
+      const chrome = await ensureChrome(this._panelId);
+      _dbg(`[session-manager] ensureChrome returned: ${JSON.stringify(chrome)}`);
+      if (chrome) {
+        this._chromePort = chrome.port;
+        this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+        _dbg('[session-manager] sent chromeReady, starting screencast...');
+        startScreencast(this._panelId, (frameData) => {
+          this._postMessage({ type: 'chromeFrame', data: frameData });
+        });
+        _dbg('[session-manager] screencast started');
+      } else {
+        _dbg('[session-manager] ensureChrome returned null');
+        this._postMessage({ type: 'chromeGone' });
+      }
+    } catch (err) {
+      _dbg(`[session-manager] _startChromeDirect EXCEPTION: ${err.message}\n${err.stack}`);
+      this._postMessage({ type: 'chromeGone' });
+    }
+  }
+
   async _runDirectWorker(userMessage) {
     this._syncMcpToManifest();
+    await this._ensureChromeIfNeeded();
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
@@ -936,6 +1040,7 @@ class SessionManager {
 
   async _runDirectAgent(userMessage, agentId) {
     this._syncMcpToManifest();
+    await this._ensureChromeIfNeeded(agentId);
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });

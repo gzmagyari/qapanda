@@ -5,9 +5,13 @@ const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store');
-const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, instanceName } = require('./src/remote-desktop');
+const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, getSnapshotExists, instanceName } = require('./src/remote-desktop');
+const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
+const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
 
 const activePanels = new Set();
+let _tasksMcpPort = null;
+let _qaDesktopMcpPort = null;
 
 // ── MCP config file helpers ─────────────────────────────────────────
 function globalMcpPath() {
@@ -30,6 +34,22 @@ function saveMcpFile(filePath, data) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
+
+// ── Instance config helpers ──────────────────────────────────────────
+function loadInstanceConfig(repoRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(repoRoot, '.cc-manager', 'config.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveInstanceConfig(repoRoot, data) {
+  const dir = path.join(repoRoot, '.cc-manager');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const existing = loadInstanceConfig(repoRoot);
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ ...existing, ...data }, null, 2), 'utf8');
 }
 
 /** Load and merge global + project MCP servers. Project overrides global by name. */
@@ -191,41 +211,74 @@ function handleAgentMessage(msg, repoRoot, extensionPath) {
   return null;
 }
 
-async function handleInstanceMessage(msg, repoRoot, panelId) {
+async function _instancesData(repoRoot, panelId, extra = {}, actionId = undefined) {
+  const cfg = loadInstanceConfig(repoRoot);
+  const [instances, snap] = await Promise.all([
+    listInstances(panelId, repoRoot),
+    getSnapshotExists(repoRoot),
+  ]);
+  return { type: 'instancesData', instances, panelId, useSnapshot: cfg.useSnapshot !== false, snapshotExists: snap.exists, snapshotTag: snap.tag, _actionId: actionId, ...extra };
+}
+
+async function handleInstanceMessage(msg, repoRoot, panelId, postFn) {
+  const aid = msg._actionId;
   if (msg.type === 'instancesLoad') {
-    const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId };
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceStart') {
-    await ensureDesktop(repoRoot, panelId);
-    const linked = getLinkedInstance(panelId);
-    const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId, novncPort: linked ? linked.novncPort : null };
+    const cfg = loadInstanceConfig(repoRoot);
+    const useSnapshot = cfg.useSnapshot !== false;
+    const desktop = await ensureDesktop(repoRoot, panelId, useSnapshot);
+    return _instancesData(repoRoot, panelId, { novncPort: desktop ? desktop.novncPort : null }, aid);
+  }
+  if (msg.type === 'instanceSettingsSave') {
+    saveInstanceConfig(repoRoot, { useSnapshot: msg.useSnapshot });
+    return { type: 'instanceSettings', useSnapshot: msg.useSnapshot, _actionId: aid };
+  }
+  if (msg.type === 'instanceSnapshot') {
+    const safePath = repoRoot.replace(/\\/g, '/');
+    const { exec } = require('node:child_process');
+    await new Promise((resolve) => {
+      exec(`qa-desktop snapshot "${msg.name}" --workspace "${safePath}" --json`, { timeout: 600000 }, (err, stdout, stderr) => {
+        if (err) console.error('[instance] snapshot failed:', stderr);
+        resolve();
+      });
+    });
+    return _instancesData(repoRoot, panelId, {}, aid);
+  }
+  if (msg.type === 'instanceSnapshotDelete') {
+    const safePath = repoRoot.replace(/\\/g, '/');
+    const { exec } = require('node:child_process');
+    await new Promise((resolve) => {
+      const instName = msg.name === '_workspace_' ? 'workspace' : msg.name;
+      exec(`qa-desktop snapshot-delete "${instName}" --workspace "${safePath}" --json`, { timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) console.error('[instance] snapshot-delete failed:', stderr);
+        resolve();
+      });
+    });
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceStop') {
     await stopInstance(msg.name);
-    const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId };
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceRestart') {
     await restartInstance(msg.name, repoRoot, panelId);
-    const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId };
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceStopAll') {
     const current = await listInstances(panelId);
     for (const inst of current) {
       await stopInstance(inst.name);
     }
-    return { type: 'instancesData', instances: [], panelId };
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceRestartAll') {
     const current = await listInstances(panelId);
     for (const inst of current) {
       await restartInstance(inst.name, repoRoot, panelId);
     }
-    const instances = await listInstances(panelId);
-    return { type: 'instancesData', instances, panelId };
+    return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceOpenVnc') {
     const port = msg.novncPort;
@@ -249,7 +302,7 @@ function getWebviewHtml(panel, extensionUri) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; frame-src http://localhost:*;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; frame-src http://localhost:*; img-src data:;">
   <link rel="stylesheet" href="${styleUri}">
   <title>CC Manager</title>
 </head>
@@ -262,6 +315,7 @@ function getWebviewHtml(panel, extensionUri) {
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
       <button class="tab-btn" data-tab="instances">Instances</button>
       <button class="tab-btn" data-tab="computer">Computer</button>
+      <button class="tab-btn" data-tab="browser">Browser</button>
     </div>
 
     <div id="tab-agent">
@@ -406,10 +460,12 @@ function getWebviewHtml(panel, extensionUri) {
             <h3>Docker Instances</h3>
             <span class="mcp-section-path">qa-desktop containers</span>
             <div style="flex:1"></div>
+            <label class="instance-snapshot-toggle"><input type="checkbox" id="use-snapshot-checkbox" checked> Use snapshot</label>
             <button class="instance-action-btn" data-action="start">Start for this session</button>
             <button class="instance-action-btn instance-btn-secondary" data-action="restartAll">Restart All</button>
             <button class="instance-action-btn instance-btn-secondary" data-action="stopAll">Stop All</button>
           </div>
+          <div id="snapshot-info" style="display:flex;align-items:center;gap:8px;padding:4px 8px;min-height:24px;"></div>
           <div id="instance-list" class="mcp-list"></div>
         </div>
       </div>
@@ -422,6 +478,13 @@ function getWebviewHtml(panel, extensionUri) {
       </div>
       <iframe id="computer-vnc-frame" class="computer-vnc-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
     </div><!-- /tab-computer -->
+    <div id="tab-browser" class="tab-hidden">
+      <div id="browser-placeholder" class="computer-placeholder">
+        <p>No Chrome instance linked to this session.</p>
+        <p><small>Chrome starts automatically when a local agent uses Chrome DevTools MCP.</small></p>
+      </div>
+      <img id="browser-chrome-frame" class="browser-chrome-frame" style="display:none;" alt="Chrome Screencast" />
+    </div><!-- /tab-browser -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -447,6 +510,12 @@ function getRepoRoot(extensionUri) {
 }
 
 function activate(context) {
+  // Start HTTP MCP servers (singletons shared across all panels)
+  const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.cc-manager', 'tasks.json');
+  startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
+  const defaultRepoRoot = getRepoRoot(context.extensionUri);
+  startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
+
   const openCommand = vscode.commands.registerCommand('ccManager.open', () => {
     const title = activePanels.size === 0 ? 'CC Manager' : `CC Manager (${activePanels.size + 1})`;
     const panel = vscode.window.createWebviewPanel(
@@ -489,6 +558,9 @@ function activate(context) {
       initialConfig: panelConfig,
       extensionPath: context.extensionUri.fsPath,
     });
+    // Pass HTTP MCP server ports so agents can reach them
+    session._tasksMcpPort = _tasksMcpPort;
+    session._qaDesktopMcpPort = _qaDesktopMcpPort;
     // Initialize MCP servers and agents from disk
     const extensionPath1 = context.extensionUri.fsPath;
     session.setMcpServers(loadMergedMcpServers(repoRoot));
@@ -541,7 +613,13 @@ function activate(context) {
           return;
         }
         // Instance management messages (async)
-        const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
+        let instanceReply;
+        try {
+          instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} });
+        } catch (err) {
+          console.error('[instance] handler error:', err);
+          instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));
+        }
         if (instanceReply) {
           try { panel.webview.postMessage(instanceReply); } catch {}
           if (instanceReply.novncPort) {
@@ -563,6 +641,8 @@ function activate(context) {
         // Stop the Docker container linked to this panel
         const name = instanceName(repoRoot, session.panelId);
         stopInstance(name).catch(() => {});
+        // Kill headless Chrome for this panel
+        try { require('./chrome-manager').killChrome(session.panelId); } catch {}
         session.dispose();
       },
       null,
@@ -602,6 +682,8 @@ function activate(context) {
         initialConfig: panelConfig,
         extensionPath: context.extensionUri.fsPath,
       });
+      session._tasksMcpPort = _tasksMcpPort;
+      session._qaDesktopMcpPort = _qaDesktopMcpPort;
       const extensionPath2 = context.extensionUri.fsPath;
       session.setMcpServers(loadMergedMcpServers(repoRoot));
       session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
@@ -637,7 +719,13 @@ function activate(context) {
             return;
           }
           // Instance management messages (async)
-          const instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId);
+          let instanceReply;
+          try {
+            instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} });
+          } catch (err) {
+            console.error('[instance] handler error:', err);
+            instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));
+          }
           if (instanceReply) {
             try { panel.webview.postMessage(instanceReply); } catch {}
             if (instanceReply.novncPort) {
@@ -687,6 +775,7 @@ function activate(context) {
           activePanels.delete(panel);
           const name = instanceName(repoRoot, session.panelId);
           stopInstance(name).catch(() => {});
+          try { require('./chrome-manager').killChrome(session.panelId); } catch {}
           session.dispose();
         },
         null,
@@ -696,6 +785,9 @@ function activate(context) {
   });
 }
 
-function deactivate() {}
+function deactivate() {
+  stopTasksMcpServer().catch(() => {});
+  stopQaDesktopMcpServer().catch(() => {});
+}
 
 module.exports = { activate, deactivate };

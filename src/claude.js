@@ -88,7 +88,13 @@ function buildClaudeArgs(manifest, options = {}) {
   if (Object.keys(mcpServers).length > 0) {
     const mcpConfig = { mcpServers: {} };
     for (const [name, server] of Object.entries(mcpServers)) {
-      if (!server || !server.command) continue;
+      if (!server) continue;
+      // Support URL-based MCP servers (HTTP transport for container access)
+      if (server.type === 'url' && server.url) {
+        mcpConfig.mcpServers[name] = { type: 'url', url: server.url };
+        continue;
+      }
+      if (!server.command) continue;
       mcpConfig.mcpServers[name] = {
         type: 'stdio',
         command: server.command,
@@ -148,7 +154,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Claude Code process was interrupted.');
     }
-    const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId);
+    const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId, manifest.useSnapshot !== false);
     // Check again — abort may have fired during ensureDesktop
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Claude Code process was interrupted.');
