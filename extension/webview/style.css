@@ -1230,3 +1230,187 @@ html, body {
   background: #1a1a2e;
   display: block;
 }
+
+/* ── Init Wizard ──────────────────────────────────────────────────── */
+#init-wizard {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  background: var(--vscode-editor-background, #1e1e1e);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  overflow-y: auto;
+}
+.wizard-step {
+  max-width: 700px;
+  width: 100%;
+  text-align: center;
+}
+.wizard-step h2 {
+  margin: 0 0 24px 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--vscode-foreground, #ccc);
+}
+.wizard-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+}
+.wizard-card {
+  flex: 0 0 calc(50% - 14px);
+  max-width: 320px;
+  min-height: 100px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 8px;
+  padding: 18px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  text-align: left;
+}
+.wizard-card:hover {
+  border-color: var(--vscode-focusBorder, #007acc);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+}
+.wizard-card.selected {
+  border-color: var(--vscode-focusBorder, #007acc);
+  background: rgba(0, 122, 204, 0.08);
+}
+.wizard-card-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+.wizard-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--vscode-foreground, #ccc);
+  margin-bottom: 4px;
+}
+.wizard-card-desc {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #999);
+  line-height: 1.4;
+}
+.wizard-card-category {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground, #888);
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+.wizard-nav {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 20px;
+}
+.wizard-skip,
+.wizard-back {
+  background: transparent;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  color: var(--vscode-foreground, #ccc);
+  padding: 6px 18px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.wizard-skip:hover,
+.wizard-back:hover {
+  background: var(--vscode-editorWidget-background, #252526);
+}
+.setup-banner {
+  background: #2d2d2d;
+  color: #aaa;
+  border-bottom: 2px solid #444;
+  padding: 10px 16px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 13px;
+}
+.setup-banner strong {
+  color: #3794ff;
+}
+.setup-banner:hover {
+  background: #333;
+}
+.setup-banner:hover strong {
+  color: #5aadff;
+}
+.mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #999);
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mode-indicator:hover {
+  border-color: var(--vscode-focusBorder, #007acc);
+  color: var(--vscode-foreground, #ccc);
+}
+
+/* Confirm modal */
+#confirm-modal {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 10000;
+  display: none !important;
+}
+#confirm-modal.visible {
+  display: block !important;
+}
+.confirm-modal-backdrop {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+}
+.confirm-modal-box {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--vscode-editor-background, #1e1e1e);
+  border: 1px solid var(--vscode-panel-border, #444);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 300px;
+  max-width: 400px;
+  z-index: 1;
+}
+.confirm-modal-box p {
+  margin: 0 0 16px 0;
+  font-size: 13px;
+  color: var(--vscode-foreground, #ccc);
+}
+.confirm-modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.confirm-modal-buttons button {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, #555);
+  background: var(--vscode-button-secondaryBackground, #3c3c3c);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  cursor: pointer;
+  font-size: 12px;
+}
+#confirm-modal-yes {
+  background: var(--vscode-button-background, #007acc);
+  color: var(--vscode-button-foreground, #fff);
+  border-color: var(--vscode-button-background, #007acc);
+}

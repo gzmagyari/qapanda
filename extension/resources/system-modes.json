@@ -1,0 +1,58 @@
+{
+  "quick-test": {
+    "name": "Quick Test",
+    "description": "Test one thing at a time — you describe what to test, the QA agent runs it",
+    "category": "test",
+    "icon": "🔍",
+    "useController": false,
+    "defaultAgent": "QA-Browser",
+    "requiresTestEnv": true,
+    "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "enabled": true
+  },
+  "auto-test": {
+    "name": "Auto Test",
+    "description": "Give a test plan and the system runs everything autonomously",
+    "category": "test",
+    "icon": "🔄",
+    "useController": true,
+    "controllerPrompt": "You are a QA test coordinator. Your job is to plan and execute a comprehensive test plan.\n\nWorkflow:\n1. Read the user's test requirements carefully\n2. Break them down into individual test cases\n3. Delegate each test case to the QA agent one at a time\n4. Review each test result — if a test fails, document the bug clearly\n5. Continue until all test cases are covered\n6. Provide a final summary of all pass/fail results\n\nFor each delegation, set action to \"delegate\" with a clear, specific test instruction.\nWhen all tests are complete, set action to \"stop\" with a summary.",
+    "availableAgents": ["QA-Browser", "QA"],
+    "requiresTestEnv": true,
+    "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "enabled": true
+  },
+  "quick-dev": {
+    "name": "Quick Dev",
+    "description": "Quick code changes — talk directly to a dev agent",
+    "category": "develop",
+    "icon": "💻",
+    "useController": false,
+    "defaultAgent": "dev",
+    "requiresTestEnv": false,
+    "enabled": true
+  },
+  "auto-dev": {
+    "name": "Auto Dev",
+    "description": "Autonomous development — give it a plan, it implements everything",
+    "category": "develop",
+    "icon": "⚡",
+    "useController": true,
+    "controllerPrompt": "You are a development coordinator. Your job is to plan and implement features autonomously.\n\nWorkflow:\n1. Read the user's requirements carefully\n2. Break them down into implementation steps\n3. Delegate each step to the dev agent one at a time\n4. Review each result — if something needs fixing, delegate a follow-up\n5. Continue until the full implementation is complete\n6. Provide a final summary of all changes made\n\nFor each delegation, set action to \"delegate\" with a clear, specific implementation instruction.\nWhen all work is complete, set action to \"stop\" with a summary.",
+    "availableAgents": ["dev"],
+    "requiresTestEnv": false,
+    "enabled": true
+  },
+  "auto-dev-test": {
+    "name": "Auto Dev & Test",
+    "description": "Build and verify — develop features with continuous QA testing",
+    "category": "develop",
+    "icon": "🚀",
+    "useController": true,
+    "controllerPrompt": "You are a development and QA coordinator. Your job is to implement features and verify they work correctly.\n\nWorkflow:\n1. Read the user's requirements carefully\n2. Break them down into implementation steps\n3. Delegate implementation to the dev agent\n4. After each implementation step, delegate testing to the QA agent\n5. If QA finds bugs, delegate fixes to the dev agent, then re-test\n6. Continue the implement → test → fix cycle until everything passes\n7. Provide a final summary of all changes and test results\n\nAvailable agents:\n- \"dev\": Software developer — delegates code changes\n- \"QA-Browser\" or \"QA\": QA Engineer — delegates testing\n\nFor each delegation, set action to \"delegate\" with agent_id and a clear instruction.\nWhen all work is complete and tests pass, set action to \"stop\" with a summary.",
+    "availableAgents": ["dev", "QA-Browser", "QA"],
+    "requiresTestEnv": true,
+    "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "enabled": true
+  }
+}

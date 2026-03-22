@@ -213,6 +213,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     stdinText: prompt,
     env: spawnEnv,
     abortSignal,
+    resolveOnResult: true,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);
       Promise.resolve(emitEvent({
@@ -287,7 +288,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   renderer.workerLabel = prevWorkerLabel;
 
   if (result.aborted) {
-    // Mark session as started so resume uses --resume instead of --session-id
+    // User-initiated abort, not turn-completed cleanup
     if (agentSession) {
       agentSession.sessionId = discoveredSessionId;
       agentSession.hasStarted = true;

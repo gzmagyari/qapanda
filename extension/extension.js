@@ -5,6 +5,7 @@ const os = require('node:os');
 const { WebviewRenderer } = require('./webview-renderer');
 const { SessionManager } = require('./session-manager');
 const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store');
+const { loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store');
 const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, getSnapshotExists, instanceName } = require('./src/remote-desktop');
 const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
 const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
@@ -211,6 +212,33 @@ function handleAgentMessage(msg, repoRoot, extensionPath) {
   return null;
 }
 
+function handleModeMessage(msg, repoRoot, extensionPath) {
+  if (msg.type === 'modesLoad') {
+    return { type: 'modesData', modes: loadMergedModes(repoRoot, extensionPath) };
+  }
+  if (msg.type === 'modeSave') {
+    const scope = msg.scope; // 'global' or 'project'
+    const filePath = scope === 'global' ? globalModesPath() : projectModesPath(repoRoot);
+    saveModesFile(filePath, msg.modes);
+    return { type: 'modesData', modes: loadMergedModes(repoRoot, extensionPath) };
+  }
+  if (msg.type === 'modeSaveSystem') {
+    const overridePath = systemModesOverridePath();
+    const existing = loadModesFile(overridePath);
+    existing[msg.id] = msg.mode;
+    saveModesFile(overridePath, existing);
+    return { type: 'modesData', modes: loadMergedModes(repoRoot, extensionPath) };
+  }
+  if (msg.type === 'modeRestoreSystem') {
+    const overridePath = systemModesOverridePath();
+    const existing = loadModesFile(overridePath);
+    delete existing[msg.id];
+    saveModesFile(overridePath, existing);
+    return { type: 'modesData', modes: loadMergedModes(repoRoot, extensionPath) };
+  }
+  return null;
+}
+
 async function _instancesData(repoRoot, panelId, extra = {}, actionId = undefined) {
   const cfg = loadInstanceConfig(repoRoot);
   const [instances, snap] = await Promise.all([
@@ -316,6 +344,52 @@ function getWebviewHtml(panel, extensionUri) {
       <button class="tab-btn" data-tab="instances">Instances</button>
       <button class="tab-btn" data-tab="computer">Computer</button>
       <button class="tab-btn" data-tab="browser">Browser</button>
+      <button class="tab-btn" data-tab="modes">Modes</button>
+    </div>
+
+    <div id="confirm-modal" style="display:none;">
+      <div class="confirm-modal-backdrop"></div>
+      <div class="confirm-modal-box">
+        <p id="confirm-modal-text"></p>
+        <div class="confirm-modal-buttons">
+          <button id="confirm-modal-yes">Yes, continue</button>
+          <button id="confirm-modal-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="init-wizard" style="display:none;">
+      <div id="wizard-step-1" class="wizard-step">
+        <h2>What would you like to do?</h2>
+        <div class="wizard-cards" id="wizard-mode-cards"></div>
+      </div>
+      <div id="wizard-step-2" class="wizard-step" style="display:none;">
+        <h2>Where should testing happen?</h2>
+        <div class="wizard-cards">
+          <div class="wizard-card" data-env="browser">
+            <div class="wizard-card-icon">&#127760;</div>
+            <div class="wizard-card-title">Browser</div>
+            <div class="wizard-card-desc">Test web apps in a headless Chrome browser</div>
+          </div>
+          <div class="wizard-card" data-env="computer">
+            <div class="wizard-card-icon">&#128421;</div>
+            <div class="wizard-card-title">Desktop</div>
+            <div class="wizard-card-desc">Test desktop apps in a Linux container</div>
+          </div>
+        </div>
+        <div class="wizard-nav">
+          <button class="wizard-back" id="wizard-back-2">Back</button>
+          <button class="wizard-skip" id="wizard-skip-2">Skip</button>
+        </div>
+      </div>
+      <div id="wizard-step-3" class="wizard-step" style="display:none;">
+        <h2>Setup</h2>
+        <div id="wizard-setup-options" class="wizard-cards"></div>
+        <div class="wizard-nav">
+          <button class="wizard-back" id="wizard-back-3">Back</button>
+          <button class="wizard-skip" id="wizard-skip-3">Skip</button>
+        </div>
+      </div>
     </div>
 
     <div id="tab-agent">
@@ -492,6 +566,34 @@ function getWebviewHtml(panel, extensionUri) {
       </div>
       <img id="browser-chrome-frame" class="browser-chrome-frame" tabindex="0" style="display:none;" alt="Chrome Screencast" />
     </div><!-- /tab-browser -->
+
+    <div id="tab-modes" class="tab-hidden">
+      <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>System Modes</h3>
+            <span class="mcp-section-path">Built-in modes shipped with the extension</span>
+          </div>
+          <div id="mode-list-system" class="mcp-list"></div>
+        </div>
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Global Modes</h3>
+            <span class="mcp-section-path">~/.cc-manager/modes.json</span>
+            <button class="mode-add-btn" data-scope="global">+ Add</button>
+          </div>
+          <div id="mode-list-global" class="mcp-list"></div>
+        </div>
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Project Modes</h3>
+            <span class="mcp-section-path">.cc-manager/modes.json</span>
+            <button class="mode-add-btn" data-scope="project">+ Add</button>
+          </div>
+          <div id="mode-list-project" class="mcp-list"></div>
+        </div>
+      </div>
+    </div><!-- /tab-modes -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -589,7 +691,8 @@ function activate(context) {
           if (msg.panelId) session._panelId = msg.panelId;
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
+          const modesData = loadMergedModes(repoRoot, extensionPath1);
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId });
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -617,6 +720,13 @@ function activate(context) {
         if (agentReply) {
           try { panel.webview.postMessage(agentReply); } catch {}
           session.setAgents(loadMergedAgents(repoRoot, extensionPath1));
+          return;
+        }
+        // Mode CRUD messages
+        const modeReply = handleModeMessage(msg, repoRoot, extensionPath1);
+        if (modeReply) {
+          try { panel.webview.postMessage(modeReply); } catch {}
+          session.setModes(loadMergedModes(repoRoot, extensionPath1));
           return;
         }
         // Instance management messages (async)
@@ -725,6 +835,13 @@ function activate(context) {
             session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
             return;
           }
+          // Mode CRUD messages
+          const modeReply = handleModeMessage(msg, repoRoot, extensionPath2);
+          if (modeReply) {
+            try { panel.webview.postMessage(modeReply); } catch {}
+            session.setModes(loadMergedModes(repoRoot, extensionPath2));
+            return;
+          }
           // Instance management messages (async)
           let instanceReply;
           try {
@@ -745,7 +862,8 @@ function activate(context) {
             if (msg.panelId) session._panelId = msg.panelId;
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, panelId: session.panelId });
+            const modesData = loadMergedModes(repoRoot, extensionPath2);
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId });
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {

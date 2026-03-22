@@ -169,6 +169,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   } catch {}
   cleanEnv.CODEX_HOME = codexHome;
   // Codex doesn't exit after turn.completed — use a local abort controller to force-kill
+  // Codex doesn't exit after turn.completed — use local abort to force-kill
   const localAbort = new AbortController();
   let turnDone = false;
   if (abortSignal) {

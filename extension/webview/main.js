@@ -19,6 +19,7 @@
     instances: document.getElementById('tab-instances'),
     computer: document.getElementById('tab-computer'),
     browser: document.getElementById('tab-browser'),
+    modes: document.getElementById('tab-modes'),
   };
 
   tabBar.addEventListener('click', (e) => {
@@ -38,6 +39,7 @@
       setInstancesLoading(true);
       vscode.postMessage({ type: 'instancesLoad', _actionId: instancesActionId });
     }
+    if (tab === 'modes') vscode.postMessage({ type: 'modesLoad' });
     if (tab === 'browser') {
       if (!chromePort) {
         const ph = document.getElementById('browser-placeholder');
@@ -527,6 +529,597 @@
       renderAgentList(btn.dataset.scope);
     });
   });
+
+  // ── Modes Management ──────────────────────────────────────────────
+  let modesSystem = {};
+  let modesSystemMeta = {};
+  let modesGlobal = {};
+  let modesProject = {};
+  let modeEditingForm = null; // { scope, id } or null
+  let currentMode = null;
+  let currentTestEnv = null;
+  let setupInProgress = false;
+  let suppressTargetConfirm = false;
+
+  function renderModeList(scope) {
+    const listEl = document.getElementById('mode-list-' + scope);
+    if (!listEl) return;
+    const isSystem = scope === 'system';
+    const modes = isSystem ? modesSystem : (scope === 'global' ? modesGlobal : modesProject);
+    listEl.innerHTML = '';
+
+    const removedSystemIds = isSystem
+      ? Object.entries(modesSystemMeta).filter(([, m]) => m.removed).map(([id]) => id)
+      : [];
+
+    const ids = Object.keys(modes);
+    const allIds = isSystem ? [...new Set([...ids, ...removedSystemIds])] : ids;
+
+    if (allIds.length === 0 && !(modeEditingForm && modeEditingForm.scope === scope && !modeEditingForm.id)) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.textContent = isSystem ? 'No system modes' : 'No modes configured';
+      listEl.appendChild(empty);
+    }
+
+    if (modeEditingForm && modeEditingForm.scope === scope && !modeEditingForm.id) {
+      listEl.appendChild(createModeForm(scope, null));
+    }
+
+    for (const id of allIds) {
+      const meta = isSystem ? (modesSystemMeta[id] || {}) : {};
+      const isRemoved = isSystem && meta.removed;
+      const mode = isRemoved ? meta.bundled : modes[id];
+      if (!mode) continue;
+
+      if (modeEditingForm && modeEditingForm.scope === scope && modeEditingForm.id === id) {
+        listEl.appendChild(createModeForm(scope, id));
+        continue;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'mcp-card' + (mode.enabled === false || isRemoved ? ' mcp-disabled' : '');
+
+      const header = document.createElement('div');
+      header.className = 'mcp-card-header';
+
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = !isRemoved && mode.enabled !== false;
+      toggle.className = 'mcp-toggle';
+      toggle.style.accentColor = 'var(--vscode-focusBorder, #007fd4)';
+      toggle.style.cursor = 'pointer';
+      toggle.disabled = isRemoved;
+      toggle.addEventListener('change', () => {
+        if (isSystem) {
+          const override = { ...(meta.hasUserOverride ? modes[id] : mode), enabled: toggle.checked };
+          vscode.postMessage({ type: 'modeSaveSystem', id, mode: override });
+        } else {
+          mode.enabled = toggle.checked;
+          notifyModeChanged(scope);
+          renderModeList(scope);
+        }
+      });
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'mcp-name';
+      nameEl.textContent = (mode.icon ? mode.icon + ' ' : '') + (mode.name || id) + ' (' + id + ')';
+
+      if (isSystem) {
+        const badge = document.createElement('span');
+        badge.style.cssText = 'font-size:10px;opacity:0.6;margin-left:6px;font-style:italic;';
+        badge.textContent = isRemoved ? 'removed' : (meta.hasUserOverride ? 'customized' : 'built-in');
+        nameEl.appendChild(badge);
+      }
+
+      const actions = document.createElement('span');
+      actions.className = 'mcp-actions';
+
+      if (isSystem) {
+        if (!isRemoved) {
+          const editBtn = document.createElement('button');
+          editBtn.className = 'mcp-btn';
+          editBtn.textContent = 'Edit';
+          editBtn.addEventListener('click', () => { modeEditingForm = { scope, id }; renderModeList(scope); });
+          actions.appendChild(editBtn);
+        }
+        if (!isRemoved) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'mcp-btn mcp-btn-danger';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'modeSaveSystem', id, mode: { removed: true } });
+          });
+          actions.appendChild(delBtn);
+        }
+        if (isRemoved || meta.hasUserOverride) {
+          const restoreBtn = document.createElement('button');
+          restoreBtn.className = 'mcp-btn';
+          restoreBtn.textContent = isRemoved ? 'Restore' : 'Restore default';
+          restoreBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'modeRestoreSystem', id });
+          });
+          actions.appendChild(restoreBtn);
+        }
+      } else {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'mcp-btn';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => { modeEditingForm = { scope, id }; renderModeList(scope); });
+        const delBtn = document.createElement('button');
+        delBtn.className = 'mcp-btn mcp-btn-danger';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => { delete modes[id]; notifyModeChanged(scope); renderModeList(scope); });
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+      }
+
+      header.appendChild(toggle);
+      header.appendChild(nameEl);
+      header.appendChild(actions);
+
+      const details = document.createElement('div');
+      details.className = 'mcp-card-details';
+      if (mode.description) {
+        details.innerHTML = escapeHtml(mode.description);
+      } else {
+        details.innerHTML = '<em style="opacity:0.5">No description</em>';
+      }
+      const detailParts = [];
+      if (mode.category) detailParts.push('<span class="mcp-detail-label">Category:</span> ' + escapeHtml(mode.category));
+      if (mode.useController) detailParts.push('<span class="mcp-detail-label">Controller:</span> yes');
+      if (mode.defaultAgent) detailParts.push('<span class="mcp-detail-label">Default Agent:</span> ' + escapeHtml(mode.defaultAgent));
+      if (mode.availableAgents) detailParts.push('<span class="mcp-detail-label">Agents:</span> ' + escapeHtml(mode.availableAgents.join(', ')));
+      if (mode.requiresTestEnv) detailParts.push('<span class="mcp-detail-label">Requires Test Env:</span> yes');
+      if (detailParts.length) details.innerHTML += '<br>' + detailParts.join(' | ');
+
+      card.appendChild(header);
+      card.appendChild(details);
+      listEl.appendChild(card);
+    }
+  }
+
+  function createModeForm(scope, editId) {
+    const modes = scope === 'system' ? modesSystem : (scope === 'global' ? modesGlobal : modesProject);
+    const existing = editId ? modes[editId] : null;
+
+    const form = document.createElement('div');
+    form.className = 'mcp-form';
+
+    form.innerHTML =
+      '<div class="agent-form-row"><label>ID</label><input class="mcp-input" id="mode-f-id" value="' + escapeHtml(editId || '') + '" ' + (editId ? 'disabled' : '') + ' placeholder="unique-id (e.g. quick-test)"></div>' +
+      '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="mode-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
+      '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="mode-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description"></div>' +
+      '<div class="agent-form-row"><label>Icon</label><input class="mcp-input" id="mode-f-icon" value="' + escapeHtml(existing ? existing.icon || '' : '') + '" placeholder="Emoji icon" style="max-width:60px;"></div>' +
+      '<div class="agent-form-row"><label>Category</label><select class="mcp-input" id="mode-f-category"><option value="test"' + (existing && existing.category === 'test' ? ' selected' : '') + '>test</option><option value="develop"' + (existing && existing.category === 'develop' ? ' selected' : '') + '>develop</option></select></div>' +
+      '<div class="agent-form-row"><label>Use Controller</label><input type="checkbox" id="mode-f-controller"' + (existing && existing.useController ? ' checked' : '') + '></div>' +
+      '<div class="agent-form-row"><label>Default Agent</label><input class="mcp-input" id="mode-f-defaultAgent" value="' + escapeHtml(existing ? existing.defaultAgent || '' : '') + '" placeholder="Agent ID (e.g. QA-Browser)"></div>' +
+      '<div class="agent-form-row"><label>Available Agents</label><input class="mcp-input" id="mode-f-availableAgents" value="' + escapeHtml(existing && existing.availableAgents ? existing.availableAgents.join(', ') : '') + '" placeholder="Comma-separated agent IDs"></div>' +
+      '<div class="agent-form-row"><label>Requires Test Env</label><input type="checkbox" id="mode-f-requiresTestEnv"' + (existing && existing.requiresTestEnv ? ' checked' : '') + '></div>' +
+      '<div class="agent-form-row"><label>Controller Prompt</label><textarea class="mcp-input mcp-textarea" id="mode-f-controllerPrompt" placeholder="Controller system prompt override">' + escapeHtml(existing ? existing.controllerPrompt || '' : '') + '</textarea></div>' +
+      '<div id="mode-f-error" class="mcp-form-error"></div>' +
+      '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="mode-f-save">Save</button><button class="mcp-btn" id="mode-f-cancel">Cancel</button></div>';
+
+    setTimeout(() => {
+      document.getElementById('mode-f-save').addEventListener('click', () => saveModeForm(scope, editId));
+      document.getElementById('mode-f-cancel').addEventListener('click', () => { modeEditingForm = null; renderModeList(scope); });
+    }, 0);
+
+    return form;
+  }
+
+  function saveModeForm(scope, editId) {
+    const isSystem = scope === 'system';
+    const modes = isSystem ? modesSystem : (scope === 'global' ? modesGlobal : modesProject);
+    const id = (document.getElementById('mode-f-id').value || '').trim();
+    const name = (document.getElementById('mode-f-name').value || '').trim();
+    const description = (document.getElementById('mode-f-desc').value || '').trim();
+    const icon = (document.getElementById('mode-f-icon').value || '').trim();
+    const category = document.getElementById('mode-f-category').value;
+    const useController = document.getElementById('mode-f-controller').checked;
+    const defaultAgent = (document.getElementById('mode-f-defaultAgent').value || '').trim();
+    const availableAgentsStr = (document.getElementById('mode-f-availableAgents').value || '').trim();
+    const requiresTestEnv = document.getElementById('mode-f-requiresTestEnv').checked;
+    const controllerPrompt = (document.getElementById('mode-f-controllerPrompt').value || '').trim();
+    const errorEl = document.getElementById('mode-f-error');
+
+    if (!id) { if (errorEl) errorEl.textContent = 'ID is required'; return; }
+
+    const prevEnabled = editId && modes[editId] ? modes[editId].enabled : true;
+    const modeData = {
+      name: name || id,
+      description,
+      icon,
+      category,
+      useController,
+      defaultAgent: defaultAgent || null,
+      availableAgents: availableAgentsStr ? availableAgentsStr.split(',').map(s => s.trim()).filter(Boolean) : null,
+      requiresTestEnv,
+      enabled: prevEnabled !== false,
+    };
+    if (controllerPrompt) modeData.controllerPrompt = controllerPrompt;
+
+    modeEditingForm = null;
+
+    if (isSystem) {
+      vscode.postMessage({ type: 'modeSaveSystem', id: editId || id, mode: modeData });
+    } else {
+      if (editId && editId !== id) delete modes[editId];
+      modes[id] = modeData;
+      notifyModeChanged(scope);
+      renderModeList(scope);
+    }
+  }
+
+  function notifyModeChanged(scope) {
+    const modes = scope === 'global' ? modesGlobal : modesProject;
+    vscode.postMessage({ type: 'modeSave', scope, modes });
+  }
+
+  document.querySelectorAll('.mode-add-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      modeEditingForm = { scope: btn.dataset.scope, id: null };
+      renderModeList(btn.dataset.scope);
+    });
+  });
+
+  // ── Init Wizard ───────────────────────────────────────────────────
+  const wizardEl = document.getElementById('init-wizard');
+  const wizardStep1 = document.getElementById('wizard-step-1');
+  const wizardStep2 = document.getElementById('wizard-step-2');
+  const wizardStep3 = document.getElementById('wizard-step-3');
+  let selectedWizardMode = null;
+
+  // Custom confirm modal (native confirm() is blocked in VSCode webviews)
+  function showConfirm(message, onYes, onNo) {
+    const modal = document.getElementById('confirm-modal');
+    const text = document.getElementById('confirm-modal-text');
+    const yesBtn = document.getElementById('confirm-modal-yes');
+    const noBtn = document.getElementById('confirm-modal-no');
+    if (!modal || !text || !yesBtn || !noBtn) { if (onYes) onYes(); return; }
+    text.textContent = message;
+    modal.classList.add('visible');
+    const cleanup = () => { modal.classList.remove('visible'); yesBtn.onclick = null; noBtn.onclick = null; };
+    yesBtn.onclick = () => { cleanup(); if (onYes) onYes(); };
+    noBtn.onclick = () => { cleanup(); if (onNo) onNo(); };
+  }
+
+  function showInitWizard() {
+    if (!wizardEl) return;
+    wizardEl.style.display = 'flex';
+    tabPanels.agent.style.display = 'none';
+    const indicator = document.getElementById('mode-indicator');
+    if (indicator) indicator.style.display = 'none';
+    renderWizardStep1();
+  }
+
+  function hideInitWizard() {
+    if (!wizardEl) return;
+    wizardEl.style.display = 'none';
+    tabPanels.agent.style.display = '';
+    updateModeIndicator();
+  }
+
+  function getAllEnabledModes() {
+    const all = { ...modesSystem, ...modesGlobal, ...modesProject };
+    const result = {};
+    for (const [id, mode] of Object.entries(all)) {
+      if (mode && mode.enabled !== false) result[id] = mode;
+    }
+    return result;
+  }
+
+  function renderWizardStep1() {
+    wizardStep1.style.display = '';
+    wizardStep2.style.display = 'none';
+    wizardStep3.style.display = 'none';
+
+    const cardsEl = document.getElementById('wizard-mode-cards');
+    cardsEl.innerHTML = '';
+
+    const enabled = getAllEnabledModes();
+    const categories = { test: [], develop: [] };
+    for (const [id, mode] of Object.entries(enabled)) {
+      const cat = mode.category || 'test';
+      if (!categories[cat]) categories[cat] = [];
+      categories[cat].push({ id, ...mode });
+    }
+
+    const categoryLabels = { test: 'Testing', develop: 'Development' };
+    for (const [cat, modes] of Object.entries(categories)) {
+      if (modes.length === 0) continue;
+      const label = document.createElement('div');
+      label.className = 'wizard-card-category';
+      label.textContent = categoryLabels[cat] || cat;
+      label.style.width = '100%';
+      cardsEl.appendChild(label);
+
+      for (const mode of modes) {
+        const card = document.createElement('div');
+        card.className = 'wizard-card';
+        card.innerHTML =
+          '<div class="wizard-card-icon">' + (mode.icon || '') + '</div>' +
+          '<div class="wizard-card-title">' + escapeHtml(mode.name) + '</div>' +
+          '<div class="wizard-card-desc">' + escapeHtml(mode.description || '') + '</div>';
+        card.addEventListener('click', () => {
+          selectedWizardMode = mode.id;
+          const m = enabled[mode.id];
+          if (m && m.requiresTestEnv) {
+            renderWizardStep2();
+          } else {
+            applyMode(mode.id, null);
+          }
+        });
+        cardsEl.appendChild(card);
+      }
+    }
+  }
+
+  function renderWizardStep2() {
+    wizardStep1.style.display = 'none';
+    wizardStep2.style.display = '';
+    wizardStep3.style.display = 'none';
+  }
+
+  function renderWizardStep3(env) {
+    wizardStep1.style.display = 'none';
+    wizardStep2.style.display = 'none';
+    wizardStep3.style.display = '';
+
+    const optionsEl = document.getElementById('wizard-setup-options');
+    optionsEl.innerHTML = '';
+
+    if (env === 'browser') {
+      // Already running
+      const card1 = document.createElement('div');
+      card1.className = 'wizard-card';
+      card1.innerHTML =
+        '<div class="wizard-card-icon">✅</div>' +
+        '<div class="wizard-card-title">It\'s already running</div>' +
+        '<div class="wizard-card-desc">My app is already running — go straight to testing</div>';
+      card1.addEventListener('click', () => { applyMode(selectedWizardMode, env); });
+      optionsEl.appendChild(card1);
+
+      // Auto setup
+      const card2 = document.createElement('div');
+      card2.className = 'wizard-card';
+      card2.innerHTML =
+        '<div class="wizard-card-icon">🤖</div>' +
+        '<div class="wizard-card-title">Auto setup</div>' +
+        '<div class="wizard-card-desc">Let the agent figure out how to set up and start the app automatically</div>';
+      card2.addEventListener('click', () => { applyModeWithSetup(selectedWizardMode, env); });
+      optionsEl.appendChild(card2);
+
+      // Manual setup
+      const card3 = document.createElement('div');
+      card3.className = 'wizard-card';
+      card3.innerHTML =
+        '<div class="wizard-card-icon">🛠️</div>' +
+        '<div class="wizard-card-title">Manual setup</div>' +
+        '<div class="wizard-card-desc">Guide the setup agent step by step — you tell it what to do</div>';
+      card3.addEventListener('click', () => { applyModeWithManualSetup(selectedWizardMode, env); });
+      optionsEl.appendChild(card3);
+
+      // Skip
+      const card4 = document.createElement('div');
+      card4.className = 'wizard-card';
+      card4.innerHTML =
+        '<div class="wizard-card-icon">⏩</div>' +
+        '<div class="wizard-card-title">Skip</div>' +
+        '<div class="wizard-card-desc">I\'ll handle setup myself in the chat</div>';
+      card4.addEventListener('click', () => { applyMode(selectedWizardMode, env); });
+      optionsEl.appendChild(card4);
+    } else {
+      // Desktop: Auto setup
+      const card1 = document.createElement('div');
+      card1.className = 'wizard-card';
+      card1.innerHTML =
+        '<div class="wizard-card-icon">🤖</div>' +
+        '<div class="wizard-card-title">Auto setup</div>' +
+        '<div class="wizard-card-desc">Start a container and let the agent set up the app automatically</div>';
+      card1.addEventListener('click', () => { applyModeWithSetup(selectedWizardMode, env); });
+      optionsEl.appendChild(card1);
+
+      // Manual setup
+      const card2 = document.createElement('div');
+      card2.className = 'wizard-card';
+      card2.innerHTML =
+        '<div class="wizard-card-icon">🛠️</div>' +
+        '<div class="wizard-card-title">Manual setup</div>' +
+        '<div class="wizard-card-desc">Start a container and guide the setup step by step</div>';
+      card2.addEventListener('click', () => { applyModeWithManualSetup(selectedWizardMode, env); });
+      optionsEl.appendChild(card2);
+
+      // Skip
+      const card3 = document.createElement('div');
+      card3.className = 'wizard-card';
+      card3.innerHTML =
+        '<div class="wizard-card-icon">⏩</div>' +
+        '<div class="wizard-card-title">Skip</div>' +
+        '<div class="wizard-card-desc">Container or snapshot already exists — go straight to testing</div>';
+      card3.addEventListener('click', () => { applyMode(selectedWizardMode, env); });
+      optionsEl.appendChild(card3);
+    }
+  }
+
+  function applyMode(modeId, testEnv) {
+    currentMode = modeId;
+    currentTestEnv = testEnv;
+    setupInProgress = false;
+    hideInitWizard();
+
+    const enabled = getAllEnabledModes();
+    const mode = enabled[modeId];
+    if (!mode) return;
+
+    // Apply the mode config via the normal config change path
+    const config = { mode: modeId, testEnv: testEnv };
+    if (!mode.useController) {
+      config.chatTarget = 'agent-' + (mode.defaultAgent || 'QA-Browser');
+    } else {
+      config.chatTarget = 'controller';
+    }
+    // Update the UI dropdown to reflect the mode's target
+    suppressTargetConfirm = true;
+    if (cfgChatTarget) {
+      cfgChatTarget.value = config.chatTarget;
+      updateConfigBarForTarget(config.chatTarget);
+    }
+    suppressTargetConfirm = false;
+    vscode.postMessage({ type: 'configChanged', config });
+    updateModeIndicator();
+    saveState();
+  }
+
+  function applyModeWithSetup(modeId, env) {
+    currentMode = modeId;
+    currentTestEnv = env;
+    setupInProgress = true;
+    hideInitWizard();
+
+    const enabled = getAllEnabledModes();
+    const mode = enabled[modeId];
+    if (!mode || !mode.setupAgent) { applyMode(modeId, env); return; }
+
+    const setupAgentId = mode.setupAgent[env];
+    if (!setupAgentId) { applyMode(modeId, env); return; }
+
+    // Set target to setup agent
+    const config = { mode: modeId, testEnv: env, chatTarget: 'agent-' + setupAgentId };
+    suppressTargetConfirm = true;
+    if (cfgChatTarget) {
+      cfgChatTarget.value = config.chatTarget;
+      updateConfigBarForTarget(config.chatTarget);
+    }
+    suppressTargetConfirm = false;
+    vscode.postMessage({ type: 'configChanged', config });
+
+    // Show setup banner
+    showSetupBanner(modeId, env);
+
+    // Auto-send setup message
+    const setupMsg = env === 'browser'
+      ? 'Please set up this project for browser testing. Install dependencies, start the app, and confirm the URL when ready.'
+      : 'Please set up this project for desktop testing. Install dependencies, start the app, and confirm when ready.';
+    vscode.postMessage({ type: 'userInput', text: setupMsg });
+    saveState();
+  }
+
+  function applyModeWithManualSetup(modeId, env) {
+    currentMode = modeId;
+    currentTestEnv = env;
+    setupInProgress = true;
+    hideInitWizard();
+
+    const enabled = getAllEnabledModes();
+    const mode = enabled[modeId];
+    if (!mode || !mode.setupAgent) { applyMode(modeId, env); return; }
+
+    const setupAgentId = mode.setupAgent[env];
+    if (!setupAgentId) { applyMode(modeId, env); return; }
+
+    // Set target to setup agent
+    const config = { mode: modeId, testEnv: env, chatTarget: 'agent-' + setupAgentId };
+    suppressTargetConfirm = true;
+    if (cfgChatTarget) {
+      cfgChatTarget.value = config.chatTarget;
+      updateConfigBarForTarget(config.chatTarget);
+    }
+    suppressTargetConfirm = false;
+    vscode.postMessage({ type: 'configChanged', config });
+
+    // Show setup banner
+    showSetupBanner(modeId, env);
+
+    // Show guidance message instead of auto-sending
+    const guidance = env === 'browser'
+      ? 'Setup agent selected. Tell me how to set up and start your app — for example:\n• "Run npm install and npm start"\n• "Start the Python backend with python app.py"\n• "The app needs a database, set it up first"'
+      : 'Setup agent selected. Tell me how to set up your app in the container — for example:\n• "Install Python deps and start the Flask server"\n• "Run npm install, build the frontend, then start"\n• "Set up the database and start all services"';
+    addBanner(guidance);
+    saveState();
+  }
+
+  function showSetupBanner(modeId, env) {
+    let banner = document.getElementById('setup-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'setup-banner';
+      banner.className = 'setup-banner';
+      const parent = tabPanels.agent;
+      parent.insertBefore(banner, parent.firstChild);
+    }
+    banner.innerHTML = '⚙️ Setup in progress — <strong>Click here when ready to start testing →</strong>';
+    banner.style.display = '';
+    banner.onclick = () => {
+      setupInProgress = false;
+      banner.style.display = 'none';
+      applyMode(modeId, env);
+    };
+  }
+
+  function updateModeIndicator() {
+    let indicator = document.getElementById('mode-indicator');
+    if (!currentMode) {
+      if (indicator) indicator.style.display = 'none';
+      return;
+    }
+    const enabled = getAllEnabledModes();
+    const mode = enabled[currentMode];
+    if (!mode) {
+      if (indicator) indicator.style.display = 'none';
+      return;
+    }
+
+    if (!indicator) {
+      indicator = document.createElement('span');
+      indicator.id = 'mode-indicator';
+      indicator.className = 'mode-indicator';
+      const inputArea = document.getElementById('input-area');
+      if (inputArea) inputArea.appendChild(indicator);
+    }
+    const envLabel = currentTestEnv ? ' (' + (currentTestEnv === 'browser' ? 'Browser' : 'Desktop') + ')' : '';
+    indicator.textContent = (mode.icon || '') + ' ' + mode.name + envLabel;
+    indicator.style.display = '';
+    indicator.onclick = () => {
+      // Don't show confirm if wizard is already visible
+      if (wizardEl && wizardEl.style.display !== 'none') return;
+      const doSwitch = () => {
+        if (messageLog.length > 0) vscode.postMessage({ type: 'userInput', text: '/clear' });
+        currentMode = null;
+        currentTestEnv = null;
+        showInitWizard();
+      };
+      if (messageLog.length > 0) {
+        showConfirm('Switching modes will clear the current conversation. Continue?', doSwitch);
+      } else {
+        doSwitch();
+      }
+    };
+  }
+
+  // Wire up wizard step 2 buttons
+  if (wizardStep2) {
+    wizardStep2.querySelectorAll('.wizard-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const env = card.dataset.env;
+        if (env) {
+          currentTestEnv = env;
+          renderWizardStep3(env);
+        }
+      });
+    });
+    const backBtn2 = document.getElementById('wizard-back-2');
+    if (backBtn2) backBtn2.addEventListener('click', () => renderWizardStep1());
+    const skipBtn2 = document.getElementById('wizard-skip-2');
+    if (skipBtn2) skipBtn2.addEventListener('click', () => applyMode(selectedWizardMode, null));
+  }
+  // Wire up wizard step 3 buttons
+  if (wizardStep3) {
+    const backBtn3 = document.getElementById('wizard-back-3');
+    if (backBtn3) backBtn3.addEventListener('click', () => renderWizardStep2());
+    const skipBtn3 = document.getElementById('wizard-skip-3');
+    if (skipBtn3) skipBtn3.addEventListener('click', () => applyMode(selectedWizardMode, currentTestEnv));
+  }
 
   // ── Tasks / Kanban ───────────────────────────────────────────────────
   const TASK_COLUMNS = [
@@ -1448,6 +2041,8 @@
     const state = { runId: currentRunId, config: getConfig() };
     if (novncPort) state.novncPort = novncPort;
     if (panelId) state.panelId = panelId;
+    if (currentMode) state.currentMode = currentMode;
+    if (currentTestEnv) state.currentTestEnv = currentTestEnv;
     vscode.setState(state);
   }
 
@@ -1518,7 +2113,9 @@
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
+    suppressTargetConfirm = true;
     if (config.chatTarget !== undefined && cfgChatTarget) cfgChatTarget.value = config.chatTarget;
+    suppressTargetConfirm = false;
     updateConfigBarForTarget(cfgChatTarget ? cfgChatTarget.value : 'controller');
   }
 
@@ -1615,7 +2212,9 @@
     }
     // Restore previous value if still valid, otherwise reset to controller
     const validValues = Array.from(cfgChatTarget.options).map(o => o.value);
+    suppressTargetConfirm = true;
     cfgChatTarget.value = validValues.includes(currentValue) ? currentValue : 'controller';
+    suppressTargetConfirm = false;
   }
 
   function onConfigChange() {
@@ -1633,7 +2232,31 @@
   cfgWorkerModel.addEventListener('change', onConfigChange);
   cfgWorkerThinking.addEventListener('change', onConfigChange);
   if (cfgWaitDelay) cfgWaitDelay.addEventListener('change', onConfigChange);
-  if (cfgChatTarget) cfgChatTarget.addEventListener('change', onConfigChange);
+  if (cfgChatTarget) {
+    let prevTarget = cfgChatTarget.value;
+    cfgChatTarget.addEventListener('change', () => {
+      const newTarget = cfgChatTarget.value;
+      if (suppressTargetConfirm || newTarget === prevTarget) {
+        prevTarget = newTarget;
+        onConfigChange();
+        return;
+      }
+      if (messageLog.length > 0) {
+        showConfirm('Switching targets will clear the current conversation. Continue?', () => {
+          vscode.postMessage({ type: 'userInput', text: '/clear' });
+          prevTarget = newTarget;
+          onConfigChange();
+        }, () => {
+          suppressTargetConfirm = true;
+          cfgChatTarget.value = prevTarget;
+          suppressTargetConfirm = false;
+        });
+      } else {
+        prevTarget = newTarget;
+        onConfigChange();
+      }
+    });
+  }
   if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
   if (cfgWorkerCli) cfgWorkerCli.addEventListener('change', onConfigChange);
 
@@ -2048,6 +2671,21 @@
         renderAgentList('project');
         refreshTargetDropdown();
       }
+      if (msg.modes) {
+        modesSystem = msg.modes.system || {};
+        modesSystemMeta = msg.modes.systemMeta || {};
+        modesGlobal = msg.modes.global || {};
+        modesProject = msg.modes.project || {};
+        renderModeList('system');
+        renderModeList('global');
+        renderModeList('project');
+      }
+      // Show wizard on first load if no mode selected
+      if (!currentMode) {
+        showInitWizard();
+      } else {
+        updateModeIndicator();
+      }
       saveState();
     },
 
@@ -2061,6 +2699,18 @@
         renderAgentList('global');
         renderAgentList('project');
         refreshTargetDropdown();
+      }
+    },
+
+    modesData(msg) {
+      if (msg.modes) {
+        modesSystem = msg.modes.system || {};
+        modesSystemMeta = msg.modes.systemMeta || {};
+        modesGlobal = msg.modes.global || {};
+        modesProject = msg.modes.project || {};
+        renderModeList('system');
+        renderModeList('global');
+        renderModeList('project');
       }
     },
 
@@ -2240,6 +2890,12 @@
     if (savedState.novncPort) {
       novncPort = savedState.novncPort;
       updateComputerTab();
+    }
+    if (savedState.currentMode) {
+      currentMode = savedState.currentMode;
+    }
+    if (savedState.currentTestEnv) {
+      currentTestEnv = savedState.currentTestEnv;
     }
     // Don't restore chromePort — Chrome process dies on reload and must be restarted
   }

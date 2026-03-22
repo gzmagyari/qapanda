@@ -91,6 +91,7 @@ function spawnStreamingProcess({
   abortSignal,
   onStdoutLine,
   onStderrLine,
+  resolveOnResult,
 }) {
   return new Promise((resolve, reject) => {
     const child = spawnArgs(command, args, {
@@ -111,6 +112,17 @@ function spawnStreamingProcess({
       stdoutLines.push(line);
       if (onStdoutLine) {
         onStdoutLine(line);
+      }
+      // If resolveOnResult is set, resolve early when we see a result/turn.completed event
+      // This lets the process keep running (finishing background tasks) without blocking
+      if (resolveOnResult && !resolved) {
+        try {
+          const parsed = JSON.parse(line);
+          const type = parsed.type || '';
+          if (type === 'result' || type === 'result_message' || type === 'turn.completed') {
+            doResolve({ code: null, signal: null, aborted: false, stdoutLines, stderrLines });
+          }
+        } catch {}
       }
     });
 

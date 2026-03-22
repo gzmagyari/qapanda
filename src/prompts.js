@@ -142,7 +142,62 @@ function buildWorkflowSection(repoRoot) {
   return lines.join('\n');
 }
 
+function buildOverriddenControllerPrompt(manifest, request) {
+  const lastLoop = request.loops[request.loops.length - 1] || null;
+  const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
+  const transcriptLines = buildTranscriptExcerpt(manifest);
+
+  const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
+
+  const state = {
+    repository_root: manifest.repoRoot,
+    run_id: manifest.runId,
+    request_id: request.id,
+    controller_session_id: manifest.controller.sessionId,
+    worker_session_id: manifest.worker.sessionId,
+    worker_session_started: manifest.worker.hasStarted,
+    worker_cli: workerCli,
+    request_started_at: request.startedAt,
+    current_loop_index: request.loops.length + 1,
+    latest_user_message: request.userMessage,
+    latest_stop_reason: manifest.stopReason,
+    latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
+    latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
+    latest_worker_result: lastWorker ? lastWorker.resultText : null,
+    recent_transcript: transcriptLines,
+  };
+
+  return [
+    manifest.controllerSystemPrompt,
+    '',
+    'Return JSON ONLY with these fields:',
+    '- action: "delegate" or "stop"',
+    '- agent_id: which worker agent to delegate to (null or "default" for the default worker, or a custom agent id). Always include this field.',
+    '- controller_messages: array of short strings shown to the user in chat (visible conversation)',
+    '- claude_message: the instruction string sent to the worker when action is delegate, otherwise null',
+    '- stop_reason: a short string or null',
+    '- progress_updates: array of short task-progress lines written to the progress log / top-right status bubble. Use these ONLY for substantive task milestones. For greetings, summaries, acknowledgements, or no-op replies, leave this as an empty array [].',
+    '',
+    'Current state:',
+    JSON.stringify(state, null, 2),
+    '',
+    manifest.controller.extraInstructions
+      ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
+      : null,
+    loadCcManagerMd(manifest.repoRoot),
+    buildWorkflowSection(manifest.repoRoot),
+    buildAgentsSection(manifest),
+    '',
+    'Now decide the next step. Return JSON only.',
+  ].filter(Boolean).join('\n');
+}
+
 function buildControllerPrompt(manifest, request) {
+  // If a mode-level controller prompt override exists, use it instead of the default
+  if (manifest.controllerSystemPrompt) {
+    return buildOverriddenControllerPrompt(manifest, request);
+  }
+
   const lastLoop = request.loops[request.loops.length - 1] || null;
   const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
   const transcriptLines = buildTranscriptExcerpt(manifest);
