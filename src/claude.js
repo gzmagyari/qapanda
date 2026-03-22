@@ -53,6 +53,17 @@ function buildClaudeArgs(manifest, options = {}) {
     args.push('--disallowedTools', manifest.worker.disallowedTools);
   }
 
+  // If the agent has detached-command MCP, disallow built-in Bash to force using the MCP
+  if (agentConfig && agentConfig.mcps && agentConfig.mcps['detached-command']) {
+    const existing = args.indexOf('--disallowedTools');
+    if (existing >= 0) {
+      // Append Bash to existing disallowed list
+      args[existing + 1] = args[existing + 1] + ',Bash';
+    } else {
+      args.push('--disallowedTools', 'Bash');
+    }
+  }
+
   if (manifest.worker.permissionPromptTool) {
     args.push('--permission-prompt-tool', manifest.worker.permissionPromptTool);
   }
@@ -95,9 +106,15 @@ function buildClaudeArgs(manifest, options = {}) {
     }
     if (Object.keys(mcpConfig.mcpServers).length > 0) {
       let mcpJson = JSON.stringify(mcpConfig);
-      // Replace {CHROME_DEBUG_PORT} placeholder with actual port
+      // Replace placeholders with actual values
       if (manifest.chromeDebugPort) {
         mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
+      }
+      if (manifest.extensionDir) {
+        mcpJson = mcpJson.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+      }
+      if (manifest.repoRoot) {
+        mcpJson = mcpJson.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
       }
       args.push('--mcp-config', mcpJson);
     }
@@ -331,7 +348,184 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   return workerResult;
 }
 
+/**
+ * Build CLI args for interactive mode (no -p, no --output-format, no --verbose).
+ * These flags are print-mode-only; interactive mode runs the TUI directly.
+ */
+function buildInteractiveArgs(manifest, options = {}) {
+  const agentConfig = options.agentConfig || null;
+  const args = [
+    '--dangerously-skip-permissions',
+    '--setting-sources', 'local',
+    '--strict-mcp-config',
+  ];
+
+  const model = (agentConfig && agentConfig.model) || manifest.worker.model;
+  if (model) args.push('--model', model);
+
+  if (manifest.worker.allowedTools) args.push('--allowedTools', manifest.worker.allowedTools);
+  if (manifest.worker.tools) args.push('--tools', manifest.worker.tools);
+  if (manifest.worker.disallowedTools) args.push('--disallowedTools', manifest.worker.disallowedTools);
+  if (manifest.worker.permissionPromptTool) args.push('--permission-prompt-tool', manifest.worker.permissionPromptTool);
+  if (manifest.worker.maxTurns != null) args.push('--max-turns', String(manifest.worker.maxTurns));
+  if (manifest.worker.maxBudgetUsd != null) args.push('--max-budget-usd', String(manifest.worker.maxBudgetUsd));
+  for (const dir of manifest.worker.addDirs || []) args.push('--add-dir', dir);
+
+  // MCP config (same logic as buildClaudeArgs)
+  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  const agentMcps = (agentConfig && agentConfig.mcps) || {};
+  const mcpServers = { ...baseMcpServers, ...agentMcps };
+  if (Object.keys(mcpServers).length > 0) {
+    const mcpConfig = { mcpServers: {} };
+    for (const [name, server] of Object.entries(mcpServers)) {
+      if (!server) continue;
+      if (server.url) { mcpConfig.mcpServers[name] = { type: 'http', url: server.url }; continue; }
+      if (!server.command) continue;
+      mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
+      if (server.env) mcpConfig.mcpServers[name].env = server.env;
+    }
+    if (Object.keys(mcpConfig.mcpServers).length > 0) {
+      let mcpJson = JSON.stringify(mcpConfig);
+      if (manifest.chromeDebugPort) mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
+      args.push('--mcp-config', mcpJson);
+    }
+  }
+
+  // System prompt (same logic as buildClaudeArgs)
+  if (agentConfig && agentConfig.system_prompt) {
+    args.push('--system-prompt', agentConfig.system_prompt);
+  } else {
+    const appendSystemPrompt = agentConfig
+      ? buildAgentWorkerSystemPrompt(agentConfig)
+      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
+    if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
+  }
+
+  return args;
+}
+
+/**
+ * Interactive-mode worker turn: uses ClaudeSession (persistent PTY)
+ * instead of spawning a fresh process per turn.
+ */
+async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+  await writeText(workerRecord.promptFile, `${prompt}\n`);
+
+  const isCustomAgent = agentId && agentId !== 'default';
+  let agentConfig = null;
+  if (isCustomAgent) {
+    agentConfig = lookupAgentConfig(manifest.agents, agentId);
+  }
+
+  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  const agentName = agentConfig && agentConfig.name;
+  const prevWorkerLabel = renderer.workerLabel;
+  renderer.workerLabel = workerLabelFor(workerBin, agentName);
+
+  // Per-agent thinking
+  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
+  let spawnEnv = cleanEnv;
+  if (agentConfig && agentConfig.thinking) {
+    spawnEnv = { ...cleanEnv, CLAUDE_CODE_EFFORT_LEVEL: agentConfig.thinking };
+  }
+
+  // Get or create persistent ClaudeSession
+  const sessionKey = agentId || '_default';
+  if (!manifest.worker._interactiveSessions) manifest.worker._interactiveSessions = {};
+
+  const { ClaudeSession } = require('../claude-parser');
+
+  let session = manifest.worker._interactiveSessions[sessionKey];
+  if (!session || session._closed) {
+    session = new ClaudeSession({
+      cwd: manifest.repoRoot,
+      bin: workerBin,
+      args: buildInteractiveArgs(manifest, { agentConfig }),
+      env: spawnEnv,
+    });
+    manifest.worker._interactiveSessions[sessionKey] = session;
+  }
+
+  // Handle abort
+  let abortHandler;
+  if (abortSignal) {
+    abortHandler = () => { session.abort(); };
+    abortSignal.addEventListener('abort', abortHandler, { once: true });
+  }
+
+  try {
+    const result = await session.send(prompt, {
+      onEvent(event) {
+        Promise.resolve(emitEvent({
+          ts: new Date().toISOString(),
+          source: 'worker-interactive',
+          requestId: request.id,
+          loopIndex: loop.index,
+          event,
+        })).catch(() => {});
+
+        if (event.kind === 'text-delta') {
+          renderer.streamMarkdown(renderer.workerLabel, event.text, '\x1b[32m');
+        } else if (event.kind === 'tool-start') {
+          renderer.flushStream();
+          renderer.claude(`Tool: ${event.toolText}`);
+        } else if (event.kind === 'tool-output') {
+          renderer.claude(`  ${event.text}`);
+        } else if (event.kind === 'final-text') {
+          renderer.flushStream();
+        }
+      }
+    });
+
+    renderer.workerLabel = prevWorkerLabel;
+
+    workerRecord.exitCode = result.exitCode;
+    workerRecord.resultText = result.resultText;
+    workerRecord.sessionId = result.sessionId;
+
+    const workerResult = {
+      prompt,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      sessionId: result.sessionId,
+      hadTextDelta: result.hadTextDelta,
+      resultText: result.resultText,
+      finalEvent: result.finalEvent,
+    };
+
+    request.latestWorkerResult = workerResult;
+    await writeJson(workerRecord.finalFile, workerResult);
+    return workerResult;
+  } catch (err) {
+    renderer.workerLabel = prevWorkerLabel;
+
+    if (abortSignal && abortSignal.aborted) {
+      throw new Error('Claude Code process was interrupted.');
+    }
+    throw err;
+  } finally {
+    if (abortSignal && abortHandler) {
+      abortSignal.removeEventListener('abort', abortHandler);
+    }
+  }
+}
+
+/**
+ * Close all interactive sessions stored in the manifest.
+ */
+function closeInteractiveSessions(manifest) {
+  const sessions = manifest.worker && manifest.worker._interactiveSessions;
+  if (!sessions) return;
+  for (const [key, session] of Object.entries(sessions)) {
+    try { session.close(); } catch {}
+  }
+  manifest.worker._interactiveSessions = {};
+}
+
 module.exports = {
   buildClaudeArgs,
+  buildInteractiveArgs,
   runWorkerTurn,
+  runWorkerTurnInteractive,
+  closeInteractiveSessions,
 };

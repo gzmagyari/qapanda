@@ -423,6 +423,7 @@
     const existingCli = existing ? (existing.cli || '') : '';
     const existingModel = existing ? (existing.model || '') : '';
     const existingThinking = existing ? (existing.thinking || '') : '';
+    const existingRunMode = existing ? (existing.runMode || '') : '';
 
     const cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
     const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
@@ -437,6 +438,10 @@
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
       '<div class="agent-form-row"><label>Model</label><select class="mcp-input" id="agent-f-model"><option value="">Default</option></select>' +
       '<select class="mcp-input" id="agent-f-thinking"><option value="">Thinking: default</option></select></div>' +
+      '<div class="agent-form-row" id="agent-f-runmode-row"><label>Run Mode</label><select class="mcp-input" id="agent-f-runmode">' +
+      '<option value=""' + (existingRunMode === '' ? ' selected' : '') + '>Default (stream-json)</option>' +
+      '<option value="interactive"' + (existingRunMode === 'interactive' ? ' selected' : '') + '>Interactive (terminal parser, experimental)</option>' +
+      '</select></div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
@@ -458,6 +463,12 @@
         repopulateSelect(thinkingEl, thinkings, thinkingEl ? thinkingEl.value : '');
         if (modelEl) modelEl.options[0].text = 'Model: default';
         if (thinkingEl) thinkingEl.options[0].text = 'Thinking: default';
+        // Run Mode only applies to claude CLI
+        const runModeRow = document.getElementById('agent-f-runmode-row');
+        if (runModeRow) {
+          const isClaude = !cli || cli === 'claude';
+          runModeRow.style.display = isClaude ? '' : 'none';
+        }
       }
 
       // Populate on load with saved values
@@ -482,6 +493,7 @@
     const cli = (document.getElementById('agent-f-cli') ? document.getElementById('agent-f-cli').value : '') || null;
     const model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
     const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
+    const runMode = (document.getElementById('agent-f-runmode') ? document.getElementById('agent-f-runmode').value : '') || null;
     const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
     const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
     const errorEl = document.getElementById('agent-f-error');
@@ -504,6 +516,7 @@
     if (cli) agentData.cli = cli;
     if (model) agentData.model = model;
     if (thinking) agentData.thinking = thinking;
+    if (runMode) agentData.runMode = runMode;
 
     agentEditingForm = null;
 

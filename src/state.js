@@ -123,6 +123,7 @@ function normalizeRunOptions(options = {}) {
       maxBudgetUsd: options.workerMaxBudgetUsd == null ? null : options.workerMaxBudgetUsd,
       addDirs: Array.isArray(options.workerAddDir) ? options.workerAddDir.map((entry) => path.resolve(entry)) : [],
       appendSystemPrompt: options.workerAppendSystemPrompt || null,
+      runMode: options.workerRunMode || 'print',
     },
     settings: {
       rawEvents: Boolean(options.rawEvents),

@@ -2,7 +2,7 @@ const { appendJsonl, appendText, nowIso, readText, summarizeError, truncate } = 
 const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, lookupAgentConfig, saveManifest } = require('./state');
 const { runControllerTurn: runCodexControllerTurn } = require('./codex');
 const { runClaudeControllerTurn } = require('./claude-controller');
-const { runWorkerTurn } = require('./claude');
+const { runWorkerTurn, runWorkerTurnInteractive, closeInteractiveSessions } = require('./claude');
 const { runCodexWorkerTurn } = require('./codex-worker');
 const { controllerLabelFor, workerLabelFor } = require('./render');
 
@@ -14,6 +14,9 @@ function getControllerRunner(manifest) {
 function getWorkerRunner(manifest, agentConfig) {
   const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
   if (cli === 'codex' || cli === 'qa-remote-codex') return runCodexWorkerTurn;
+  // Interactive mode: use persistent PTY session instead of spawning per turn
+  const runMode = (agentConfig && agentConfig.runMode) || manifest.worker.runMode || 'print';
+  if (runMode === 'interactive' && (cli === 'claude' || !cli)) return runWorkerTurnInteractive;
   return runWorkerTurn;
 }
 

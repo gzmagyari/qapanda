@@ -59,18 +59,27 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
     if (!server || !server.command) continue;
     args.push('-c', `mcp_servers.${name}.command="${tomlEsc(server.command)}"`);
     if (Array.isArray(server.args) && server.args.length > 0) {
-      const resolvedArgs = manifest.chromeDebugPort
-        ? server.args.map(a => a.replace('{CHROME_DEBUG_PORT}', String(manifest.chromeDebugPort)))
-        : server.args;
+      let resolvedArgs = server.args;
+      if (manifest.chromeDebugPort) resolvedArgs = resolvedArgs.map(a => a.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort)));
+      if (manifest.extensionDir) resolvedArgs = resolvedArgs.map(a => a.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/')));
+      if (manifest.repoRoot) resolvedArgs = resolvedArgs.map(a => a.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/')));
       const argsToml = `[${resolvedArgs.map((a) => `"${tomlEsc(a)}"`).join(', ')}]`;
       args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
     }
     if (server.env && typeof server.env === 'object') {
       for (const [key, val] of Object.entries(server.env)) {
-        args.push('-c', `mcp_servers.${name}.env.${key}="${tomlEsc(val)}"`);
+        let resolvedVal = val;
+        if (manifest.extensionDir) resolvedVal = resolvedVal.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+        if (manifest.repoRoot) resolvedVal = resolvedVal.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
+        args.push('-c', `mcp_servers.${name}.env.${key}="${tomlEsc(resolvedVal)}"`);
       }
     }
     args.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+  }
+
+  // If the agent has detached-command MCP, disable built-in shell tool to force using the MCP
+  if (agentConfig && agentConfig.mcps && agentConfig.mcps['detached-command']) {
+    args.push('-c', 'features.shell_tool=false');
   }
 
   args.push('-');

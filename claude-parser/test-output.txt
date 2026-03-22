@@ -1,4 +1,2 @@
-hello world
-line two
-line three
+"hello world\nline two\nline three"
 line four

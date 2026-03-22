@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } = require('./src/orchestrator');
+const { closeInteractiveSessions } = require('./src/claude');
 const { loadWorkflows } = require('./src/prompts');
 const {
   WAIT_OPTIONS,
@@ -909,6 +910,7 @@ class SessionManager {
       repoRoot: this._repoRoot,
       stateRoot: this._stateRoot,
       panelId: this._panelId,
+      extensionDir: this._extensionPath,
     };
     // Read useSnapshot from per-workspace config so remote agents respect the checkbox
     try {
@@ -1064,6 +1066,10 @@ class SessionManager {
     if (this._chromePort && this._activeManifest) {
       this._activeManifest.chromeDebugPort = this._chromePort;
     }
+    // Always ensure extensionDir is on the manifest for placeholder replacement
+    if (this._extensionPath && this._activeManifest) {
+      this._activeManifest.extensionDir = this._extensionPath;
+    }
   }
 
   /** Start headless Chrome directly (e.g. from Browser tab click). */
@@ -1101,6 +1107,10 @@ class SessionManager {
   async _runDirectWorker(userMessage) {
     this._syncMcpToManifest();
     await this._ensureChromeIfNeeded();
+    // Ensure extensionDir is always on the manifest for MCP placeholder replacement
+    if (this._extensionPath && this._activeManifest) {
+      this._activeManifest.extensionDir = this._extensionPath;
+    }
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
@@ -1127,6 +1137,10 @@ class SessionManager {
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });
     await this._ensureChromeIfNeeded(agentId);
+    // Ensure extensionDir is always on the manifest for MCP placeholder replacement
+    if (this._extensionPath && this._activeManifest) {
+      this._activeManifest.extensionDir = this._extensionPath;
+    }
 
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
@@ -1174,6 +1188,10 @@ class SessionManager {
   dispose() {
     this._stopWaitTimer();
     this.abort();
+    // Close any persistent interactive Claude sessions
+    if (this._activeManifest) {
+      try { closeInteractiveSessions(this._activeManifest); } catch {}
+    }
   }
 }
 
