@@ -465,6 +465,7 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
     require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
       `[${new Date().toISOString()}] runWorkerTurnInteractive START prompt=${JSON.stringify(prompt.slice(0,50))}\n`);
 
+    let hadStreamedText = false;
     const result = await session.send(prompt, {
       onEvent(event) {
         try {
@@ -481,22 +482,29 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
         })).catch(() => {});
 
         if (event.kind === 'text-delta') {
+          hadStreamedText = true;
           renderer.streamMarkdown(renderer.workerLabel, event.text + '\n', '\x1b[32m');
         } else if (event.kind === 'tool-start') {
+          hadStreamedText = true;
           renderer.flushStream();
           const tn = event.toolName || '';
           const isComputerUse = tn.startsWith('mcp__computer-control__') || tn.startsWith('mcp__chrome-devtools__');
           const isChromeDevtools = tn.startsWith('mcp__chrome-devtools__');
           if (renderer._post) {
-            // WebviewRenderer: post toolCall message with flags for Chrome/VNC split
             renderer._post({ type: 'toolCall', label: renderer.workerLabel, text: event.toolText, isComputerUse, isChromeDevtools });
           } else {
-            // Terminal renderer fallback
             renderer.claude(`Tool: ${event.toolText}`);
           }
         } else if (event.kind === 'tool-output') {
+          hadStreamedText = true;
           renderer.claude(`  ${event.text}`);
         } else if (event.kind === 'final-text') {
+          // If nothing was streamed during this turn (repaint timing),
+          // render the final result text so the user sees something
+          if (!hadStreamedText && event.text) {
+            const plainText = event.text.replace(/^● /gm, '').replace(/^ {2}⎿\s*/gm, '  ');
+            renderer.streamMarkdown(renderer.workerLabel, plainText + '\n', '\x1b[32m');
+          }
           renderer.flushStream();
         }
       }
