@@ -2543,6 +2543,7 @@
       }
     }
     autoScroll();
+    maybeShowThinking();
   }
 
   // ── Message handlers ───────────────────────────────────────────────
@@ -2561,6 +2562,7 @@
     claude(msg) {
       streamingEntry = null;
       addEntry(msg.label || 'Worker', renderInlineMarkdown(msg.text));
+      maybeShowThinking();
     },
 
     shell(msg) {
@@ -2607,6 +2609,7 @@
       if (msg.isChromeDevtools && chromePort && !splitChromeWrapper && !novncPort) {
         showSplitChrome();
       }
+      maybeShowThinking();
     },
 
     stop(msg) {

@@ -1,5 +1,7 @@
 .vscode/**
 node_modules/**
+!node_modules/node-pty/**
+!node_modules/@xterm/**
 !detached-command-mcp/node_modules/**
 jsconfig.json
 detached-command-mcp/package-lock.json

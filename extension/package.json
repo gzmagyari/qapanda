@@ -33,6 +33,10 @@
       ]
     }
   },
+  "dependencies": {
+    "@xterm/headless": "^5.0.0",
+    "node-pty": "^1.0.0"
+  },
   "devDependencies": {
     "@types/vscode": "^1.85.0"
   }

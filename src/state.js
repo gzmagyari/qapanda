@@ -205,7 +205,10 @@ async function prepareNewRun(initialMessage, options = {}) {
 async function saveManifest(manifest) {
   manifest.updatedAt = nowIso();
   await ensureDir(manifest.runDir);
-  await writeJson(manifest.files.manifest, manifest);
+  // Strip non-serializable runtime objects (e.g. interactive PTY sessions)
+  const { _interactiveSessions, ...workerClean } = manifest.worker || {};
+  const toSave = { ...manifest, worker: workerClean };
+  await writeJson(manifest.files.manifest, toSave);
 }
 
 async function loadManifestFromDir(runDir) {

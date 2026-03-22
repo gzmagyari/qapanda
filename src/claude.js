@@ -118,6 +118,10 @@ function buildClaudeArgs(manifest, options = {}) {
       }
       args.push('--mcp-config', mcpJson);
     }
+    // Disable built-in Claude in Chrome when we have our own chrome-devtools MCP
+    if (mcpServers['chrome-devtools']) {
+      args.push('--no-chrome');
+    }
   }
 
   // System prompt: agent with custom prompt uses --system-prompt (full replacement),
@@ -389,6 +393,10 @@ function buildInteractiveArgs(manifest, options = {}) {
       if (manifest.chromeDebugPort) mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
       args.push('--mcp-config', mcpJson);
     }
+    // Disable built-in Claude in Chrome when we have our own chrome-devtools MCP
+    if (mcpServers['chrome-devtools']) {
+      args.push('--no-chrome');
+    }
   }
 
   // System prompt (same logic as buildClaudeArgs)
@@ -454,8 +462,16 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
   }
 
   try {
+    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+      `[${new Date().toISOString()}] runWorkerTurnInteractive START prompt=${JSON.stringify(prompt.slice(0,50))}\n`);
+
     const result = await session.send(prompt, {
       onEvent(event) {
+        try {
+          require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+            `[${new Date().toISOString()}] EVENT ${JSON.stringify(event)}\n`);
+        } catch {}
+
         Promise.resolve(emitEvent({
           ts: new Date().toISOString(),
           source: 'worker-interactive',
@@ -465,10 +481,19 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
         })).catch(() => {});
 
         if (event.kind === 'text-delta') {
-          renderer.streamMarkdown(renderer.workerLabel, event.text, '\x1b[32m');
+          renderer.streamMarkdown(renderer.workerLabel, event.text + '\n', '\x1b[32m');
         } else if (event.kind === 'tool-start') {
           renderer.flushStream();
-          renderer.claude(`Tool: ${event.toolText}`);
+          const tn = event.toolName || '';
+          const isComputerUse = tn.startsWith('mcp__computer-control__') || tn.startsWith('mcp__chrome-devtools__');
+          const isChromeDevtools = tn.startsWith('mcp__chrome-devtools__');
+          if (renderer._post) {
+            // WebviewRenderer: post toolCall message with flags for Chrome/VNC split
+            renderer._post({ type: 'toolCall', label: renderer.workerLabel, text: event.toolText, isComputerUse, isChromeDevtools });
+          } else {
+            // Terminal renderer fallback
+            renderer.claude(`Tool: ${event.toolText}`);
+          }
         } else if (event.kind === 'tool-output') {
           renderer.claude(`  ${event.text}`);
         } else if (event.kind === 'final-text') {
@@ -476,6 +501,9 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
         }
       }
     });
+
+    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+      `[${new Date().toISOString()}] DONE resultText=${JSON.stringify(result.resultText)}\n`);
 
     renderer.workerLabel = prevWorkerLabel;
 
