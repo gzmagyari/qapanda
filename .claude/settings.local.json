@@ -3,7 +3,8 @@
     "allow": [
       "Read(//c/xampp/htdocs/QAAgentDesktop/**)",
       "Bash(qa-desktop snapshot-exists:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(node \"C:/Users/Server/Desktop/test-claude-interactive.js\")"
     ]
   }
 }

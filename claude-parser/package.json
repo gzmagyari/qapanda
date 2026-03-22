@@ -1,0 +1,16 @@
+{
+  "name": "claude-parser",
+  "version": "0.1.0",
+  "description": "Experiments for driving Claude Code interactively via PTY + xterm headless buffer",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "@xterm/headless": "^5.0.0",
+    "node-pty": "^1.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:unit": "node --test tests/parse-stream.test.js",
+    "test:integration": "node --test tests/session.test.js"
+  }
+}
