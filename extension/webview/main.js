@@ -2,6 +2,9 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
 
+  // Debug logging — sends to extension host which writes to .cc-manager/wizard-debug.log
+  function _dbg(text) { try { vscode.postMessage({ type: '_debugLog', text: String(text) }); } catch {} }
+
   const messagesEl = document.getElementById('messages');
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
@@ -682,7 +685,7 @@
       if (mode.category) detailParts.push('<span class="mcp-detail-label">Category:</span> ' + escapeHtml(mode.category));
       if (mode.useController) detailParts.push('<span class="mcp-detail-label">Controller:</span> yes');
       if (mode.defaultAgent) detailParts.push('<span class="mcp-detail-label">Default Agent:</span> ' + escapeHtml(mode.defaultAgent));
-      if (mode.availableAgents) detailParts.push('<span class="mcp-detail-label">Agents:</span> ' + escapeHtml(mode.availableAgents.join(', ')));
+      if (mode.availableAgents) detailParts.push('<span class="mcp-detail-label">Agents:</span> ' + escapeHtml(Array.isArray(mode.availableAgents) ? mode.availableAgents.join(', ') : JSON.stringify(mode.availableAgents)));
       if (mode.requiresTestEnv) detailParts.push('<span class="mcp-detail-label">Requires Test Env:</span> yes');
       if (detailParts.length) details.innerHTML += '<br>' + detailParts.join(' | ');
 
@@ -782,6 +785,8 @@
   const wizardStep2 = document.getElementById('wizard-step-2');
   const wizardStep3 = document.getElementById('wizard-step-3');
   let selectedWizardMode = null;
+  _dbg('INIT: wizardEl=' + !!wizardEl + ' step1=' + !!wizardStep1 + ' step2=' + !!wizardStep2 + ' step3=' + !!wizardStep3);
+  _dbg('INIT DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '" step1.display="' + (wizardStep1 ? wizardStep1.style.display : 'null') + '" step2.display="' + (wizardStep2 ? wizardStep2.style.display : 'null') + '" step3.display="' + (wizardStep3 ? wizardStep3.style.display : 'null') + '"');
 
   // Custom confirm modal (native confirm() is blocked in VSCode webviews)
   function showConfirm(message, onYes, onNo) {
@@ -798,18 +803,21 @@
   }
 
   function showInitWizard() {
-    if (!wizardEl) return;
-    wizardEl.style.display = 'flex';
-    tabPanels.agent.style.display = 'none';
+    _dbg('showInitWizard() called');
+    if (!wizardEl) { _dbg('showInitWizard: wizardEl is null, aborting'); return; }
+    wizardEl.classList.remove('wizard-hidden');
+    tabPanels.agent.classList.add('wizard-hidden');
     const indicator = document.getElementById('mode-indicator');
     if (indicator) indicator.style.display = 'none';
     renderWizardStep1();
+    _dbg('showInitWizard AFTER: wizard.hidden=' + wizardEl.classList.contains('wizard-hidden') + ' step1.hidden=' + wizardStep1.classList.contains('wizard-hidden') + ' step2.hidden=' + wizardStep2.classList.contains('wizard-hidden') + ' step3.hidden=' + wizardStep3.classList.contains('wizard-hidden'));
   }
 
   function hideInitWizard() {
+    _dbg('hideInitWizard() called');
     if (!wizardEl) return;
-    wizardEl.style.display = 'none';
-    tabPanels.agent.style.display = '';
+    wizardEl.classList.add('wizard-hidden');
+    tabPanels.agent.classList.remove('wizard-hidden');
     updateModeIndicator();
   }
 
@@ -823,14 +831,16 @@
   }
 
   function renderWizardStep1() {
-    wizardStep1.style.display = '';
-    wizardStep2.style.display = 'none';
-    wizardStep3.style.display = 'none';
+    _dbg('renderWizardStep1() called');
+    wizardStep1.classList.remove('wizard-hidden');
+    wizardStep2.classList.add('wizard-hidden');
+    wizardStep3.classList.add('wizard-hidden');
 
     const cardsEl = document.getElementById('wizard-mode-cards');
     cardsEl.innerHTML = '';
 
     const enabled = getAllEnabledModes();
+    _dbg('renderWizardStep1: enabledModes=' + JSON.stringify(Object.keys(enabled)));
     const categories = { test: [], develop: [] };
     for (const [id, mode] of Object.entries(enabled)) {
       const cat = mode.category || 'test';
@@ -869,15 +879,17 @@
   }
 
   function renderWizardStep2() {
-    wizardStep1.style.display = 'none';
-    wizardStep2.style.display = '';
-    wizardStep3.style.display = 'none';
+    _dbg('renderWizardStep2() called');
+    wizardStep1.classList.add('wizard-hidden');
+    wizardStep2.classList.remove('wizard-hidden');
+    wizardStep3.classList.add('wizard-hidden');
   }
 
   function renderWizardStep3(env) {
-    wizardStep1.style.display = 'none';
-    wizardStep2.style.display = 'none';
-    wizardStep3.style.display = '';
+    _dbg('renderWizardStep3(env=' + env + ') called');
+    wizardStep1.classList.add('wizard-hidden');
+    wizardStep2.classList.add('wizard-hidden');
+    wizardStep3.classList.remove('wizard-hidden');
 
     const optionsEl = document.getElementById('wizard-setup-options');
     optionsEl.innerHTML = '';
@@ -965,10 +977,19 @@
     const mode = enabled[modeId];
     if (!mode) return;
 
+    // Resolve environment-aware fields (can be string or { browser: X, computer: Y })
+    function resolveByEnv(val, env) {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        return val[env] || val['browser'] || Object.values(val)[0];
+      }
+      return val;
+    }
+
     // Apply the mode config via the normal config change path
     const config = { mode: modeId, testEnv: testEnv };
     if (!mode.useController) {
-      config.chatTarget = 'agent-' + (mode.defaultAgent || 'QA-Browser');
+      const agent = resolveByEnv(mode.defaultAgent, testEnv) || 'QA-Browser';
+      config.chatTarget = 'agent-' + agent;
     } else {
       config.chatTarget = 'controller';
     }
@@ -1095,7 +1116,7 @@
     indicator.style.display = '';
     indicator.onclick = () => {
       // Don't show confirm if wizard is already visible
-      if (wizardEl && wizardEl.style.display !== 'none') return;
+      if (wizardEl && !wizardEl.classList.contains('wizard-hidden')) return;
       const doSwitch = () => {
         if (messageLog.length > 0) vscode.postMessage({ type: 'userInput', text: '/clear' });
         currentMode = null;
@@ -1115,6 +1136,7 @@
     wizardStep2.querySelectorAll('.wizard-card').forEach(card => {
       card.addEventListener('click', () => {
         const env = card.dataset.env;
+        _dbg('wizard step2 card clicked: env=' + env);
         if (env) {
           currentTestEnv = env;
           renderWizardStep3(env);
@@ -2367,6 +2389,7 @@
   // ── Lightweight Markdown → HTML ─────────────────────────────────────
 
   function escapeHtml(str) {
+    if (typeof str !== 'string') str = JSON.stringify(str) || '';
     return str
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -2696,12 +2719,27 @@
         renderModeList('global');
         renderModeList('project');
       }
-      // Show wizard on first load if no mode selected
+      // Show wizard if no mode selected, or if mode is stale (no active run)
+      _dbg('initConfig: currentMode=' + currentMode + ' currentTestEnv=' + currentTestEnv + ' msg.runId=' + msg.runId);
+      _dbg('initConfig: modesSystem keys=' + JSON.stringify(Object.keys(modesSystem || {})));
+      _dbg('initConfig DOM BEFORE: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '" step1="' + (wizardStep1 ? wizardStep1.style.display : 'null') + '" step2="' + (wizardStep2 ? wizardStep2.style.display : 'null') + '" step3="' + (wizardStep3 ? wizardStep3.style.display : 'null') + '" agent="' + (tabPanels.agent ? tabPanels.agent.style.display : 'null') + '"');
+      if (currentMode) {
+        const enabled = getAllEnabledModes();
+        _dbg('initConfig: enabled modes=' + JSON.stringify(Object.keys(enabled)) + ' currentMode in enabled=' + !!enabled[currentMode]);
+        if (!enabled[currentMode] || !msg.runId) {
+          _dbg('initConfig: resetting stale mode (mode exists=' + !!enabled[currentMode] + ', runId=' + msg.runId + ')');
+          currentMode = null;
+          currentTestEnv = null;
+        }
+      }
+      _dbg('initConfig DECISION: currentMode=' + currentMode + ' -> ' + (currentMode ? 'hideWizard' : 'showWizard'));
       if (!currentMode) {
         showInitWizard();
       } else {
+        hideInitWizard();
         updateModeIndicator();
       }
+      _dbg('initConfig DOM AFTER: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '" step1="' + (wizardStep1 ? wizardStep1.style.display : 'null') + '" step2="' + (wizardStep2 ? wizardStep2.style.display : 'null') + '" step3="' + (wizardStep3 ? wizardStep3.style.display : 'null') + '" agent="' + (tabPanels.agent ? tabPanels.agent.style.display : 'null') + '"');
       saveState();
     },
 
@@ -2883,9 +2921,14 @@
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (!msg || !msg.type) return;
+    _dbg('MSG received: type=' + msg.type + ' hasHandler=' + !!handlers[msg.type]);
     const handler = handlers[msg.type];
     if (handler) {
-      handler(msg);
+      try {
+        handler(msg);
+      } catch (e) {
+        _dbg('MSG HANDLER ERROR: type=' + msg.type + ' error=' + (e && e.message || e));
+      }
       logMessage(msg);
     }
   });
@@ -2895,6 +2938,7 @@
   // Chat history is rebuilt from transcript.jsonl on disk when the extension
   // host processes the 'ready' message and calls sendTranscript().
   const savedState = vscode.getState();
+  _dbg('STATE: savedState=' + JSON.stringify(savedState ? { runId: savedState.runId, currentMode: savedState.currentMode, currentTestEnv: savedState.currentTestEnv, panelId: savedState.panelId } : null));
   if (savedState) {
     currentRunId = savedState.runId || null;
     if (savedState.config) {
@@ -3108,5 +3152,7 @@
   textarea.focus();
 
   // Request persisted config from extension host, include saved runId for reattach
+  _dbg('PRE-READY DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '" step1="' + (wizardStep1 ? wizardStep1.style.display : 'null') + '" step2="' + (wizardStep2 ? wizardStep2.style.display : 'null') + '" step3="' + (wizardStep3 ? wizardStep3.style.display : 'null') + '"');
+  _dbg('READY sent: runId=' + currentRunId + ' panelId=' + panelId + ' currentMode=' + currentMode);
   vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId });
 })();

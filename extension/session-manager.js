@@ -157,6 +157,22 @@ class SessionManager {
     if (this._qaDesktopMcpPort) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
+    // Auto-inject detached-command MCP (for running shell commands without hanging)
+    if (isRemote) {
+      // Remote agents: use container-baked path
+      result['detached-command'] = {
+        command: 'node',
+        args: ['/opt/detached-command-mcp/dist/index.js'],
+        env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.cc-manager/.detached-jobs' },
+      };
+    } else if (this._extensionPath) {
+      // Local agents: use extension path
+      result['detached-command'] = {
+        command: 'node',
+        args: [path.join(this._extensionPath, 'detached-command-mcp', 'dist', 'index.js')],
+        env: { DETACHED_BASH_MCP_DATA_DIR: path.join(this._repoRoot, '.cc-manager', '.detached-jobs') },
+      };
+    }
     return result;
   }
 
@@ -266,8 +282,18 @@ class SessionManager {
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
       }
-      if (this._activeManifest.worker && this._activeManifest.worker.cli) {
-        this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli);
+      if (this._activeManifest.worker) {
+        let agentName = null;
+        const sessions = this._activeManifest.worker.agentSessions;
+        if (sessions) {
+          const agentId = Object.keys(sessions).find(id => sessions[id] && sessions[id].hasStarted);
+          if (agentId && this._activeManifest.agents && this._activeManifest.agents[agentId]) {
+            agentName = this._activeManifest.agents[agentId].name;
+          }
+        }
+        if (this._activeManifest.worker.cli) {
+          this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli, agentName);
+        }
       }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       return true;
@@ -310,7 +336,7 @@ class SessionManager {
             messages.push({ type: 'controller', text: entry.text || '', label });
           }
         } else if (entry.role === 'claude') {
-          messages.push({ type: 'claude', text: entry.text || '' });
+          messages.push({ type: 'claude', text: (entry.text || '').trim(), label: this._renderer.workerLabel || 'Worker' });
         }
       }
       if (messages.length > 0) {
@@ -654,8 +680,18 @@ class SessionManager {
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
       }
-      if (this._activeManifest.worker && this._activeManifest.worker.cli) {
-        this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli);
+      if (this._activeManifest.worker) {
+        let agentName = null;
+        const sessions = this._activeManifest.worker.agentSessions;
+        if (sessions) {
+          const agentId = Object.keys(sessions).find(id => sessions[id] && sessions[id].hasStarted);
+          if (agentId && this._activeManifest.agents && this._activeManifest.agents[agentId]) {
+            agentName = this._activeManifest.agents[agentId].name;
+          }
+        }
+        if (this._activeManifest.worker.cli) {
+          this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli, agentName);
+        }
       }
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       await this.sendTranscript();
@@ -935,12 +971,22 @@ class SessionManager {
       const modes = this._enabledModes();
       const mode = modes[this._currentMode];
       if (mode) {
-        if (mode.controllerPrompt) {
-          opts.controllerSystemPrompt = mode.controllerPrompt;
+        // Resolve environment-aware fields (can be string/array or { browser: X, computer: Y })
+        const env = this._testEnv || 'browser';
+        const resolveByEnv = (val) => {
+          if (val && typeof val === 'object' && !Array.isArray(val)) {
+            return val[env] || val['browser'] || Object.values(val)[0];
+          }
+          return val;
+        };
+        const prompt = resolveByEnv(mode.controllerPrompt);
+        if (prompt) {
+          opts.controllerSystemPrompt = prompt;
         }
-        if (mode.availableAgents && Array.isArray(mode.availableAgents)) {
+        const agentList = resolveByEnv(mode.availableAgents);
+        if (agentList && Array.isArray(agentList)) {
           const filtered = {};
-          for (const agentId of mode.availableAgents) {
+          for (const agentId of agentList) {
             if (agents[agentId]) filtered[agentId] = agents[agentId];
           }
           agents = filtered;
@@ -989,9 +1035,26 @@ class SessionManager {
   }
 
   /** Sync current MCP server config and agents into the active manifest before each run. */
-  _syncMcpToManifest() {
+  _syncMcpToManifest(agentId) {
     if (!this._activeManifest) return;
-    const workerIsRemote = typeof this._workerCli === 'string' && this._workerCli.startsWith('qa-remote');
+    // Check if the active agent uses a remote CLI
+    let workerIsRemote = typeof this._workerCli === 'string' && this._workerCli.startsWith('qa-remote');
+    if (!workerIsRemote && agentId) {
+      const agents = this._enabledAgents();
+      const agent = agents[agentId];
+      if (agent && typeof agent.cli === 'string' && agent.cli.startsWith('qa-remote')) {
+        workerIsRemote = true;
+      }
+    }
+    // Also check the current chat target if it's an agent
+    if (!workerIsRemote && this._chatTarget && this._chatTarget.startsWith('agent-')) {
+      const targetAgentId = this._chatTarget.slice('agent-'.length);
+      const agents = this._enabledAgents();
+      const agent = agents[targetAgentId];
+      if (agent && typeof agent.cli === 'string' && agent.cli.startsWith('qa-remote')) {
+        workerIsRemote = true;
+      }
+    }
     const controllerMcp = this._mcpServersForRole('controller', false);
     const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
@@ -1002,12 +1065,21 @@ class SessionManager {
       const modes = this._enabledModes();
       const mode = modes[this._currentMode];
       if (mode) {
-        if (mode.controllerPrompt) {
-          this._activeManifest.controllerSystemPrompt = mode.controllerPrompt;
+        const env = this._testEnv || 'browser';
+        const resolveByEnv = (val) => {
+          if (val && typeof val === 'object' && !Array.isArray(val)) {
+            return val[env] || val['browser'] || Object.values(val)[0];
+          }
+          return val;
+        };
+        const prompt = resolveByEnv(mode.controllerPrompt);
+        if (prompt) {
+          this._activeManifest.controllerSystemPrompt = prompt;
         }
-        if (mode.availableAgents && Array.isArray(mode.availableAgents)) {
+        const agentList = resolveByEnv(mode.availableAgents);
+        if (agentList && Array.isArray(agentList)) {
           const filtered = {};
-          for (const agentId of mode.availableAgents) {
+          for (const agentId of agentList) {
             if (agents[agentId]) filtered[agentId] = agents[agentId];
           }
           agents = filtered;
@@ -1132,7 +1204,7 @@ class SessionManager {
   }
 
   async _runDirectAgent(userMessage, agentId) {
-    this._syncMcpToManifest();
+    this._syncMcpToManifest(agentId);
     this._running = true;
     this._abortController = new AbortController();
     this._postMessage({ type: 'running', value: true });

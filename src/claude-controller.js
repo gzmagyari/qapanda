@@ -11,6 +11,8 @@ function buildClaudeControllerArgs(manifest, loop) {
     'stream-json',
     '--verbose',
     '--dangerously-skip-permissions',
+    '--setting-sources', 'local',
+    '--strict-mcp-config',
   ];
 
   if (manifest.controller.sessionId) {
@@ -30,6 +32,36 @@ function buildClaudeControllerArgs(manifest, loop) {
   // Enforce structured JSON output — works with both --session-id and --resume in -p mode
   args.push('--json-schema', JSON.stringify(controllerDecisionSchema));
 
+  // Pass controller MCP servers
+  const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};
+  if (Object.keys(controllerMcp).length > 0) {
+    const mcpConfig = { mcpServers: {} };
+    for (const [name, server] of Object.entries(controllerMcp)) {
+      if (!server) continue;
+      if (server.url) {
+        mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
+        continue;
+      }
+      if (!server.command) continue;
+      mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
+      if (server.env) mcpConfig.mcpServers[name].env = server.env;
+    }
+    if (Object.keys(mcpConfig.mcpServers).length > 0) {
+      let mcpJson = JSON.stringify(mcpConfig);
+      if (manifest.extensionDir) {
+        mcpJson = mcpJson.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+      }
+      if (manifest.repoRoot) {
+        mcpJson = mcpJson.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
+      }
+      args.push('--mcp-config', mcpJson);
+    }
+    // Disable built-in Bash when detached-command is available
+    if (controllerMcp['detached-command']) {
+      args.push('--disallowedTools', 'Bash');
+    }
+  }
+
   return args;
 }
 
@@ -45,10 +77,14 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
   let structuredOutput = null;
   let sawTextDelta = false;
 
+  // Strip ELECTRON_RUN_AS_NODE to prevent Claude Code from running as plain Node
+  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
+
   const result = await spawnStreamingProcess({
     command: manifest.controller.bin,
     args,
     cwd: manifest.repoRoot,
+    env: cleanEnv,
     stdinText: prompt,
     abortSignal,
     onStdoutLine: (line) => {

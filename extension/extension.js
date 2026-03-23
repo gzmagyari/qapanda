@@ -358,12 +358,12 @@ function getWebviewHtml(panel, extensionUri) {
       </div>
     </div>
 
-    <div id="init-wizard" style="display:none;">
+    <div id="init-wizard" class="wizard-hidden">
       <div id="wizard-step-1" class="wizard-step">
         <h2>What would you like to do?</h2>
         <div class="wizard-cards" id="wizard-mode-cards"></div>
       </div>
-      <div id="wizard-step-2" class="wizard-step" style="display:none;">
+      <div id="wizard-step-2" class="wizard-step wizard-hidden">
         <h2>Where should testing happen?</h2>
         <div class="wizard-cards">
           <div class="wizard-card" data-env="browser">
@@ -382,7 +382,7 @@ function getWebviewHtml(panel, extensionUri) {
           <button class="wizard-skip" id="wizard-skip-2">Skip</button>
         </div>
       </div>
-      <div id="wizard-step-3" class="wizard-step" style="display:none;">
+      <div id="wizard-step-3" class="wizard-step wizard-hidden">
         <h2>Setup</h2>
         <div id="wizard-setup-options" class="wizard-cards"></div>
         <div class="wizard-nav">
@@ -682,17 +682,27 @@ function activate(context) {
           Object.assign(panelConfig, msg.config);
           return;
         }
+        if (msg.type === '_debugLog') {
+          const logPath = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+          try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
+          try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
+          return;
+        }
         if (msg.type === 'setPanelTitle') {
           panel.title = msg.title;
           return;
         }
         if (msg.type === 'ready') {
+          // Debug: log that we got ready message
+          const _dlog = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+          try { fs.mkdirSync(path.dirname(_dlog), { recursive: true }); } catch {}
+          try { fs.appendFileSync(_dlog, `[${new Date().toISOString()}] EXT-HOST: ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, msg.panelId=${msg.panelId}\n`); } catch {}
           // Restore panelId from webview persisted state if available
           if (msg.panelId) session._panelId = msg.panelId;
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId });
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null });
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -807,6 +817,12 @@ function activate(context) {
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
+          if (msg.type === '_debugLog') {
+            const logPath = path.join(repoRoot, '.cc-manager', 'wizard-debug.log');
+            try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
+            try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
+            return;
+          }
           if (msg.type === 'configChanged') {
             session.applyConfig(msg.config);
             Object.assign(panelConfig, msg.config);
@@ -858,12 +874,16 @@ function activate(context) {
             return;
           }
           if (msg.type === 'ready') {
+            // Debug: log that we got ready message (deserialized)
+            const _dlog2 = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+            try { fs.mkdirSync(path.dirname(_dlog2), { recursive: true }); } catch {}
+            try { fs.appendFileSync(_dlog2, `[${new Date().toISOString()}] EXT-HOST(deserialized): ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, savedRunId=${savedRunId}, msg.panelId=${msg.panelId}\n`); } catch {}
             // Restore panelId from webview persisted state if available
             if (msg.panelId) session._panelId = msg.panelId;
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId });
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null });
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {

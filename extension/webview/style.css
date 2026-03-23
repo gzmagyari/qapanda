@@ -1232,6 +1232,9 @@ html, body {
 }
 
 /* ── Init Wizard ──────────────────────────────────────────────────── */
+/* Used instead of inline style="display:none" which CSP strips */
+.wizard-hidden { display: none !important; }
+
 #init-wizard {
   position: absolute;
   top: 0;

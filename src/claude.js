@@ -4,7 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
-const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
+const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 
 /**
@@ -17,6 +17,9 @@ function buildClaudeArgs(manifest, options = {}) {
   const agentConfig = options.agentConfig || null;
   const agentSession = options.agentSession || null;
 
+  // Check if this is a remote agent (running inside a container)
+  const isRemoteAgent = agentConfig && typeof agentConfig.cli === 'string' && agentConfig.cli.startsWith('qa-remote');
+
   const args = [
     '-p',
     '--output-format',
@@ -24,9 +27,13 @@ function buildClaudeArgs(manifest, options = {}) {
     '--verbose',
     '--include-partial-messages',
     '--dangerously-skip-permissions',
-    '--setting-sources', 'local',
-    '--strict-mcp-config',
   ];
+
+  // For local agents: isolate from user/project MCP configs
+  // For remote agents: let the container use its own MCP config (correct container paths)
+  if (!isRemoteAgent) {
+    args.push('--setting-sources', 'local', '--strict-mcp-config');
+  }
 
   // Use agent-specific session if provided, otherwise default worker session
   const session = agentSession || manifest.worker;
@@ -53,16 +60,7 @@ function buildClaudeArgs(manifest, options = {}) {
     args.push('--disallowedTools', manifest.worker.disallowedTools);
   }
 
-  // If the agent has detached-command MCP, disallow built-in Bash to force using the MCP
-  if (agentConfig && agentConfig.mcps && agentConfig.mcps['detached-command']) {
-    const existing = args.indexOf('--disallowedTools');
-    if (existing >= 0) {
-      // Append Bash to existing disallowed list
-      args[existing + 1] = args[existing + 1] + ',Bash';
-    } else {
-      args.push('--disallowedTools', 'Bash');
-    }
-  }
+  // NOTE: Bash disabling moved to after MCP merge below
 
   if (manifest.worker.permissionPromptTool) {
     args.push('--permission-prompt-tool', manifest.worker.permissionPromptTool);
@@ -119,8 +117,18 @@ function buildClaudeArgs(manifest, options = {}) {
       args.push('--mcp-config', mcpJson);
     }
     // Disable built-in Claude in Chrome when we have our own chrome-devtools MCP
-    if (mcpServers['chrome-devtools']) {
+    if (!isRemoteAgent && mcpServers['chrome-devtools']) {
       args.push('--no-chrome');
+    }
+    // Disable built-in Bash when detached-command MCP is available (prevents session hangs)
+    // For remote agents, the container's config handles this
+    if (!isRemoteAgent && mcpServers['detached-command']) {
+      const existing = args.indexOf('--disallowedTools');
+      if (existing >= 0) {
+        args[existing + 1] = args[existing + 1] + ',Bash';
+      } else {
+        args.push('--disallowedTools', 'Bash');
+      }
     }
   }
 
@@ -184,7 +192,9 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     if (abortSignal && abortSignal.aborted) {
       throw new Error('Claude Code process was interrupted.');
     }
-    renderer.banner('Starting desktop container\u2026');
+    if (!getLinkedInstance(manifest.panelId)) {
+      renderer.banner('Starting desktop container\u2026');
+    }
     const desktop = await ensureDesktop(manifest.repoRoot, manifest.panelId, manifest.useSnapshot !== false);
     // Check again — abort may have fired during ensureDesktop
     if (abortSignal && abortSignal.aborted) {

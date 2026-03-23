@@ -55,9 +55,9 @@ async function createMcpHttpServer(options) {
       });
     }
 
-    if (method === 'notifications/initialized') {
-      // No response needed for notifications, but return empty for HTTP
-      return jsonRpcResponse(id, {});
+    if (method === 'notifications/initialized' || (method && method.startsWith('notifications/'))) {
+      // Notifications have no id and expect no JSON-RPC response
+      return null;
     }
 
     if (method === 'tools/list') {
@@ -107,8 +107,14 @@ async function createMcpHttpServer(options) {
       const body = Buffer.concat(chunks).toString('utf-8');
       try {
         const response = await handleRequest(body);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(response);
+        if (response === null) {
+          // Notification — no JSON-RPC response needed
+          res.writeHead(204);
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(response);
+        }
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

@@ -53,18 +53,33 @@ function buildCodexArgs(manifest, loop) {
   // Escape backslashes for TOML string values (Windows paths)
   const tomlEsc = (s) => s.replace(/\\/g, '\\\\');
   for (const [name, server] of Object.entries(controllerMcp)) {
-    if (!server || !server.command) continue;
-    args.push('-c', `mcp_servers.${name}.command="${tomlEsc(server.command)}"`);
+    if (!server) continue;
+    // Codex uses underscores in MCP names (not hyphens)
+    const codexName = name.replace(/-/g, '_');
+    // HTTP MCP servers
+    if (server.url) {
+      args.push('-c', `mcp_servers.${codexName}.url="${tomlEsc(server.url)}"`);
+      args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+      continue;
+    }
+    // Stdio MCP servers
+    if (!server.command) continue;
+    args.push('-c', `mcp_servers.${codexName}.command="${tomlEsc(server.command)}"`);
     if (Array.isArray(server.args) && server.args.length > 0) {
       const argsToml = `[${server.args.map(a => `"${tomlEsc(a)}"`).join(', ')}]`;
-      args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
+      args.push('-c', `mcp_servers.${codexName}.args=${argsToml}`);
     }
     if (server.env && typeof server.env === 'object') {
       for (const [key, val] of Object.entries(server.env)) {
-        args.push('-c', `mcp_servers.${name}.env.${key}="${tomlEsc(val)}"`);
+        args.push('-c', `mcp_servers.${codexName}.env.${key}="${tomlEsc(val)}"`);
       }
     }
-    args.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+    args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+  }
+
+  // Disable built-in shell when detached-command MCP is available (prevents session hangs)
+  if (controllerMcp['detached-command']) {
+    args.push('-c', 'features.shell_tool=false');
   }
 
   args.push('-');
@@ -78,12 +93,32 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   const args = buildCodexArgs(manifest, loop);
   let discoveredSessionId = manifest.controller.sessionId;
 
+  // Strip ELECTRON_RUN_AS_NODE and use a clean CODEX_HOME with auth but no MCPs
+  // so only our explicitly passed MCP servers are loaded (not kanban, memory, etc. from config.toml)
+  const path = require('path');
+  const fs = require('fs');
+  const os = require('os');
+  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
+  const codexHome = path.join(os.tmpdir(), 'cc-codex-controller-home');
+  const realCodexHome = path.join(os.homedir(), '.codex');
+  try {
+    fs.mkdirSync(codexHome, { recursive: true });
+    // Copy auth files but not config.toml (which has MCP definitions)
+    for (const f of ['auth.json', 'cap_sid']) {
+      const src = path.join(realCodexHome, f);
+      const dst = path.join(codexHome, f);
+      if (fs.existsSync(src)) fs.copyFileSync(src, dst);
+    }
+  } catch {}
+  cleanEnv.CODEX_HOME = codexHome;
+
   const result = await spawnStreamingProcess({
     command: manifest.controller.bin,
     args,
     cwd: manifest.repoRoot,
     stdinText: prompt,
     abortSignal,
+    env: cleanEnv,
     onStdoutLine: (line) => {
       const raw = parseJsonLine(line);
       if (raw && raw.type === 'thread.started' && raw.thread_id) {

@@ -56,29 +56,39 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
   const agentMcps = (agentConfig && agentConfig.mcps) || {};
   const mcpServers = { ...baseMcpServers, ...agentMcps };
   for (const [name, server] of Object.entries(mcpServers)) {
-    if (!server || !server.command) continue;
-    args.push('-c', `mcp_servers.${name}.command="${tomlEsc(server.command)}"`);
+    if (!server) continue;
+    // Codex uses underscores in MCP names (not hyphens)
+    const codexName = name.replace(/-/g, '_');
+    // HTTP MCP servers
+    if (server.url) {
+      args.push('-c', `mcp_servers.${codexName}.url="${tomlEsc(server.url)}"`);
+      args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+      continue;
+    }
+    // Stdio MCP servers
+    if (!server.command) continue;
+    args.push('-c', `mcp_servers.${codexName}.command="${tomlEsc(server.command)}"`);
     if (Array.isArray(server.args) && server.args.length > 0) {
       let resolvedArgs = server.args;
       if (manifest.chromeDebugPort) resolvedArgs = resolvedArgs.map(a => a.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort)));
       if (manifest.extensionDir) resolvedArgs = resolvedArgs.map(a => a.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/')));
       if (manifest.repoRoot) resolvedArgs = resolvedArgs.map(a => a.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/')));
       const argsToml = `[${resolvedArgs.map((a) => `"${tomlEsc(a)}"`).join(', ')}]`;
-      args.push('-c', `mcp_servers.${name}.args=${argsToml}`);
+      args.push('-c', `mcp_servers.${codexName}.args=${argsToml}`);
     }
     if (server.env && typeof server.env === 'object') {
       for (const [key, val] of Object.entries(server.env)) {
         let resolvedVal = val;
         if (manifest.extensionDir) resolvedVal = resolvedVal.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
         if (manifest.repoRoot) resolvedVal = resolvedVal.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
-        args.push('-c', `mcp_servers.${name}.env.${key}="${tomlEsc(resolvedVal)}"`);
+        args.push('-c', `mcp_servers.${codexName}.env.${key}="${tomlEsc(resolvedVal)}"`);
       }
     }
-    args.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+    args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
   }
 
-  // If the agent has detached-command MCP, disable built-in shell tool to force using the MCP
-  if (agentConfig && agentConfig.mcps && agentConfig.mcps['detached-command']) {
+  // Disable built-in shell when detached-command MCP is available (prevents session hangs)
+  if (mcpServers['detached-command']) {
     args.push('-c', 'features.shell_tool=false');
   }
 
