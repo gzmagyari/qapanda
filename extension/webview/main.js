@@ -781,12 +781,16 @@
 
   // ── Init Wizard ───────────────────────────────────────────────────
   const wizardEl = document.getElementById('init-wizard');
+  const wizardStepOnboard = document.getElementById('wizard-step-onboard');
+  const wizardStepOnboardSummary = document.getElementById('wizard-step-onboard-summary');
   const wizardStep1 = document.getElementById('wizard-step-1');
   const wizardStep2 = document.getElementById('wizard-step-2');
   const wizardStep3 = document.getElementById('wizard-step-3');
   let selectedWizardMode = null;
+  let onboardingDetected = null;
+  let onboardingPreference = 'both';
+  let onboardingComplete = false;
   _dbg('INIT: wizardEl=' + !!wizardEl + ' step1=' + !!wizardStep1 + ' step2=' + !!wizardStep2 + ' step3=' + !!wizardStep3);
-  _dbg('INIT DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '" step1.display="' + (wizardStep1 ? wizardStep1.style.display : 'null') + '" step2.display="' + (wizardStep2 ? wizardStep2.style.display : 'null') + '" step3.display="' + (wizardStep3 ? wizardStep3.style.display : 'null') + '"');
 
   // Custom confirm modal (native confirm() is blocked in VSCode webviews)
   function showConfirm(message, onYes, onNo) {
@@ -803,14 +807,191 @@
   }
 
   function showInitWizard() {
-    _dbg('showInitWizard() called');
+    _dbg('showInitWizard() called, onboardingComplete=' + onboardingComplete);
     if (!wizardEl) { _dbg('showInitWizard: wizardEl is null, aborting'); return; }
     wizardEl.classList.remove('wizard-hidden');
     tabPanels.agent.classList.add('wizard-hidden');
     const indicator = document.getElementById('mode-indicator');
     if (indicator) indicator.style.display = 'none';
-    renderWizardStep1();
-    _dbg('showInitWizard AFTER: wizard.hidden=' + wizardEl.classList.contains('wizard-hidden') + ' step1.hidden=' + wizardStep1.classList.contains('wizard-hidden') + ' step2.hidden=' + wizardStep2.classList.contains('wizard-hidden') + ' step3.hidden=' + wizardStep3.classList.contains('wizard-hidden'));
+    if (!onboardingComplete) {
+      renderOnboardingStep();
+    } else {
+      renderWizardStep1();
+    }
+  }
+
+  // ── Onboarding Wizard ─────────────────────────────────────────────
+
+  function hideAllWizardSteps() {
+    if (wizardStepOnboard) wizardStepOnboard.classList.add('wizard-hidden');
+    if (wizardStepOnboardSummary) wizardStepOnboardSummary.classList.add('wizard-hidden');
+    wizardStep1.classList.add('wizard-hidden');
+    wizardStep2.classList.add('wizard-hidden');
+    wizardStep3.classList.add('wizard-hidden');
+  }
+
+  function renderOnboardingStep() {
+    hideAllWizardSteps();
+    if (!wizardStepOnboard) return;
+    wizardStepOnboard.classList.remove('wizard-hidden');
+
+    const statusEl = document.getElementById('onboard-status');
+    const prefEl = document.getElementById('onboard-cli-preference');
+    const nextBtn = document.getElementById('onboard-next');
+
+    if (statusEl) {
+      statusEl.innerHTML = '<div class="onboard-item"><span class="onboard-spinner"></span><span class="onboard-item-label"><span class="onboard-item-name">Detecting tools...</span></span></div>';
+    }
+    if (prefEl) prefEl.classList.add('wizard-hidden');
+    if (nextBtn) nextBtn.disabled = true;
+
+    // Request detection from extension host
+    vscode.postMessage({ type: 'onboardingDetect' });
+  }
+
+  function renderOnboardingDetected(detected) {
+    onboardingDetected = detected;
+    const statusEl = document.getElementById('onboard-status');
+    const prefEl = document.getElementById('onboard-cli-preference');
+    const nextBtn = document.getElementById('onboard-next');
+    if (!statusEl || !detected) return;
+
+    const c = detected.clis || {};
+    const t = detected.tools || {};
+    const claudeOk = c.claude && c.claude.available;
+    const codexOk = c.codex && c.codex.available;
+
+    // Build detection results
+    let html = '<div class="onboard-section-label">Detected on your system:</div>';
+
+    html += makeOnboardItem(claudeOk ? 'ok' : 'fail', 'Claude Code CLI',
+      claudeOk ? (c.claude.version || '').split('\n')[0] : 'Not found');
+    html += makeOnboardItem(codexOk ? 'ok' : 'fail', 'Codex CLI',
+      codexOk ? (c.codex.version || '').split('\n')[0] : 'Not found');
+    html += makeOnboardItem(t.chrome && t.chrome.available ? 'ok' : 'warn', 'Google Chrome',
+      t.chrome && t.chrome.available ? 'Available — browser testing enabled' : 'Not found — browser testing unavailable');
+
+    const dockerRunning = t.docker && t.docker.available && t.docker.running;
+    const qaDesktopOk = t.qaDesktop && t.qaDesktop.available;
+    const desktopReady = dockerRunning && qaDesktopOk;
+    html += makeOnboardItem(desktopReady ? 'ok' : 'warn', 'Desktop Testing',
+      desktopReady ? 'Docker + qa-desktop available'
+        : !t.docker || !t.docker.available ? 'Docker not found'
+        : !t.docker.running ? 'Docker installed but not running'
+        : 'qa-desktop CLI not found');
+
+    statusEl.innerHTML = html;
+
+    // Block if no CLI at all
+    if (!claudeOk && !codexOk) {
+      statusEl.innerHTML += '<div class="onboard-item fail"><span class="onboard-item-icon">&#128683;</span><span class="onboard-item-label"><span class="onboard-item-name">No AI CLI found</span><span class="onboard-item-detail">Install Claude Code or Codex CLI to get started.</span></span></div>';
+      if (nextBtn) nextBtn.disabled = true;
+      return;
+    }
+
+    // Show CLI preference section with clear heading
+    if (prefEl) {
+      prefEl.classList.remove('wizard-hidden');
+      prefEl.innerHTML = '';
+
+      const heading = document.createElement('div');
+      heading.className = 'onboard-section-label';
+      heading.textContent = 'Choose your preferred CLI setup:';
+      prefEl.appendChild(heading);
+
+      const cardsWrap = document.createElement('div');
+      cardsWrap.className = 'wizard-cards';
+
+      const options = [];
+      if (claudeOk && codexOk) options.push({ id: 'both', icon: '&#9889;', title: 'Both (recommended)', desc: 'Codex as controller, Claude Code as worker — best results' });
+      if (claudeOk) options.push({ id: 'claude-only', icon: '&#129302;', title: 'Claude Code only', desc: 'Use Claude Code for everything' });
+      if (codexOk) options.push({ id: 'codex-only', icon: '&#128187;', title: 'Codex only', desc: 'Use Codex for everything' });
+
+      // Auto-select
+      if (claudeOk && codexOk) onboardingPreference = 'both';
+      else if (claudeOk) onboardingPreference = 'claude-only';
+      else onboardingPreference = 'codex-only';
+
+      for (const opt of options) {
+        const card = document.createElement('div');
+        card.className = 'wizard-card' + (opt.id === onboardingPreference ? ' selected' : '');
+        card.dataset.pref = opt.id;
+        card.innerHTML = '<div class="wizard-card-icon">' + opt.icon + '</div><div class="wizard-card-title">' + opt.title + '</div><div class="wizard-card-desc">' + opt.desc + '</div>';
+        card.addEventListener('click', () => {
+          onboardingPreference = opt.id;
+          cardsWrap.querySelectorAll('.wizard-card').forEach(c => c.classList.remove('selected'));
+          card.classList.add('selected');
+        });
+        cardsWrap.appendChild(card);
+      }
+      prefEl.appendChild(cardsWrap);
+    }
+
+    if (nextBtn) nextBtn.disabled = false;
+  }
+
+  function makeOnboardItem(status, name, detail) {
+    const icons = { ok: '&#9679;', warn: '&#9679;', fail: '&#9679;' };
+    const colors = { ok: '#4caf50', warn: '#ff9800', fail: '#f44336' };
+    return '<div class="onboard-item ' + status + '">'
+      + '<span class="onboard-item-icon" style="color:' + (colors[status] || '#999') + '">' + (icons[status] || '') + '</span>'
+      + '<span class="onboard-item-label">'
+      + '<span class="onboard-item-name">' + name + '</span>'
+      + '<span class="onboard-item-detail">' + detail + '</span>'
+      + '</span></div>';
+  }
+
+  function renderOnboardingSummary() {
+    hideAllWizardSteps();
+    if (!wizardStepOnboardSummary) return;
+    wizardStepOnboardSummary.classList.remove('wizard-hidden');
+
+    const summaryEl = document.getElementById('onboard-summary');
+    if (!summaryEl || !onboardingDetected) return;
+
+    const c = onboardingDetected.clis || {};
+    const t = onboardingDetected.tools || {};
+    const items = [];
+
+    // CLI preference summary
+    const prefLabel = { both: 'Both CLIs', 'claude-only': 'Claude Code only', 'codex-only': 'Codex only' };
+    items.push(makeOnboardItem('ok', 'CLI Preference', prefLabel[onboardingPreference] || onboardingPreference));
+
+    if (c.claude && c.claude.available) items.push(makeOnboardItem('ok', 'Claude Code', 'Available'));
+    if (c.codex && c.codex.available) items.push(makeOnboardItem('ok', 'Codex', 'Available'));
+    if (t.chrome && t.chrome.available) items.push(makeOnboardItem('ok', 'Chrome', 'Browser testing available'));
+    else items.push(makeOnboardItem('warn', 'Chrome', 'Not available — browser testing disabled'));
+    if (t.docker && t.docker.available && t.docker.running) items.push(makeOnboardItem('ok', 'Docker', 'Desktop testing available'));
+    else items.push(makeOnboardItem('warn', 'Docker', 'Not available — desktop testing disabled'));
+
+    summaryEl.innerHTML = items.join('');
+  }
+
+  // Wire up onboarding buttons
+  const onboardNextBtn = document.getElementById('onboard-next');
+  if (onboardNextBtn) {
+    onboardNextBtn.addEventListener('click', () => renderOnboardingSummary());
+  }
+  const onboardSkipBtn = document.getElementById('onboard-skip');
+  if (onboardSkipBtn) {
+    onboardSkipBtn.addEventListener('click', () => {
+      // Skip onboarding — mark as complete with defaults
+      onboardingComplete = true;
+      vscode.postMessage({ type: 'onboardingSave', preference: 'both', detected: onboardingDetected || { clis: {}, tools: {} } });
+      renderWizardStep1();
+    });
+  }
+  const onboardCompleteBtn = document.getElementById('onboard-complete');
+  if (onboardCompleteBtn) {
+    onboardCompleteBtn.addEventListener('click', () => {
+      onboardingComplete = true;
+      vscode.postMessage({ type: 'onboardingSave', preference: onboardingPreference, detected: onboardingDetected || { clis: {}, tools: {} } });
+      renderWizardStep1();
+    });
+  }
+  const onboardSummaryBackBtn = document.getElementById('onboard-summary-back');
+  if (onboardSummaryBackBtn) {
+    onboardSummaryBackBtn.addEventListener('click', () => renderOnboardingStep());
   }
 
   function hideInitWizard() {
@@ -832,9 +1013,21 @@
 
   function renderWizardStep1() {
     _dbg('renderWizardStep1() called');
+    hideAllWizardSteps();
     wizardStep1.classList.remove('wizard-hidden');
-    wizardStep2.classList.add('wizard-hidden');
-    wizardStep3.classList.add('wizard-hidden');
+
+    // Add "Re-run Setup" button
+    const rerunEl = document.getElementById('wizard-rerun-setup');
+    if (rerunEl) {
+      rerunEl.innerHTML = '<button class="wizard-rerun-btn" id="wizard-rerun-btn">Re-run Setup</button>';
+      const rerunBtn = document.getElementById('wizard-rerun-btn');
+      if (rerunBtn) {
+        rerunBtn.addEventListener('click', () => {
+          onboardingComplete = false;
+          renderOnboardingStep();
+        });
+      }
+    }
 
     const cardsEl = document.getElementById('wizard-mode-cards');
     cardsEl.innerHTML = '';
@@ -2719,6 +2912,11 @@
         renderModeList('global');
         renderModeList('project');
       }
+      // Set onboarding state from extension host
+      if (msg.onboarding) {
+        onboardingComplete = !!msg.onboarding.complete;
+        _dbg('initConfig: onboardingComplete=' + onboardingComplete);
+      }
       // Show wizard if no mode selected, or if mode is stale (no active run)
       _dbg('initConfig: currentMode=' + currentMode + ' currentTestEnv=' + currentTestEnv + ' msg.runId=' + msg.runId);
       _dbg('initConfig: modesSystem keys=' + JSON.stringify(Object.keys(modesSystem || {})));
@@ -2915,6 +3113,35 @@
 
     rawEvent() {
       // Ignored in UI
+    },
+
+    onboardingDetected(msg) {
+      _dbg('onboardingDetected received');
+      if (msg.detected) {
+        renderOnboardingDetected(msg.detected);
+      }
+    },
+
+    onboardingComplete(msg) {
+      _dbg('onboardingComplete received');
+      onboardingComplete = true;
+      if (msg.onboarding && msg.onboarding.data && msg.onboarding.data.defaults) {
+        // Apply defaults to config dropdowns
+        const defaults = msg.onboarding.data.defaults;
+        if (defaults.controllerCli) {
+          vscode.postMessage({ type: 'configChanged', config: { controllerCli: defaults.controllerCli, workerCli: defaults.workerCli } });
+        }
+      }
+    },
+
+    dependencyMissing(msg) {
+      // Show a banner for missing dependencies
+      const banner = document.createElement('div');
+      banner.className = 'dependency-banner';
+      banner.textContent = msg.message || ('Missing dependency: ' + msg.tool);
+      const messagesEl = document.getElementById('messages');
+      if (messagesEl) messagesEl.prepend(banner);
+      setTimeout(() => { try { banner.remove(); } catch {} }, 15000);
     },
   };
 

@@ -9,6 +9,7 @@ const { loadMergedModes, saveModesFile, globalModesPath, projectModesPath, syste
 const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, getSnapshotExists, instanceName } = require('./src/remote-desktop');
 const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
 const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
+const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding } = require('./onboarding');
 
 const activePanels = new Set();
 let _tasksMcpPort = null;
@@ -359,8 +360,31 @@ function getWebviewHtml(panel, extensionUri) {
     </div>
 
     <div id="init-wizard" class="wizard-hidden">
+      <!-- Onboarding steps (shown on first run only) -->
+      <div id="wizard-step-onboard" class="wizard-step wizard-hidden">
+        <h2>Welcome to CC Manager</h2>
+        <p class="wizard-subtitle">Let's check your environment and preferences.</p>
+        <div id="onboard-status" class="onboard-status"></div>
+        <div id="onboard-cli-preference" class="wizard-cards wizard-hidden"></div>
+        <div class="wizard-nav">
+          <button class="wizard-skip" id="onboard-skip">Skip Setup</button>
+          <button class="wizard-next" id="onboard-next" disabled>Continue</button>
+        </div>
+      </div>
+
+      <div id="wizard-step-onboard-summary" class="wizard-step wizard-hidden">
+        <h2>Setup Complete</h2>
+        <div id="onboard-summary" class="onboard-status"></div>
+        <div class="wizard-nav">
+          <button class="wizard-back" id="onboard-summary-back">Back</button>
+          <button class="wizard-next" id="onboard-complete">Get Started</button>
+        </div>
+      </div>
+
+      <!-- Existing mode selection steps -->
       <div id="wizard-step-1" class="wizard-step">
         <h2>What would you like to do?</h2>
+        <div id="wizard-rerun-setup" class="wizard-rerun-setup"></div>
         <div class="wizard-cards" id="wizard-mode-cards"></div>
       </div>
       <div id="wizard-step-2" class="wizard-step wizard-hidden">
@@ -688,6 +712,28 @@ function activate(context) {
           try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
           return;
         }
+        if (msg.type === 'onboardingDetect') {
+          runFullDetection().then(detected => {
+            try { panel.webview.postMessage({ type: 'onboardingDetected', detected }); } catch {}
+          }).catch(() => {
+            try { panel.webview.postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' }); } catch {}
+          });
+          return;
+        }
+        if (msg.type === 'onboardingSave') {
+          const bundledPath = path.join(extensionPath1, 'resources', 'system-agents.json');
+          const bundledAgents = loadAgentsFile(bundledPath);
+          const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
+          // Reload agents after onboarding modified system-agents overrides
+          const agentsData = loadMergedAgents(repoRoot, extensionPath1);
+          session.setAgents(agentsData);
+          try {
+            panel.webview.postMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
+            // Send updated agents to webview so Agents tab reflects the changes immediately
+            panel.webview.postMessage({ type: 'agentsData', agents: agentsData });
+          } catch {}
+          return;
+        }
         if (msg.type === 'setPanelTitle') {
           panel.title = msg.title;
           return;
@@ -702,7 +748,8 @@ function activate(context) {
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null });
+          const onboardingData = loadOnboarding();
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData } });
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -823,6 +870,26 @@ function activate(context) {
             try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
             return;
           }
+          if (msg.type === 'onboardingDetect') {
+            runFullDetection().then(detected => {
+              try { panel.webview.postMessage({ type: 'onboardingDetected', detected }); } catch {}
+            }).catch(() => {
+              try { panel.webview.postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' }); } catch {}
+            });
+            return;
+          }
+          if (msg.type === 'onboardingSave') {
+            const bundledPath = path.join(extensionPath2, 'resources', 'system-agents.json');
+            const bundledAgents = loadAgentsFile(bundledPath);
+            const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
+            const agentsData = loadMergedAgents(repoRoot, extensionPath2);
+            session.setAgents(agentsData);
+            try {
+              panel.webview.postMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
+              panel.webview.postMessage({ type: 'agentsData', agents: agentsData });
+            } catch {}
+            return;
+          }
           if (msg.type === 'configChanged') {
             session.applyConfig(msg.config);
             Object.assign(panelConfig, msg.config);
@@ -883,7 +950,8 @@ function activate(context) {
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null });
+            const onboardingData2 = loadOnboarding();
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 } });
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {

@@ -338,6 +338,7 @@ function killAll() {
 
 module.exports = {
   ensureChrome,
+  findChromeBinary: _findChromeBinary,
   startScreencast,
   stopScreencast,
   killChrome,
