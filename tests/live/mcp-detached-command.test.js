@@ -92,16 +92,25 @@ describe('Detached Command MCP server', () => {
     const jobId = structured ? structured.job.jobId : null;
     assert.ok(jobId);
 
-    await new Promise(r => setTimeout(r, 2000));
+    // Poll until job finishes (instead of fixed sleep — handles system load)
+    let status = 'starting';
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const pollRes = await mcp.callTool('get_job', { job_id: jobId });
+      const pollStructured = getStructured(pollRes);
+      if (pollStructured && pollStructured.job) {
+        status = pollStructured.job.status;
+        if (status === 'exited' || status === 'completed' || status === 'killed') break;
+      }
+    }
 
     const getRes = await mcp.callTool('get_job', { job_id: jobId });
     const getText = getToolText(getRes);
     assert.ok(getText.includes(jobId) || getText.includes('detail-test'), 'should show job details');
-    // Check structured content
+
     const getStructuredRes = getStructured(getRes);
-    if (getStructuredRes && getStructuredRes.job) {
-      assert.ok(getStructuredRes.job.status === 'exited' || getStructuredRes.job.status === 'running');
-    }
+    assert.ok(getStructuredRes && getStructuredRes.job, 'should have structured job data');
+    assert.equal(getStructuredRes.job.status, 'exited', 'echo command should have exited after polling');
   });
 
   it('stops a running command', async () => {

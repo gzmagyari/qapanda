@@ -2,54 +2,66 @@ const path = require('node:path');
 
 const { execForText } = require('./process-utils');
 const { Renderer } = require('./render');
-const { printEventTail, printRunSummary, runManagerLoop } = require('./orchestrator');
+const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
 const {
   defaultStateRoot,
   listRunManifests,
   loadManifestFromDir,
+  lookupAgentConfig,
   prepareNewRun,
   resolveRunDir,
   saveManifest,
 } = require('./state');
 const { parseInteger, parseNumber, readAllStdin } = require('./utils');
 const { runInteractiveShell } = require('./shell');
+const {
+  findResourcesDir,
+  loadMergedAgents,
+  loadMergedModes,
+  loadMergedMcpServers,
+  enabledAgents,
+  enabledModes,
+  resolveByEnv,
+  getCliDefaults,
+  loadOnboarding,
+  isOnboardingComplete,
+} = require('./config-loader');
+const { mcpServersForRole } = require('./mcp-injector');
 
 function usage() {
   return `cc-manager
 
 Commands:
-  cc-manager                       Start the interactive shell
-  cc-manager shell                 Start the interactive shell
-  cc-manager run <message...>      Start a new run, process until STOP, then exit
+  cc-manager                         Start the interactive shell
+  cc-manager shell                   Start the interactive shell
+  cc-manager run <message...>        Start a new run, process until STOP, then exit
+  cc-manager run --print --agent dev <message>   One-shot: agent runs once, exits
   cc-manager resume <run-id> [message...]  Resume or continue an existing run
-  cc-manager status <run-id>       Show run status
-  cc-manager logs <run-id> [--tail n]      Show recent events
-  cc-manager list                  List saved runs
-  cc-manager doctor                Verify codex and claude binaries
+  cc-manager status <run-id>         Show run status
+  cc-manager logs <run-id> [--tail n]       Show recent events
+  cc-manager list                    List saved runs
+  cc-manager doctor                  Check health of all dependencies
+  cc-manager setup                   Run first-time setup wizard
+  cc-manager agents                  List all available agents
+  cc-manager modes                   List all available modes
 
 Common options:
-  --repo <path>
-  --state-dir <path>
-  --codex-bin <path>
-  --claude-bin <path>
-  --controller-model <name>
-  --controller-profile <name>
-  --controller-sandbox <read-only|workspace-write|danger-full-access>
-  --controller-config <key=value>          repeatable
-  --controller-skip-git-repo-check
-  --controller-extra-instructions <text>
-  --worker-model <name>
-  --worker-session-id <uuid>
-  --worker-allowed-tools <rules>
-  --worker-tools <rules>
-  --worker-disallowed-tools <rules>
-  --worker-permission-prompt-tool <name>
-  --worker-max-turns <n>
-  --worker-max-budget-usd <amount>
-  --worker-add-dir <path>                  repeatable
-  --worker-append-system-prompt <text>
-  --raw-events
-  --quiet
+  --repo <path>                      Project root directory
+  --state-dir <path>                 State directory
+  --mode <id>                        Select mode (quick-test, auto-test, quick-dev, auto-dev, auto-dev-test)
+  --agent <id>                       Direct to specific agent (bypasses controller)
+  --test-env <browser|computer>      Test environment for modes
+  --print                            One-shot: run single turn, print result, exit
+  --controller-cli <codex|claude>    Controller CLI backend
+  --controller-model <name>          Controller model
+  --controller-thinking <level>      Controller thinking (minimal/low/medium/high/xhigh)
+  --worker-cli <claude|codex>        Worker CLI backend
+  --worker-model <name>              Worker model
+  --worker-thinking <level>          Worker thinking (low/medium/high)
+  --wait <delay>                     Auto-pass delay (1m, 5m, 1h, etc.)
+  --no-mcp-inject                    Disable system MCP auto-injection
+  --raw-events                       Show raw streaming events
+  --quiet                            Minimal output
 `;
 }
 
@@ -58,14 +70,30 @@ const RUN_SPEC = {
   'state-dir': { key: 'stateRoot', kind: 'value' },
   'codex-bin': { key: 'codexBin', kind: 'value' },
   'claude-bin': { key: 'claudeBin', kind: 'value' },
+  // New flags
+  'mode': { key: 'mode', kind: 'value' },
+  'agent': { key: 'agent', kind: 'value' },
+  'test-env': { key: 'testEnv', kind: 'value' },
+  'print': { key: 'print', kind: 'boolean' },
+  'no-mcp-inject': { key: 'noMcpInject', kind: 'boolean' },
+  'chrome-port': { key: 'chromePort', kind: 'value' },
+  'no-chrome': { key: 'noChrome', kind: 'boolean' },
+  'no-desktop': { key: 'noDesktop', kind: 'boolean' },
+  'no-snapshot': { key: 'noSnapshot', kind: 'boolean' },
+  'wait': { key: 'wait', kind: 'value' },
+  // Controller
   'controller-cli': { key: 'controllerCli', kind: 'value' },
   'controller-model': { key: 'controllerModel', kind: 'value' },
+  'controller-thinking': { key: 'controllerThinking', kind: 'value' },
   'controller-profile': { key: 'controllerProfile', kind: 'value' },
   'controller-sandbox': { key: 'controllerSandbox', kind: 'value' },
   'controller-config': { key: 'controllerConfig', kind: 'list' },
   'controller-skip-git-repo-check': { key: 'controllerSkipGitRepoCheck', kind: 'boolean' },
   'controller-extra-instructions': { key: 'controllerExtraInstructions', kind: 'value' },
+  // Worker
+  'worker-cli': { key: 'workerCli', kind: 'value' },
   'worker-model': { key: 'workerModel', kind: 'value' },
+  'worker-thinking': { key: 'workerThinking', kind: 'value' },
   'worker-session-id': { key: 'workerSessionId', kind: 'value' },
   'worker-allowed-tools': { key: 'workerAllowedTools', kind: 'value' },
   'worker-tools': { key: 'workerTools', kind: 'value' },
@@ -79,58 +107,31 @@ const RUN_SPEC = {
   'quiet': { key: 'quiet', kind: 'boolean' },
 };
 
-const STATUS_SPEC = {
-  'state-dir': { key: 'stateRoot', kind: 'value' },
-};
-
-const LOGS_SPEC = {
-  'state-dir': { key: 'stateRoot', kind: 'value' },
-  'tail': { key: 'tail', kind: 'value' },
-};
-
-const DOCTOR_SPEC = {
-  'codex-bin': { key: 'codexBin', kind: 'value' },
-  'claude-bin': { key: 'claudeBin', kind: 'value' },
-};
+const STATUS_SPEC = { 'state-dir': { key: 'stateRoot', kind: 'value' } };
+const LOGS_SPEC = { 'state-dir': { key: 'stateRoot', kind: 'value' }, 'tail': { key: 'tail', kind: 'value' } };
+const DOCTOR_SPEC = { 'codex-bin': { key: 'codexBin', kind: 'value' }, 'claude-bin': { key: 'claudeBin', kind: 'value' } };
 
 function parseArgs(argv, spec) {
   const options = {};
   const positionals = [];
-
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
-    if (token === '--') {
-      positionals.push(...argv.slice(index + 1));
-      break;
-    }
-    if (!token.startsWith('--')) {
-      positionals.push(token);
-      continue;
-    }
+    if (token === '--') { positionals.push(...argv.slice(index + 1)); break; }
+    if (!token.startsWith('--')) { positionals.push(token); continue; }
     const name = token.slice(2);
     const definition = spec[name];
-    if (!definition) {
-      throw new Error(`Unknown option: --${name}`);
-    }
-    if (definition.kind === 'boolean') {
-      options[definition.key] = true;
-      continue;
-    }
+    if (!definition) throw new Error(`Unknown option: --${name}`);
+    if (definition.kind === 'boolean') { options[definition.key] = true; continue; }
     const value = argv[index + 1];
-    if (value == null) {
-      throw new Error(`Option --${name} requires a value.`);
-    }
+    if (value == null) throw new Error(`Option --${name} requires a value.`);
     index += 1;
     if (definition.kind === 'list') {
-      if (!Array.isArray(options[definition.key])) {
-        options[definition.key] = [];
-      }
+      if (!Array.isArray(options[definition.key])) options[definition.key] = [];
       options[definition.key].push(value);
       continue;
     }
     options[definition.key] = value;
   }
-
   return { options, positionals };
 }
 
@@ -154,43 +155,283 @@ function normalizeOptions(options) {
 
 async function ensureBinaryAvailable(binary) {
   const result = await execForText(binary, ['--version']);
-  if (result.code !== 0) {
-    throw new Error(`Could not execute ${binary} --version. stderr:\n${result.stderr}`);
-  }
+  if (result.code !== 0) throw new Error(`Could not execute ${binary} --version. stderr:\n${result.stderr}`);
   return (result.stdout || result.stderr).trim();
 }
 
+// ── Config loading ───────────────────────────────────────────────
+
+function loadConfig(repoRoot) {
+  const resourcesDir = findResourcesDir();
+  const agentsData = loadMergedAgents(repoRoot, resourcesDir);
+  const modesData = loadMergedModes(repoRoot, resourcesDir);
+  const mcpData = loadMergedMcpServers(repoRoot);
+  const allAgents = enabledAgents(agentsData);
+  const allModes = enabledModes(modesData);
+  const defaults = getCliDefaults();
+  return { agentsData, modesData, mcpData, allAgents, allModes, defaults, resourcesDir };
+}
+
+/**
+ * Apply mode + agent + MCP injection to options before creating a run.
+ */
+function applyConfigToOptions(options, config) {
+  const { allAgents, allModes, mcpData, defaults } = config;
+
+  // Apply onboarding defaults if not explicitly set
+  if (!options.controllerCli) options.controllerCli = defaults.controllerCli;
+  if (!options.workerCli) options.workerCli = defaults.workerCli;
+
+  // Apply worker thinking via env var (same as extension)
+  if (options.workerThinking) {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = options.workerThinking;
+  }
+
+  // Apply mode
+  let directAgent = options.agent || null;
+  if (options.mode) {
+    const mode = allModes[options.mode];
+    if (!mode) throw new Error(`Unknown mode: ${options.mode}. Use --list-modes to see available modes.`);
+
+    const testEnv = options.testEnv || 'browser';
+    if (mode.requiresTestEnv && !options.testEnv) {
+      console.error(`Mode '${options.mode}' requires --test-env (browser or computer).`);
+    }
+
+    // Set controller prompt from mode
+    if (mode.controllerPrompt) {
+      options.controllerSystemPrompt = resolveByEnv(mode.controllerPrompt, testEnv);
+    }
+
+    // Direct agent mode (no controller)
+    if (!mode.useController) {
+      directAgent = resolveByEnv(mode.defaultAgent, testEnv);
+    }
+  }
+
+  // Load all agents into manifest
+  options.agents = allAgents;
+
+  // Auto-inject system MCPs (unless disabled)
+  if (!options.noMcpInject) {
+    const workerMcps = mcpServersForRole('worker', {
+      globalMcps: mcpData.global,
+      projectMcps: mcpData.project,
+      repoRoot: options.repoRoot,
+    });
+    const controllerMcps = mcpServersForRole('controller', {
+      globalMcps: mcpData.global,
+      projectMcps: mcpData.project,
+      repoRoot: options.repoRoot,
+    });
+    options.workerMcpServers = workerMcps;
+    options.controllerMcpServers = controllerMcps;
+  }
+
+  return { options, directAgent };
+}
+
+/**
+ * If the target agent uses chrome-devtools MCP, auto-start Chrome and set the port.
+ * Returns the chromeDebugPort to set on the manifest, or null.
+ */
+async function ensureChromeIfNeeded(directAgent, allAgents, options) {
+  if (!directAgent) return null;
+  const agent = allAgents[directAgent];
+  if (!agent || !agent.mcps) return null;
+  if (!agent.mcps['chrome-devtools'] && !agent.mcps['chrome_devtools']) return null;
+
+  // Don't start Chrome for remote agents (container has its own Chrome)
+  if (agent.cli && agent.cli.startsWith('qa-remote')) return null;
+
+  // Use explicit --chrome-port if provided
+  if (options.chromePort) return parseInt(options.chromePort, 10);
+
+  // Auto-start headless Chrome
+  try {
+    const chromeManager = require('../extension/chrome-manager');
+    const panelId = 'cli-' + Date.now();
+    const result = await chromeManager.ensureChrome(panelId);
+    if (result && result.port) {
+      // Register cleanup on exit
+      process.on('exit', () => { try { chromeManager.killChrome(panelId); } catch {} });
+      process.on('SIGINT', () => { try { chromeManager.killChrome(panelId); } catch {} process.exit(130); });
+      return result.port;
+    }
+  } catch (e) {
+    console.error(`Warning: Could not start Chrome: ${e.message}`);
+  }
+  return null;
+}
+
+// ── Commands ─────────────────────────────────────────────────────
+
 async function runDoctor(argv) {
   const { options } = parseArgs(argv, DOCTOR_SPEC);
-  const codexBin = options.codexBin || 'codex';
-  const claudeBin = options.claudeBin || 'claude';
-  const codexVersion = await ensureBinaryAvailable(codexBin);
-  const claudeVersion = await ensureBinaryAvailable(claudeBin);
-  process.stdout.write(`codex: ${codexVersion}\n`);
-  process.stdout.write(`claude: ${claudeVersion}\n`);
+
+  const { detectCli, detectChrome, detectDocker, detectQaDesktop } = require('../extension/onboarding');
+
+  console.log('CC Manager Doctor\n');
+
+  // CLIs
+  const claude = await detectCli('claude');
+  console.log(`Claude Code CLI:    ${claude.available ? '✓ ' + claude.version.split('\n')[0] : '✗ Not found'}`);
+  const codex = await detectCli('codex');
+  console.log(`Codex CLI:          ${codex.available ? '✓ ' + codex.version.split('\n')[0] : '✗ Not found'}`);
+
+  // Tools
+  const chrome = await detectChrome();
+  console.log(`Google Chrome:      ${chrome.available ? '✓ Found' : '✗ Not found'}`);
+  const docker = await detectDocker();
+  console.log(`Docker Desktop:     ${docker.available ? (docker.running ? '✓ Running' : '⚠ Installed but not running') : '✗ Not found'}`);
+  const qaDesktop = await detectQaDesktop();
+  console.log(`qa-desktop:         ${qaDesktop.available ? '✓ Available' : '✗ Not found'}`);
+
+  // Bundled tools
+  const { findDetachedCommandPath, findTasksMcpPath } = require('./mcp-injector');
+  console.log(`detached-command:   ${findDetachedCommandPath() ? '✓ Bundled' : '✗ Not found'}`);
+  console.log(`tasks-mcp:          ${findTasksMcpPath() ? '✓ Bundled' : '✗ Not found'}`);
+
+  // Onboarding
+  const onboarding = loadOnboarding();
+  if (onboarding && onboarding.completedAt) {
+    console.log(`Onboarding:         ✓ Complete (preference: ${onboarding.cliPreference || 'both'})`);
+  } else {
+    console.log(`Onboarding:         ✗ Not complete — run: cc-manager setup`);
+  }
+}
+
+async function runSetup() {
+  const readline = require('node:readline');
+  const { detectCli, detectChrome, detectDocker, detectQaDesktop, completeOnboarding, getCliDefaults: getDefaults } = require('../extension/onboarding');
+  const { readJsonFile } = require('./config-loader');
+
+  console.log('CC Manager Setup\n');
+  console.log('Detecting environment...');
+
+  const [claude, codex, chrome, docker, qaDesktop] = await Promise.all([
+    detectCli('claude'), detectCli('codex'), detectChrome(), detectDocker(), detectQaDesktop(),
+  ]);
+
+  console.log(`  ${claude.available ? '✓' : '✗'} Claude Code CLI ${claude.available ? claude.version.split('\n')[0] : '— not found'}`);
+  console.log(`  ${codex.available ? '✓' : '✗'} Codex CLI ${codex.available ? codex.version.split('\n')[0] : '— not found'}`);
+  console.log(`  ${chrome.available ? '✓' : '⚠'} Google Chrome ${chrome.available ? '— found' : '— not found (browser testing unavailable)'}`);
+  console.log(`  ${docker.available && docker.running ? '✓' : '⚠'} Docker Desktop ${docker.available ? (docker.running ? '— running' : '— installed but not running') : '— not found (desktop testing unavailable)'}`);
+  console.log('');
+
+  if (!claude.available && !codex.available) {
+    console.error('Error: No AI CLI found. Install Claude Code or Codex CLI first.');
+    process.exit(1);
+  }
+
+  // Determine preference
+  let preference = 'both';
+  if (claude.available && codex.available) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    preference = await new Promise((resolve) => {
+      rl.question('CLI preference? [both/claude-only/codex-only] (both): ', (answer) => {
+        rl.close();
+        const a = (answer || '').trim().toLowerCase();
+        if (a === 'claude-only' || a === 'codex-only') resolve(a);
+        else resolve('both');
+      });
+    });
+  } else if (claude.available) {
+    preference = 'claude-only';
+    console.log('Only Claude Code found — using claude-only mode.');
+  } else {
+    preference = 'codex-only';
+    console.log('Only Codex found — using codex-only mode.');
+  }
+
+  // Auto-pull Docker image if Docker is running but image missing
+  if (docker.available && docker.running) {
+    const { getImageName } = require('../qa-desktop/lib/docker');
+    console.log('\nChecking Docker image...');
+    const image = await getImageName(null, (msg) => console.log(`  ${msg}`));
+    if (image) console.log(`  ✓ Image ready: ${image}`);
+    else console.log('  ⚠ Image not available');
+  }
+
+  // Save
+  const resourcesDir = findResourcesDir();
+  const bundledPath = path.join(resourcesDir, 'system-agents.json');
+  const bundledAgents = readJsonFile(bundledPath);
+  const detected = {
+    clis: { claude, codex },
+    tools: { chrome, docker, qaDesktop: { available: true, version: 'bundled' } },
+  };
+
+  completeOnboarding({ preference, detected, bundledAgents });
+
+  const defaults = getDefaults(preference);
+  console.log(`\nSetup complete!`);
+  console.log(`  Controller CLI: ${defaults.controllerCli}`);
+  console.log(`  Worker CLI: ${defaults.workerCli}`);
+  console.log(`  Saved to ~/.cc-manager/onboarding.json`);
+}
+
+async function listAgentsCmd(argv) {
+  const { options } = parseArgs(argv, { 'repo': { key: 'repoRoot', kind: 'value' } });
+  const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : process.cwd();
+  const { allAgents } = loadConfig(repoRoot);
+  console.log('Available agents:\n');
+  for (const [id, agent] of Object.entries(allAgents)) {
+    console.log(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'claude'}`);
+  }
+}
+
+async function listModesCmd(argv) {
+  const { options } = parseArgs(argv, { 'repo': { key: 'repoRoot', kind: 'value' } });
+  const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : process.cwd();
+  const { allModes } = loadConfig(repoRoot);
+  console.log('Available modes:\n');
+  for (const [id, mode] of Object.entries(allModes)) {
+    const ctrl = mode.useController ? 'controller' : 'direct';
+    const env = mode.requiresTestEnv ? ' (needs --test-env)' : '';
+    console.log(`  ${id.padEnd(20)} ${(mode.name || '').padEnd(25)} ${ctrl}${env}`);
+  }
 }
 
 async function runOneShot(argv) {
   const parsed = parseArgs(argv, RUN_SPEC);
   const options = normalizeOptions(parsed.options);
   let message = parsed.positionals.join(' ').trim();
-  if (!message) {
-    message = (await readAllStdin()).trim();
+  if (!message) message = (await readAllStdin()).trim();
+  if (!message) throw new Error('Missing initial user message.');
+
+  // Load config and apply mode/agent/MCP injection
+  const config = loadConfig(options.repoRoot);
+  const { options: enriched, directAgent } = applyConfigToOptions(options, config);
+
+  // Verify CLIs
+  if (enriched.controllerCli !== 'claude' && !directAgent) {
+    await ensureBinaryAvailable(enriched.codexBin || 'codex');
   }
-  if (!message) {
-    throw new Error('Missing initial user message.');
+  await ensureBinaryAvailable(enriched.claudeBin || 'claude');
+
+  // Auto-start Chrome if needed (for agents with chrome-devtools MCP)
+  if (!enriched.noChrome) {
+    const chromePort = await ensureChromeIfNeeded(directAgent, config.allAgents, enriched);
+    if (chromePort) enriched.chromeDebugPort = chromePort;
   }
 
-  if (options.controllerCli !== 'claude') {
-    await ensureBinaryAvailable(options.codexBin || 'codex');
-  }
-  await ensureBinaryAvailable(options.claudeBin || 'claude');
+  const manifest = await prepareNewRun(message, enriched);
 
-  const manifest = await prepareNewRun(message, options);
+  // Pass Chrome port to manifest for placeholder replacement in buildClaudeArgs
+  if (enriched.chromeDebugPort) manifest.chromeDebugPort = enriched.chromeDebugPort;
+
   const renderer = new Renderer({ rawEvents: manifest.settings.rawEvents, quiet: manifest.settings.quiet });
   renderer.requestStarted(manifest.runId);
+
   try {
-    await runManagerLoop(manifest, renderer, { userMessage: message });
+    if (directAgent || enriched.print) {
+      // Direct agent mode or print mode — skip controller
+      const agentId = directAgent || null;
+      await runDirectWorkerTurn(manifest, renderer, { userMessage: message, agentId });
+    } else {
+      await runManagerLoop(manifest, renderer, { userMessage: message });
+    }
   } finally {
     renderer.close();
     await saveManifest(manifest);
@@ -202,9 +443,7 @@ async function resumeRun(argv) {
   const parsed = parseArgs(argv, RUN_SPEC);
   const options = normalizeOptions(parsed.options);
   const runId = parsed.positionals[0];
-  if (!runId) {
-    throw new Error('Missing run id for resume.');
-  }
+  if (!runId) throw new Error('Missing run id for resume.');
   const message = parsed.positionals.slice(1).join(' ').trim();
   const stateRoot = options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd());
   const runDir = await resolveRunDir(runId, stateRoot);
@@ -227,9 +466,7 @@ async function resumeRun(argv) {
 async function showStatus(argv) {
   const parsed = parseArgs(argv, STATUS_SPEC);
   const runId = parsed.positionals[0];
-  if (!runId) {
-    throw new Error('Missing run id for status.');
-  }
+  if (!runId) throw new Error('Missing run id for status.');
   const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
   const runDir = await resolveRunDir(runId, stateRoot);
   const manifest = await loadManifestFromDir(runDir);
@@ -239,9 +476,7 @@ async function showStatus(argv) {
 async function showLogs(argv) {
   const parsed = parseArgs(argv, LOGS_SPEC);
   const runId = parsed.positionals[0];
-  if (!runId) {
-    throw new Error('Missing run id for logs.');
-  }
+  if (!runId) throw new Error('Missing run id for logs.');
   const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
   const tail = parseInteger(parsed.options.tail, '--tail') || 40;
   const runDir = await resolveRunDir(runId, stateRoot);
@@ -253,14 +488,76 @@ async function showList(argv) {
   const parsed = parseArgs(argv, STATUS_SPEC);
   const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
   const manifests = await listRunManifests(stateRoot);
-  if (manifests.length === 0) {
-    process.stdout.write(`No runs found in ${stateRoot}\n`);
-    return;
-  }
+  if (manifests.length === 0) { process.stdout.write(`No runs found in ${stateRoot}\n`); return; }
   for (const manifest of manifests) {
     process.stdout.write(`${manifest.runId} | ${manifest.status} | ${manifest.transcriptSummary || ''}\n`);
   }
 }
+
+// ── MCP management ───────────────────────────────────────────────
+
+async function mcpCmd(argv) {
+  const repoRoot = process.cwd();
+  const mcpData = loadMergedMcpServers(repoRoot);
+  const sub = argv[0];
+
+  if (!sub || sub === 'list') {
+    console.log('MCP Servers:\n');
+    console.log('  Global (~/.cc-manager/mcp.json):');
+    const globalEntries = Object.entries(mcpData.global);
+    if (globalEntries.length === 0) console.log('    (none)');
+    for (const [name, s] of globalEntries) {
+      console.log(`    ${name.padEnd(25)} ${s.url ? 'http' : 'stdio'}  target: ${s.target || 'both'}`);
+    }
+    console.log('\n  Project (.cc-manager/mcp.json):');
+    const projectEntries = Object.entries(mcpData.project);
+    if (projectEntries.length === 0) console.log('    (none)');
+    for (const [name, s] of projectEntries) {
+      console.log(`    ${name.padEnd(25)} ${s.url ? 'http' : 'stdio'}  target: ${s.target || 'both'}`);
+    }
+    console.log('\n  Auto-injected: detached-command, cc-tasks');
+    return;
+  }
+
+  if (sub === 'add') {
+    const name = argv[1];
+    if (!name) { console.error('Usage: cc-manager mcp add <name> --command <cmd> [--args <a>] [--scope global|project] [--target both|controller|worker]'); return; }
+    const opts = {};
+    for (let i = 2; i < argv.length; i++) {
+      if (argv[i] === '--command') opts.command = argv[++i];
+      else if (argv[i] === '--args') opts.args = argv[++i].split(',');
+      else if (argv[i] === '--url') opts.url = argv[++i];
+      else if (argv[i] === '--scope') opts.scope = argv[++i];
+      else if (argv[i] === '--target') opts.target = argv[++i];
+    }
+    const scope = opts.scope || 'project';
+    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.cc-manager', 'mcp.json') : require('path').join(repoRoot, '.cc-manager', 'mcp.json');
+    const data = readJsonFile(filePath);
+    data[name] = {};
+    if (opts.url) { data[name].type = 'http'; data[name].url = opts.url; }
+    else if (opts.command) { data[name].command = opts.command; if (opts.args) data[name].args = opts.args; }
+    if (opts.target) data[name].target = opts.target;
+    writeJsonFile(filePath, data);
+    console.log(`Added MCP server '${name}' to ${scope} config.`);
+    return;
+  }
+
+  if (sub === 'delete' || sub === 'remove') {
+    const name = argv[1];
+    const scope = argv.includes('--scope') ? argv[argv.indexOf('--scope') + 1] : 'project';
+    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.cc-manager', 'mcp.json') : require('path').join(repoRoot, '.cc-manager', 'mcp.json');
+    const data = readJsonFile(filePath);
+    if (!data[name]) { console.error(`MCP server '${name}' not found in ${scope} config.`); return; }
+    delete data[name];
+    writeJsonFile(filePath, data);
+    console.log(`Deleted MCP server '${name}' from ${scope} config.`);
+    return;
+  }
+
+  console.log('Usage: cc-manager mcp [list|add|delete]');
+}
+
+// ── Main ─────────────────────────────────────────────────────────
 
 async function main(argv) {
   const [command, ...rest] = argv;
@@ -272,35 +569,16 @@ async function main(argv) {
     return;
   }
 
-  if (command === 'run') {
-    await runOneShot(rest);
-    return;
-  }
-
-  if (command === 'resume') {
-    await resumeRun(rest);
-    return;
-  }
-
-  if (command === 'status') {
-    await showStatus(rest);
-    return;
-  }
-
-  if (command === 'logs') {
-    await showLogs(rest);
-    return;
-  }
-
-  if (command === 'list') {
-    await showList(rest);
-    return;
-  }
-
-  if (command === 'doctor') {
-    await runDoctor(rest);
-    return;
-  }
+  if (command === 'run') { await runOneShot(rest); return; }
+  if (command === 'resume') { await resumeRun(rest); return; }
+  if (command === 'status') { await showStatus(rest); return; }
+  if (command === 'logs') { await showLogs(rest); return; }
+  if (command === 'list') { await showList(rest); return; }
+  if (command === 'doctor') { await runDoctor(rest); return; }
+  if (command === 'setup') { await runSetup(); return; }
+  if (command === 'agents') { await listAgentsCmd(rest); return; }
+  if (command === 'modes') { await listModesCmd(rest); return; }
+  if (command === 'mcp') { await mcpCmd(rest); return; }
 
   if (command === 'help' || command === '--help' || command === '-h') {
     process.stdout.write(`${usage()}\n`);
@@ -310,6 +588,4 @@ async function main(argv) {
   throw new Error(`Unknown command: ${command}\n\n${usage()}`);
 }
 
-module.exports = {
-  main,
-};
+module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions };

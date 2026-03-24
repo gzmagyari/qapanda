@@ -3,7 +3,7 @@ const readline = require('node:readline/promises');
 const path = require('node:path');
 
 const { Renderer } = require('./render');
-const { printEventTail, printRunSummary, runManagerLoop } = require('./orchestrator');
+const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
 const { loadWorkflows } = require('./prompts');
 const {
   WAIT_OPTIONS,
@@ -11,14 +11,28 @@ const {
   formatWaitDelay,
   listRunManifests,
   loadManifestFromDir,
+  lookupAgentConfig,
   parseWaitDelay,
   prepareNewRun,
   resolveRunDir,
   saveManifest,
 } = require('./state');
 const { summarizeError } = require('./utils');
+const {
+  findResourcesDir,
+  loadMergedAgents,
+  loadMergedModes,
+  loadMergedMcpServers,
+  enabledAgents,
+  enabledModes,
+  resolveByEnv,
+  getCliDefaults,
+  readJsonFile,
+  writeJsonFile,
+} = require('./config-loader');
+const { mcpServersForRole } = require('./mcp-injector');
 
-const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
+const ERROR_RETRY_DELAY_MS = 30 * 60_000;
 
 function isAbortError(error) {
   const msg = error && (error.message || String(error));
@@ -28,13 +42,8 @@ function isAbortError(error) {
 function parseCommand(line) {
   const trimmed = String(line || '').trim();
   const space = trimmed.indexOf(' ');
-  if (space === -1) {
-    return { command: trimmed, rest: '' };
-  }
-  return {
-    command: trimmed.slice(0, space),
-    rest: trimmed.slice(space + 1).trim(),
-  };
+  if (space === -1) return { command: trimmed, rest: '' };
+  return { command: trimmed.slice(0, space), rest: trimmed.slice(space + 1).trim() };
 }
 
 function printHelp(renderer) {
@@ -51,11 +60,35 @@ Commands:
   /wait [delay]        Set auto-pass delay (e.g. 5m, 1h, 1d, none)
   /workflow [name]     List or run a workflow
   /detach              Detach from the current run
+  /clear               Clear chat, detach, start fresh
   /quit                Exit the shell
+
+Config:
+  /config              Show current configuration
+  /mode [id]           Show or select a mode
+  /modes               List all available modes
+  /agent [id]          Show or switch to a direct agent
+  /agents              List all available agents
+  /controller-cli [c]  Show or set controller CLI (codex/claude)
+  /worker-cli [c]      Show or set worker CLI (claude/codex)
+  /controller-model [m] Show or set controller model
+  /worker-model [m]    Show or set worker model
+  /controller-thinking [l] Show or set controller thinking level
+  /worker-thinking [l] Show or set worker thinking level
+
+Tasks:
+  /tasks               List tasks from .cc-manager/tasks.json
+  /task add <title>    Create a new task
+  /task done <id>      Mark task as done
+  /task <id>           Show task details
+
+Instances:
+  /instances           List Docker desktop instances
+  /mcp                 List configured MCP servers
 
 Plain text:
   - If no run is attached, plain text starts a new run.
-  - If a run is attached, plain text becomes the next user message for that run.
+  - If a run is attached, plain text becomes the next user message.
 `);
 }
 
@@ -65,19 +98,71 @@ async function runInteractiveShell(options = {}) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const renderer = new Renderer({ rawEvents: Boolean(options.rawEvents), quiet: false });
 
-  let activeManifest = null;
-  let waitDelay = '';
-  let waitTimer = null;
+  // ── Load config at startup ─────────────────────────────────────
+  const resourcesDir = findResourcesDir();
+  let agentsData = loadMergedAgents(cwd, resourcesDir);
+  let modesData = loadMergedModes(cwd, resourcesDir);
+  let mcpData = loadMergedMcpServers(cwd);
+  let allAgents = enabledAgents(agentsData);
+  let allModes = enabledModes(modesData);
+  const defaults = getCliDefaults();
 
-  /** Stop the in-memory timer without touching disk. Used for shell exit. */
-  function stopWaitTimer() {
-    if (waitTimer) {
-      clearTimeout(waitTimer);
-      waitTimer = null;
+  // Session config (can be changed mid-session)
+  let controllerCli = options.controllerCli || defaults.controllerCli || 'codex';
+  let workerCli = options.workerCli || defaults.workerCli || 'claude';
+  let controllerModel = options.controllerModel || null;
+  let workerModel = options.workerModel || null;
+  let controllerThinking = options.controllerThinking || null;
+  let workerThinking = options.workerThinking || null;
+  let currentMode = options.mode || null;
+  let currentTestEnv = options.testEnv || null;
+  let directAgent = options.agent || null;
+
+  let activeManifest = null;
+  let waitDelay = options.wait || '';
+  let waitTimer = null;
+  let chromePort = null;
+  let chromePanelId = null;
+
+  // ── Build run options from current config ──────────────────────
+  function buildRunOptions() {
+    const runOpts = {
+      ...options,
+      repoRoot: cwd,
+      stateRoot,
+      controllerCli,
+      workerCli,
+      controllerModel,
+      workerModel,
+      agents: allAgents,
+    };
+
+    // Apply thinking via env var
+    if (workerThinking) process.env.CLAUDE_CODE_EFFORT_LEVEL = workerThinking;
+    else delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+
+    // Apply mode
+    if (currentMode) {
+      const mode = allModes[currentMode];
+      if (mode) {
+        const env = currentTestEnv || 'browser';
+        if (mode.controllerPrompt) runOpts.controllerSystemPrompt = resolveByEnv(mode.controllerPrompt, env);
+        if (!mode.useController) directAgent = resolveByEnv(mode.defaultAgent, env);
+      }
     }
+
+    // Auto-inject MCPs
+    if (!options.noMcpInject) {
+      runOpts.workerMcpServers = mcpServersForRole('worker', { globalMcps: mcpData.global, projectMcps: mcpData.project, repoRoot: cwd });
+      runOpts.controllerMcpServers = mcpServersForRole('controller', { globalMcps: mcpData.global, projectMcps: mcpData.project, repoRoot: cwd });
+    }
+
+    return runOpts;
   }
 
-  /** Durably cancel the timer: null nextWakeAt and errorRetry in memory AND on disk. */
+  // ── Timer management ───────────────────────────────────────────
+  function stopWaitTimer() { if (waitTimer) { clearTimeout(waitTimer); waitTimer = null; } }
+
   function clearWaitTimer() {
     stopWaitTimer();
     if (activeManifest) {
@@ -92,11 +177,9 @@ async function runInteractiveShell(options = {}) {
     if (!activeManifest || activeManifest.status !== 'running') return;
     const delayMs = parseWaitDelay(waitDelay);
     if (!delayMs) return;
-
     const wakeAt = new Date(Date.now() + delayMs).toISOString();
     activeManifest.nextWakeAt = wakeAt;
     saveManifest(activeManifest).catch(() => {});
-
     renderer.banner(`Next auto-pass in ${formatWaitDelay(delayMs)} (at ${wakeAt.slice(11, 19)})`);
     waitTimer = setTimeout(async () => {
       waitTimer = null;
@@ -108,45 +191,24 @@ async function runInteractiveShell(options = {}) {
         await saveManifest(activeManifest);
         scheduleNextPass();
       } catch (error) {
-        if (!isAbortError(error)) {
-          renderer.banner(`Run error: ${summarizeError(error)}`);
-          scheduleErrorRetry();
-        } else {
-          renderer.banner('Run stopped by user.');
-        }
-      } finally {
-        renderer.close();
-      }
+        if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+        else renderer.banner('Run stopped by user.');
+      } finally { renderer.close(); }
     }, delayMs);
   }
 
-  async function runWithScheduling(manifest, renderer, loopOptions) {
-    const delayMs = parseWaitDelay(waitDelay);
-    if (!delayMs) {
-      // No delay — use existing full loop
-      return await runManagerLoop(manifest, renderer, loopOptions);
-    }
-    // With delay — run single pass, then schedule
-    const result = await runManagerLoop(manifest, renderer, { ...loopOptions, singlePass: true });
-    return result;
-  }
-
   function scheduleErrorRetry() {
-    stopWaitTimer(); // clear any existing in-memory timer
+    stopWaitTimer();
     if (!activeManifest) return;
-    // Accept both 'running' and 'interrupted' (genuine errors leave status='interrupted')
     if (activeManifest.status !== 'running' && activeManifest.status !== 'interrupted') return;
-
     const wakeAt = new Date(Date.now() + ERROR_RETRY_DELAY_MS).toISOString();
     activeManifest.nextWakeAt = wakeAt;
     activeManifest.errorRetry = true;
     saveManifest(activeManifest).catch(() => {});
-
     renderer.banner(`Error backoff: retrying in 30 min (at ${wakeAt.slice(11, 19)})`);
     waitTimer = setTimeout(async () => {
       waitTimer = null;
       if (!activeManifest) return;
-      // Reset status so runManagerLoop can proceed
       activeManifest.status = 'running';
       activeManifest.nextWakeAt = null;
       activeManifest.errorRetry = false;
@@ -156,196 +218,387 @@ async function runInteractiveShell(options = {}) {
         await saveManifest(activeManifest);
         scheduleNextPass();
       } catch (error) {
-        if (!isAbortError(error)) {
-          renderer.banner(`Run error: ${summarizeError(error)}`);
-          scheduleErrorRetry();
-        } else {
-          renderer.banner('Run stopped by user.');
-        }
-      } finally {
-        renderer.close();
-      }
+        if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+        else renderer.banner('Run stopped by user.');
+      } finally { renderer.close(); }
     }, ERROR_RETRY_DELAY_MS);
   }
 
-  renderer.banner('cc-manager interactive shell');
-  renderer.banner(`State root: ${stateRoot}`);
-  renderer.banner('Type /help for commands.');
+  async function runWithScheduling(manifest, renderer, loopOptions) {
+    const delayMs = parseWaitDelay(waitDelay);
+    if (!delayMs) return await runManagerLoop(manifest, renderer, loopOptions);
+    return await runManagerLoop(manifest, renderer, { ...loopOptions, singlePass: true });
+  }
+
+  // ── Execute a user message (new run or continue) ───────────────
+  async function executeMessage(message) {
+    clearWaitTimer();
+    try {
+      if (!activeManifest) {
+        const runOpts = buildRunOptions();
+
+        // Auto-start Chrome if the direct agent needs chrome-devtools MCP
+        if (directAgent && !chromePort && !options.noChrome) {
+          const agent = allAgents[directAgent];
+          if (agent && agent.mcps && (agent.mcps['chrome-devtools'] || agent.mcps['chrome_devtools'])) {
+            if (!agent.cli || !agent.cli.startsWith('qa-remote')) {
+              try {
+                const chromeManager = require('../extension/chrome-manager');
+                chromePanelId = 'cli-shell-' + Date.now();
+                const chromeResult = await chromeManager.ensureChrome(chromePanelId);
+                if (chromeResult && chromeResult.port) {
+                  chromePort = chromeResult.port;
+                  renderer.banner(`Chrome started on debug port ${chromePort}`);
+                }
+              } catch (e) { renderer.banner(`Warning: Could not start Chrome: ${e.message}`); }
+            }
+          }
+        }
+        if (chromePort) runOpts.chromeDebugPort = chromePort;
+
+        activeManifest = await prepareNewRun(message, runOpts);
+        if (chromePort) activeManifest.chromeDebugPort = chromePort;
+        renderer.requestStarted(activeManifest.runId);
+      }
+      if (directAgent) {
+        activeManifest = await runDirectWorkerTurn(activeManifest, renderer, { userMessage: message, agentId: directAgent });
+      } else {
+        activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage: message });
+      }
+      await saveManifest(activeManifest);
+      scheduleNextPass();
+    } catch (error) {
+      if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+      else renderer.banner('Run stopped by user.');
+    } finally { renderer.close(); }
+  }
+
+  // ── Tasks helpers ──────────────────────────────────────────────
+  function loadTasks() {
+    const tasksFile = path.join(cwd, '.cc-manager', 'tasks.json');
+    try { return JSON.parse(fs.readFileSync(tasksFile, 'utf8')); }
+    catch { return { nextId: 1, tasks: [] }; }
+  }
+
+  function saveTasks(data) {
+    const tasksFile = path.join(cwd, '.cc-manager', 'tasks.json');
+    fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
+    fs.writeFileSync(tasksFile, JSON.stringify(data, null, 2), 'utf8');
+  }
+
+  // ── Main loop ──────────────────────────────────────────────────
+  renderer.banner('cc-manager interactive session');
+  renderer.banner(`Repo root: ${cwd}`);
+  renderer.banner('Type /help for commands, or type a message to start.');
 
   try {
     while (true) {
       const prompt = renderer.userPrompt();
       let line;
-      try {
-        line = await rl.question(prompt);
-      } catch (error) {
-        if (error && error.code === 'ERR_USE_AFTER_CLOSE') {
-          break;
-        }
-        throw error;
-      }
+      try { line = await rl.question(prompt); }
+      catch (error) { if (error && error.code === 'ERR_USE_AFTER_CLOSE') break; throw error; }
       const trimmed = String(line || '').trim();
-      if (!trimmed) {
-        continue;
-      }
+      if (!trimmed) continue;
 
       if (trimmed.startsWith('/')) {
         const { command, rest } = parseCommand(trimmed);
-        if (command === '/quit' || command === '/exit') {
-          break;
-        }
-        if (command === '/help') {
-          printHelp(renderer);
+
+        if (command === '/quit' || command === '/exit') break;
+        if (command === '/help') { printHelp(renderer); continue; }
+
+        if (command === '/clear') {
+          clearWaitTimer();
+          activeManifest = null;
+          renderer.banner('Chat cleared.');
           continue;
         }
+
         if (command === '/detach') {
           clearWaitTimer();
           activeManifest = null;
           renderer.banner('Detached from the current run.');
           continue;
         }
+
         if (command === '/list') {
           const manifests = await listRunManifests(stateRoot);
-          if (manifests.length === 0) {
-            renderer.banner('No runs found.');
-          } else {
-            for (const manifest of manifests) {
-              renderer.banner(`${manifest.runId} | ${manifest.status} | ${manifest.transcriptSummary || ''}`);
-            }
-          }
+          if (manifests.length === 0) renderer.banner('No runs found.');
+          else for (const m of manifests) renderer.banner(`${m.runId} | ${m.status} | ${m.transcriptSummary || ''}`);
           continue;
         }
+
         if (command === '/resume' || command === '/use') {
-          if (!rest) {
-            renderer.banner('Usage: /resume <run-id>');
-            continue;
-          }
+          if (!rest) { renderer.banner('Usage: /resume <run-id>'); continue; }
           clearWaitTimer();
           const runDir = await resolveRunDir(rest, stateRoot);
           activeManifest = await loadManifestFromDir(runDir);
-          // Restore wait delay from manifest
-          if (activeManifest.waitDelay) {
-            waitDelay = activeManifest.waitDelay;
-            renderer.banner(`Wait delay restored: ${formatWaitDelay(parseWaitDelay(waitDelay))}`);
-          }
+          if (activeManifest.waitDelay) { waitDelay = activeManifest.waitDelay; renderer.banner(`Wait delay restored: ${formatWaitDelay(parseWaitDelay(waitDelay))}`); }
           renderer.requestStarted(activeManifest.runId);
-          // Restore pending timer if nextWakeAt is set and (wait is enabled or errorRetry is set)
-          // Accept 'interrupted' status for error retries (genuine errors leave status='interrupted')
-          const canRestore = activeManifest.status === 'running' || (activeManifest.errorRetry && activeManifest.status === 'interrupted');
-          if (activeManifest.nextWakeAt && canRestore && (parseWaitDelay(waitDelay) || activeManifest.errorRetry)) {
-            const remaining = new Date(activeManifest.nextWakeAt).getTime() - Date.now();
-            if (remaining > 0) {
-              renderer.banner(`Pending auto-pass at ${activeManifest.nextWakeAt.slice(11, 19)}`);
-              waitTimer = setTimeout(async () => {
-                waitTimer = null;
-                if (!activeManifest) return;
-                // Reset status so runManagerLoop can proceed
-                activeManifest.status = 'running';
-                activeManifest.nextWakeAt = null;
-                activeManifest.errorRetry = false;
-                renderer.banner('Auto-pass starting...');
-                try {
-                  activeManifest = await runManagerLoop(activeManifest, renderer, { singlePass: true });
-                  await saveManifest(activeManifest);
-                  scheduleNextPass();
-                } catch (error) {
-                  if (!isAbortError(error)) {
-                    renderer.banner(`Run error: ${summarizeError(error)}`);
-                    scheduleErrorRetry();
-                  } else {
-                    renderer.banner('Run stopped by user.');
-                  }
-                } finally {
-                  renderer.close();
-                }
-              }, remaining);
-            } else {
-              // Wake time already passed — run immediately
-              renderer.banner('Pending auto-pass overdue, starting now...');
-              activeManifest.status = 'running';
-              activeManifest.nextWakeAt = null;
-              activeManifest.errorRetry = false;
-              try {
-                activeManifest = await runManagerLoop(activeManifest, renderer, { singlePass: true });
-                await saveManifest(activeManifest);
-                scheduleNextPass();
-              } catch (error) {
-                if (!isAbortError(error)) {
-                  renderer.banner(`Run error: ${summarizeError(error)}`);
-                  scheduleErrorRetry();
-                } else {
-                  renderer.banner('Run stopped by user.');
-                }
-              } finally {
-                renderer.close();
-              }
-            }
-          }
           continue;
         }
+
         if (command === '/status') {
-          if (!activeManifest) {
-            renderer.banner('No run is attached.');
-            continue;
-          }
+          if (!activeManifest) { renderer.banner('No run is attached.'); continue; }
           await printRunSummary(activeManifest);
           continue;
         }
+
         if (command === '/logs') {
-          if (!activeManifest) {
-            renderer.banner('No run is attached.');
-            continue;
-          }
-          const tail = rest ? Number.parseInt(rest, 10) || 40 : 40;
-          await printEventTail(activeManifest, tail);
+          if (!activeManifest) { renderer.banner('No run is attached.'); continue; }
+          await printEventTail(activeManifest, rest ? Number.parseInt(rest, 10) || 40 : 40);
           continue;
         }
+
         if (command === '/run') {
-          if (!activeManifest) {
-            renderer.banner('No run is attached.');
-            continue;
-          }
+          if (!activeManifest) { renderer.banner('No run is attached.'); continue; }
           clearWaitTimer();
           try {
             activeManifest = await runWithScheduling(activeManifest, renderer, {});
             await saveManifest(activeManifest);
             scheduleNextPass();
           } catch (error) {
-            if (!isAbortError(error)) {
-              renderer.banner(`Run error: ${summarizeError(error)}`);
-              scheduleErrorRetry();
-            } else {
-              renderer.banner('Run stopped by user.');
-            }
-          } finally {
-            renderer.close();
-          }
+            if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+            else renderer.banner('Run stopped by user.');
+          } finally { renderer.close(); }
           continue;
         }
+
         if (command === '/new') {
+          if (!rest) { renderer.banner('Usage: /new <message>'); continue; }
+          clearWaitTimer();
+          activeManifest = null; // Force new run
+          await executeMessage(rest);
+          continue;
+        }
+
+        // ── Config commands ──────────────────────────────────────
+
+        if (command === '/config') {
+          const lines = [
+            `Mode: ${currentMode || 'none'}`,
+            `Test env: ${currentTestEnv || 'none'}`,
+            `Direct agent: ${directAgent || 'none (using controller)'}`,
+            `Controller CLI: ${controllerCli}`,
+            `Controller model: ${controllerModel || 'default'}`,
+            `Controller thinking: ${controllerThinking || 'default'}`,
+            `Worker CLI: ${workerCli}`,
+            `Worker model: ${workerModel || 'default'}`,
+            `Worker thinking: ${workerThinking || 'default'}`,
+            `Wait delay: ${waitDelay || 'none'}`,
+            `Run attached: ${activeManifest ? activeManifest.runId : 'no'}`,
+          ];
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        if (command === '/modes') {
+          const lines = ['Available modes:'];
+          for (const [id, mode] of Object.entries(allModes)) {
+            const ctrl = mode.useController ? 'controller' : 'direct';
+            const env = mode.requiresTestEnv ? ' (needs test-env)' : '';
+            const active = id === currentMode ? ' ← active' : '';
+            lines.push(`  ${id.padEnd(20)} ${(mode.name || '').padEnd(25)} ${ctrl}${env}${active}`);
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        if (command === '/mode') {
           if (!rest) {
-            renderer.banner('Usage: /new <message>');
+            renderer.banner(`Current mode: ${currentMode || 'none'}\nUse /mode <id> to select. Use /modes to list.`);
             continue;
           }
+          if (!allModes[rest]) { renderer.banner(`Unknown mode: ${rest}. Use /modes to list.`); continue; }
           clearWaitTimer();
-          activeManifest = await prepareNewRun(rest, { ...options, repoRoot: cwd, stateRoot });
-          renderer.requestStarted(activeManifest.runId);
-          try {
-            activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage: rest });
-            await saveManifest(activeManifest);
-            scheduleNextPass();
-          } catch (error) {
-            if (!isAbortError(error)) {
-              renderer.banner(`Run error: ${summarizeError(error)}`);
-              scheduleErrorRetry();
-            } else {
-              renderer.banner('Run stopped by user.');
-            }
-          } finally {
-            renderer.close();
+          activeManifest = null;
+          currentMode = rest;
+          const mode = allModes[rest];
+          if (mode.requiresTestEnv && !currentTestEnv) {
+            currentTestEnv = 'browser'; // default
+            renderer.banner(`Mode '${rest}' requires test environment. Defaulting to browser. Use /test-env computer to change.`);
+          }
+          if (!mode.useController) {
+            directAgent = resolveByEnv(mode.defaultAgent, currentTestEnv || 'browser');
+            renderer.banner(`Mode set to '${rest}' — direct to agent '${directAgent}'`);
+          } else {
+            directAgent = null;
+            renderer.banner(`Mode set to '${rest}' — using controller`);
           }
           continue;
         }
+
+        if (command === '/agents') {
+          const lines = ['Available agents:'];
+          for (const [id, agent] of Object.entries(allAgents)) {
+            const active = id === directAgent ? ' ← active' : '';
+            lines.push(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'claude'}${active}`);
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        if (command === '/agent') {
+          if (!rest) {
+            renderer.banner(`Current agent: ${directAgent || 'none (using controller)'}\nUse /agent <id> to switch. Use /agents to list.`);
+            continue;
+          }
+          if (rest === 'none' || rest === 'controller') {
+            directAgent = null;
+            renderer.banner('Switched to controller mode.');
+            continue;
+          }
+          if (!allAgents[rest]) { renderer.banner(`Unknown agent: ${rest}. Use /agents to list.`); continue; }
+          directAgent = rest;
+          renderer.banner(`Switched to direct agent: ${rest} (${allAgents[rest].name})`);
+          continue;
+        }
+
+        if (command === '/controller-cli') {
+          if (!rest) { renderer.banner(`Controller CLI: ${controllerCli}`); continue; }
+          controllerCli = rest;
+          if (activeManifest) { activeManifest.controller.cli = rest; activeManifest.controller.sessionId = null; }
+          renderer.banner(`Controller CLI set to: ${rest}`);
+          continue;
+        }
+
+        if (command === '/worker-cli') {
+          if (!rest) { renderer.banner(`Worker CLI: ${workerCli}`); continue; }
+          workerCli = rest;
+          renderer.banner(`Worker CLI set to: ${rest}`);
+          continue;
+        }
+
+        if (command === '/controller-model') {
+          if (!rest) { renderer.banner(`Controller model: ${controllerModel || 'default'}`); continue; }
+          controllerModel = rest === 'default' ? null : rest;
+          if (activeManifest) activeManifest.controller.model = controllerModel;
+          renderer.banner(`Controller model set to: ${controllerModel || 'default'}`);
+          continue;
+        }
+
+        if (command === '/worker-model') {
+          if (!rest) { renderer.banner(`Worker model: ${workerModel || 'default'}`); continue; }
+          workerModel = rest === 'default' ? null : rest;
+          if (activeManifest) activeManifest.worker.model = workerModel;
+          renderer.banner(`Worker model set to: ${workerModel || 'default'}`);
+          continue;
+        }
+
+        if (command === '/controller-thinking') {
+          if (!rest) { renderer.banner(`Controller thinking: ${controllerThinking || 'default'}`); continue; }
+          controllerThinking = rest === 'default' ? null : rest;
+          renderer.banner(`Controller thinking set to: ${controllerThinking || 'default'}`);
+          continue;
+        }
+
+        if (command === '/worker-thinking') {
+          if (!rest) { renderer.banner(`Worker thinking: ${workerThinking || 'default'}`); continue; }
+          workerThinking = rest === 'default' ? null : rest;
+          if (workerThinking) process.env.CLAUDE_CODE_EFFORT_LEVEL = workerThinking;
+          else delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+          renderer.banner(`Worker thinking set to: ${workerThinking || 'default'}`);
+          continue;
+        }
+
+        // ── Tasks commands ───────────────────────────────────────
+
+        if (command === '/tasks') {
+          const data = loadTasks();
+          if (!data.tasks || data.tasks.length === 0) { renderer.banner('No tasks.'); continue; }
+          const byStatus = {};
+          for (const t of data.tasks) { (byStatus[t.status] = byStatus[t.status] || []).push(t); }
+          const lines = [];
+          for (const [status, tasks] of Object.entries(byStatus)) {
+            lines.push(`\n  ${status.toUpperCase()}`);
+            for (const t of tasks) lines.push(`    ${t.id} — ${t.title}`);
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        if (command === '/task') {
+          if (!rest) { renderer.banner('Usage: /task <id> or /task add <title> or /task done <id>'); continue; }
+          const parts = rest.split(' ');
+          if (parts[0] === 'add') {
+            const title = parts.slice(1).join(' ');
+            if (!title) { renderer.banner('Usage: /task add <title>'); continue; }
+            const data = loadTasks();
+            const id = 'task-' + (data.nextId || 1);
+            data.nextId = (data.nextId || 1) + 1;
+            data.tasks.push({ id, title, description: '', detail_text: '', status: 'todo', comments: [], progress_updates: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+            saveTasks(data);
+            renderer.banner(`Created: ${id} — ${title}`);
+            continue;
+          }
+          if (parts[0] === 'done') {
+            const taskId = parts[1];
+            if (!taskId) { renderer.banner('Usage: /task done <id>'); continue; }
+            const data = loadTasks();
+            const task = data.tasks.find(t => t.id === taskId);
+            if (!task) { renderer.banner(`Task not found: ${taskId}`); continue; }
+            task.status = 'done';
+            task.updated_at = new Date().toISOString();
+            saveTasks(data);
+            renderer.banner(`Marked done: ${taskId}`);
+            continue;
+          }
+          if (parts[0] === 'status') {
+            const taskId = parts[1];
+            const newStatus = parts[2];
+            if (!taskId || !newStatus) { renderer.banner('Usage: /task status <id> <status>'); continue; }
+            const data = loadTasks();
+            const task = data.tasks.find(t => t.id === taskId);
+            if (!task) { renderer.banner(`Task not found: ${taskId}`); continue; }
+            task.status = newStatus;
+            task.updated_at = new Date().toISOString();
+            saveTasks(data);
+            renderer.banner(`${taskId} status → ${newStatus}`);
+            continue;
+          }
+          // Show task detail
+          const data = loadTasks();
+          const task = data.tasks.find(t => t.id === parts[0]);
+          if (!task) { renderer.banner(`Task not found: ${parts[0]}`); continue; }
+          const lines = [`${task.id} — ${task.title}`, `Status: ${task.status}`, `Description: ${task.description || '(none)'}`, `Detail: ${task.detail_text || '(none)'}`, `Created: ${task.created_at}`, `Updated: ${task.updated_at}`];
+          if (task.comments && task.comments.length > 0) {
+            lines.push(`\nComments:`);
+            for (const c of task.comments) lines.push(`  [${c.author || 'anon'}] ${c.text}`);
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        // ── Instances / MCP ──────────────────────────────────────
+
+        if (command === '/instances') {
+          try {
+            const { listInstances } = require('./remote-desktop');
+            const instances = await listInstances(null, cwd);
+            if (instances.length === 0) { renderer.banner('No Docker instances running.'); continue; }
+            const lines = ['Docker Instances:'];
+            for (const inst of instances) {
+              lines.push(`  ${inst.name.padEnd(30)} API:${inst.api_port} VNC:${inst.vnc_port} noVNC:${inst.novnc_port} ${inst.status}`);
+            }
+            renderer.banner(lines.join('\n'));
+          } catch { renderer.banner('Could not list instances.'); }
+          continue;
+        }
+
+        if (command === '/mcp') {
+          const lines = ['MCP Servers:'];
+          const all = { ...mcpData.global, ...mcpData.project };
+          if (Object.keys(all).length === 0) { lines.push('  (none configured)'); }
+          for (const [name, server] of Object.entries(all)) {
+            const target = server.target || 'both';
+            const type = server.url ? 'http' : 'stdio';
+            lines.push(`  ${name.padEnd(25)} ${type.padEnd(6)} target: ${target}`);
+          }
+          lines.push('\nAuto-injected: detached-command, cc-tasks');
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        // ── Wait command ─────────────────────────────────────────
 
         if (command === '/wait') {
           if (!rest) {
@@ -356,101 +609,56 @@ async function runInteractiveShell(options = {}) {
           }
           const val = rest === 'none' || rest === 'off' || rest === '0' ? '' : rest;
           const ms = parseWaitDelay(val);
-          if (val && !ms) {
-            renderer.banner(`Unknown delay: ${rest}. Use /wait for options.`);
-            continue;
-          }
+          if (val && !ms) { renderer.banner(`Unknown delay: ${rest}. Use /wait for options.`); continue; }
           waitDelay = val;
           if (activeManifest) {
             activeManifest.waitDelay = val || null;
-            // Reschedule or clear active timer (persists nextWakeAt)
-            if (val && activeManifest.status === 'running') {
-              scheduleNextPass();
-            } else {
-              clearWaitTimer();
-            }
+            if (val && activeManifest.status === 'running') scheduleNextPass();
+            else clearWaitTimer();
           }
           renderer.banner(`Wait delay set to: ${val ? formatWaitDelay(ms) : 'none'}`);
           continue;
         }
 
+        // ── Workflow command ─────────────────────────────────────
+
         if (command === '/workflow') {
           const workflows = loadWorkflows(cwd);
           if (!rest) {
             if (workflows.length === 0) {
-              renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/\nEach must contain a WORKFLOW.md with YAML frontmatter (name, description).');
+              renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/');
             } else {
               const lines = ['Available workflows:'];
-              for (const wf of workflows) {
-                lines.push(`  ${wf.name} — ${wf.description}`);
-              }
+              for (const wf of workflows) lines.push(`  ${wf.name} — ${wf.description}`);
               renderer.banner(lines.join('\n'));
             }
             continue;
           }
           const wf = workflows.find(w => w.name === rest);
-          if (!wf) {
-            renderer.banner(`Workflow "${rest}" not found. Use /workflow to list available workflows.`);
-            continue;
-          }
+          if (!wf) { renderer.banner(`Workflow "${rest}" not found.`); continue; }
           let content;
-          try {
-            content = fs.readFileSync(wf.path, 'utf8').trim();
-          } catch (err) {
-            renderer.banner(`Failed to read workflow file: ${err.message}`);
-            continue;
-          }
+          try { content = fs.readFileSync(wf.path, 'utf8').trim(); }
+          catch (err) { renderer.banner(`Failed to read workflow: ${err.message}`); continue; }
           const message = `Run the workflow "${wf.name}". Read the full instructions at: ${wf.path}\n\nWorkflow summary: ${wf.description}\n\nFull workflow instructions:\n${content}`;
-          clearWaitTimer();
-          try {
-            if (!activeManifest) {
-              activeManifest = await prepareNewRun(message, { ...options, repoRoot: cwd, stateRoot });
-            }
-            activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage: message });
-            await saveManifest(activeManifest);
-            scheduleNextPass();
-          } catch (error) {
-            if (!isAbortError(error)) {
-              renderer.banner(`Run error: ${summarizeError(error)}`);
-              scheduleErrorRetry();
-            } else {
-              renderer.banner('Run stopped by user.');
-            }
-          } finally {
-            renderer.close();
-          }
+          await executeMessage(message);
           continue;
         }
 
-        renderer.banner(`Unknown command: ${command}`);
+        renderer.banner(`Unknown command: ${command}. Type /help for commands.`);
         continue;
       }
 
-      clearWaitTimer();
-      try {
-        if (!activeManifest) {
-          activeManifest = await prepareNewRun(trimmed, { ...options, repoRoot: cwd, stateRoot });
-        }
-        activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage: trimmed });
-        await saveManifest(activeManifest);
-        scheduleNextPass();
-      } catch (error) {
-        if (!isAbortError(error)) {
-          renderer.banner(`Run error: ${summarizeError(error)}`);
-          scheduleErrorRetry();
-        } else {
-          renderer.banner('Run stopped by user.');
-        }
-      } finally {
-        renderer.close();
-      }
+      // Plain text → execute as message
+      await executeMessage(trimmed);
     }
   } finally {
     stopWaitTimer();
+    // Cleanup Chrome if we started it
+    if (chromePanelId) {
+      try { require('../extension/chrome-manager').killChrome(chromePanelId); } catch {}
+    }
     rl.close();
   }
 }
 
-module.exports = {
-  runInteractiveShell,
-};
+module.exports = { runInteractiveShell };
