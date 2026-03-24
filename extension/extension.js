@@ -291,6 +291,8 @@ async function handleInstanceMessage(msg, repoRoot, panelId, postFn, extensionPa
   }
   if (msg.type === 'instanceStop') {
     await stopInstance(msg.name);
+    // Notify webview to clear VNC if this was the linked instance
+    try { postFn({ type: 'desktopGone' }); } catch {}
     return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceRestart') {
@@ -302,6 +304,8 @@ async function handleInstanceMessage(msg, repoRoot, panelId, postFn, extensionPa
     for (const inst of current) {
       await stopInstance(inst.name);
     }
+    // Notify webview to clear VNC
+    try { postFn({ type: 'desktopGone' }); } catch {}
     return _instancesData(repoRoot, panelId, {}, aid);
   }
   if (msg.type === 'instanceRestartAll') {

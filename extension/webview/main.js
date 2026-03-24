@@ -1002,6 +1002,20 @@
     updateModeIndicator();
   }
 
+  /**
+   * Check if the currently active agent runs inside a Docker container.
+   * Remote agents (qa-remote-*) → VNC widget. Local agents (claude/codex) → Chrome widget.
+   */
+  function _isCurrentAgentRemote() {
+    const target = cfgChatTarget ? cfgChatTarget.value : 'controller';
+    if (!target.startsWith('agent-')) return false;
+    const agentId = target.slice('agent-'.length);
+    const allAgents = { ...agentsSystem, ...agentsGlobal, ...agentsProject };
+    const agent = allAgents[agentId];
+    if (!agent || !agent.cli) return false;
+    return agent.cli.startsWith('qa-remote');
+  }
+
   function getAllEnabledModes() {
     const all = { ...modesSystem, ...modesGlobal, ...modesProject };
     const result = {};
@@ -1280,6 +1294,10 @@
     banner.onclick = () => {
       setupInProgress = false;
       banner.style.display = 'none';
+      // Clear chat — we're switching from setup agent to the actual agent (different session)
+      vscode.postMessage({ type: 'userInput', text: '/clear' });
+      messagesEl.innerHTML = '';
+      messageLog = [];
       applyMode(modeId, env);
     };
   }
@@ -2818,12 +2836,13 @@
     toolCall(msg) {
       streamingEntry = null;
       addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call');
-      if (msg.isComputerUse && novncPort && !splitVncWrapper) {
-        showSplitVnc();
-      }
-      // Chrome split for local agents (no VNC, but chromePort available)
-      if (msg.isChromeDevtools && chromePort && !splitChromeWrapper && !novncPort) {
-        showSplitChrome();
+      // Show the correct widget based on the active agent's CLI backend
+      if (msg.isComputerUse || msg.isChromeDevtools) {
+        if (_isCurrentAgentRemote() && novncPort && !splitVncWrapper) {
+          showSplitVnc();
+        } else if (!_isCurrentAgentRemote() && chromePort && !splitChromeWrapper) {
+          showSplitChrome();
+        }
       }
       maybeShowThinking();
     },
@@ -3015,7 +3034,7 @@
 
     chromeReady(msg) {
       chromePort = msg.chromePort || null;
-      // Don't show nav/frame yet — wait for first chromeFrame
+      updateBrowserTab();
       saveState();
     },
 
