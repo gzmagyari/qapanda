@@ -4,7 +4,9 @@
       "Read(//c/xampp/htdocs/QAAgentDesktop/**)",
       "Bash(qa-desktop snapshot-exists:*)",
       "Bash(docker exec:*)",
-      "Bash(node \"C:/Users/Server/Desktop/test-claude-interactive.js\")"
+      "Bash(node \"C:/Users/Server/Desktop/test-claude-interactive.js\")",
+      "Bash(node --test tests/unit/*.test.js tests/crud/*.test.js tests/live/mcp-injection.test.js tests/live/agent-delegation.test.js tests/live/modes.test.js tests/live/mcp-qa-desktop.test.js tests/live/full-flows.test.js tests/live/remote-agent.test.js tests/live/direct-agent.test.js)",
+      "Bash(node --test tests/*.test.js)"
     ]
   }
 }
