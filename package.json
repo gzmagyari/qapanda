@@ -16,6 +16,7 @@
     "test:live:browser": "node --test tests/live/browser-*.test.js",
     "test:live:desktop": "node --test tests/live/desktop-*.test.js tests/live/remote-*.test.js",
     "test:live:flows": "node --test tests/live/full-flows.test.js",
+    "test:ui": "node --test tests/ui/*.test.js",
     "test:all": "node tests/run-all.js",
     "test:cleanup": "node tests/cleanup.js",
     "ext:copy-src": "node -e \"const fs=require('fs');const p=require('path');function cp(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=p.join(s,e.name),dp=p.join(d,e.name);e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}}cp('src','extension/src');const cd='extension/claude-parser';fs.mkdirSync(cd,{recursive:true});for(const f of['index.js','parse-stream.js','package.json'])fs.copyFileSync(p.join('claude-parser',f),p.join(cd,f));cp('qa-desktop','extension/qa-desktop')\"",
@@ -26,5 +27,8 @@
   "engines": {
     "node": ">=18.17"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jsdom": "^29.0.1"
+  }
 }

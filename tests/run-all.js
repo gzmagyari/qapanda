@@ -13,7 +13,7 @@ const logFile = path.join(__dirname, 'last-run.log');
 console.log('Running all tests...\n');
 let testExitCode = 0;
 try {
-  execSync('node --test tests/unit/*.test.js tests/crud/*.test.js tests/live/*.test.js', {
+  execSync('node --test tests/unit/*.test.js tests/crud/*.test.js tests/ui/*.test.js tests/live/*.test.js', {
     cwd: path.join(__dirname, '..'),
     stdio: ['inherit', fs.openSync(logFile, 'w'), fs.openSync(logFile, 'a')],
     timeout: 600000,
