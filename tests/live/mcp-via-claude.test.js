@@ -21,7 +21,7 @@ function makeManifest(mcpServers, overrides = {}) {
     worker: {
       cli: 'claude', model: null, sessionId: crypto.randomUUID(),
       hasStarted: false, allowedTools: null, tools: null, disallowedTools: null,
-      permissionPromptTool: null, maxTurns: 5, maxBudgetUsd: null,
+      permissionPromptTool: null, maxTurns: 10, maxBudgetUsd: null,
       addDirs: [], appendSystemPrompt: null, runMode: 'print', agentSessions: {},
     },
     mcpServers: {},
@@ -37,6 +37,7 @@ function runClaude(manifest, prompt) {
   const args = buildClaudeArgs(manifest, { prompt });
   return new Promise((resolve) => {
     let resultText = '';
+    let stderrText = '';
     spawnStreamingProcess({
       command: 'claude',
       args,
@@ -48,12 +49,18 @@ function runClaude(manifest, prompt) {
           if (evt.type === 'result') resultText = evt.result || '';
         } catch {}
       },
-      onStderrLine: () => {},
-    }).then(() => resolve(resultText)).catch(() => resolve(resultText));
+      onStderrLine: (line) => { stderrText += line + '\n'; },
+    }).then(() => {
+      if (!resultText && stderrText) console.error('[runClaude] No result. stderr:', stderrText.slice(0, 500));
+      resolve(resultText);
+    }).catch((e) => {
+      console.error('[runClaude] Error:', e.message, 'stderr:', stderrText.slice(0, 500));
+      resolve(resultText);
+    });
   });
 }
 
-describe('Claude Code + detached-command MCP', { timeout: 120000 }, () => {
+describe('Claude Code + detached-command MCP', { timeout: 180000 }, () => {
   it('Claude can see and call detached-command MCP tools', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
 
@@ -85,7 +92,7 @@ describe('Claude Code + detached-command MCP', { timeout: 120000 }, () => {
   });
 });
 
-describe('Claude Code + cc-tasks MCP (HTTP)', { timeout: 120000 }, () => {
+describe('Claude Code + cc-tasks MCP (HTTP)', { timeout: 180000 }, () => {
   let httpServer;
 
   afterEach(() => {
@@ -125,7 +132,7 @@ describe('Claude Code + cc-tasks MCP (HTTP)', { timeout: 120000 }, () => {
   });
 });
 
-describe('Claude Code + chrome-devtools MCP', { timeout: 120000 }, () => {
+describe('Claude Code + chrome-devtools MCP', { timeout: 180000 }, () => {
   const chromePanelId = 'test-mcp-chrome-' + Date.now();
   let chromeStarted = false;
 

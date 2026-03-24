@@ -249,7 +249,7 @@ async function _instancesData(repoRoot, panelId, extra = {}, actionId = undefine
   return { type: 'instancesData', instances, panelId, useSnapshot: cfg.useSnapshot !== false, snapshotExists: snap.exists, snapshotTag: snap.tag, _actionId: actionId, ...extra };
 }
 
-async function handleInstanceMessage(msg, repoRoot, panelId, postFn) {
+async function handleInstanceMessage(msg, repoRoot, panelId, postFn, extensionPath) {
   const aid = msg._actionId;
   if (msg.type === 'instancesLoad') {
     return _instancesData(repoRoot, panelId, {}, aid);
@@ -266,9 +266,10 @@ async function handleInstanceMessage(msg, repoRoot, panelId, postFn) {
   }
   if (msg.type === 'instanceSnapshot') {
     const safePath = repoRoot.replace(/\\/g, '/');
-    const { exec } = require('node:child_process');
+    const { execFile } = require('node:child_process');
+    const qaCliPath = path.join(extensionPath, 'qa-desktop', 'cli.js');
     await new Promise((resolve) => {
-      exec(`qa-desktop snapshot "${msg.name}" --workspace "${safePath}" --json`, { timeout: 600000 }, (err, stdout, stderr) => {
+      execFile('node', [qaCliPath, 'snapshot', msg.name, '--workspace', safePath, '--json'], { timeout: 600000 }, (err, stdout, stderr) => {
         if (err) console.error('[instance] snapshot failed:', stderr);
         resolve();
       });
@@ -277,10 +278,11 @@ async function handleInstanceMessage(msg, repoRoot, panelId, postFn) {
   }
   if (msg.type === 'instanceSnapshotDelete') {
     const safePath = repoRoot.replace(/\\/g, '/');
-    const { exec } = require('node:child_process');
+    const { execFile } = require('node:child_process');
+    const qaCliPath = path.join(extensionPath, 'qa-desktop', 'cli.js');
     await new Promise((resolve) => {
       const instName = msg.name === '_workspace_' ? 'workspace' : msg.name;
-      exec(`qa-desktop snapshot-delete "${instName}" --workspace "${safePath}" --json`, { timeout: 30000 }, (err, stdout, stderr) => {
+      execFile('node', [qaCliPath, 'snapshot-delete', instName, '--workspace', safePath, '--json'], { timeout: 30000 }, (err, stdout, stderr) => {
         if (err) console.error('[instance] snapshot-delete failed:', stderr);
         resolve();
       });
@@ -789,7 +791,7 @@ function activate(context) {
         // Instance management messages (async)
         let instanceReply;
         try {
-          instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} });
+          instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} }, extensionPath1);
         } catch (err) {
           console.error('[instance] handler error:', err);
           instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));
@@ -928,7 +930,7 @@ function activate(context) {
           // Instance management messages (async)
           let instanceReply;
           try {
-            instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} });
+            instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} }, extensionPath2);
           } catch (err) {
             console.error('[instance] handler error:', err);
             instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));

@@ -1,0 +1,15 @@
+{
+  "name": "qa-desktop",
+  "version": "0.1.0",
+  "description": "Node.js replacement for qa-desktop/qa-remote-claude/qa-remote-codex Python CLIs",
+  "private": true,
+  "main": "cli.js",
+  "bin": {
+    "qa-desktop": "./cli.js",
+    "qa-remote-claude": "./proxy.js",
+    "qa-remote-codex": "./proxy.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}

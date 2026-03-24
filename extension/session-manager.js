@@ -83,6 +83,11 @@ class SessionManager {
     this._workerCli = init.workerCli || 'claude';
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
+    // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
+    try {
+      const { setQaDesktopPath } = require('./src/remote-desktop');
+      if (this._extensionPath) setQaDesktopPath(path.join(this._extensionPath, 'qa-desktop'));
+    } catch {}
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js

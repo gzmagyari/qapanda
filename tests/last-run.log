@@ -1,0 +1,879 @@
+▶ agents-store CRUD
+  ✔ loadAgentsFile returns empty object for missing file (2.9372ms)
+  ✔ saveAgentsFile creates directories and writes JSON (14.4656ms)
+  ✔ loadAgentsFile reads saved data (12.5025ms)
+  ✔ loadSystemAgents loads bundled agents from extension dir (3.6757ms)
+  ✔ loadSystemAgents applies user override (4.9886ms)
+  ✔ loadMergedAgents merges system + global + project (15.7554ms)
+  ✔ enabledAgents filters disabled agents (1.695ms)
+  ✔ enabledAgents: project overrides system on same key (1.7794ms)
+  ✔ save then load roundtrip preserves data (14.0529ms)
+✔ agents-store CRUD (73.434ms)
+▶ MCP server config CRUD
+  ✔ loads empty object for missing file (3.2164ms)
+  ✔ saves and loads MCP server config (13.351ms)
+  ✔ adds a new MCP server (4.7878ms)
+  ✔ edits an existing MCP server (15.4762ms)
+  ✔ toggles MCP server target (25.526ms)
+  ✔ deletes an MCP server (14.9424ms)
+  ✔ merges global + project (project wins on collision) (15.0257ms)
+  ✔ HTTP MCP server config (14.1374ms)
+  ✔ MCP server with env vars (4.4884ms)
+✔ MCP server config CRUD (112.8345ms)
+▶ modes-store CRUD
+  ✔ loadModesFile returns empty object for missing file (3.0144ms)
+  ✔ saveModesFile creates directories and writes JSON (4.3416ms)
+  ✔ loadSystemModes loads bundled modes from extension dir (2.3911ms)
+  ✔ system modes have required fields (1.9727ms)
+  ✔ loadMergedModes merges system + global + project (7.7308ms)
+  ✔ enabledModes filters disabled modes (1.6671ms)
+  ✔ enabledModes: project overrides system (1.8177ms)
+  ✔ save then load roundtrip (3.3927ms)
+✔ modes-store CRUD (27.6293ms)
+▶ tasks data CRUD
+  ✔ loads default data for missing file (3.191ms)
+  ✔ creates a task (15.8092ms)
+  ✔ creates multiple tasks with incrementing IDs (15.4825ms)
+  ✔ creates task with custom status (2.535ms)
+  ✔ defaults invalid status to todo (2.8972ms)
+  ✔ updates task status (11.9285ms)
+  ✔ updates task fields (12.4036ms)
+  ✔ adds comment to task (17.7927ms)
+  ✔ adds multiple comments (12.6091ms)
+  ✔ deletes a task (13.1758ms)
+  ✔ handles empty tasks array (14.7388ms)
+  ✔ all valid statuses are accepted (2.5036ms)
+  ✔ task has timestamps (2.1268ms)
+✔ tasks data CRUD (129.1072ms)
+▶ Abort/cancel propagation
+  ✔ abortSignal terminates a long-running process (526.0796ms)
+  ✔ abortSignal works when already aborted (21.5118ms)
+  ✔ process without abort runs to completion (104.0635ms)
+✔ Abort/cancel propagation (653.0793ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"Developer","description":"Software developer who writes and modifies code","system_prompt":"You are a software developer. Your job is to write clean, correct code based on the instructions you receive.\n\n## Guidelines\n\n- Read the existing codebase before making changes\n- Follow existing patterns, naming conventions, and code style\n- Make focused, minimal changes — don't refactor code you weren't asked to change\n- Test your changes if possible (run existing tests, check for errors)\n- If you're unsure about something, read more code rather than guessing\n- Commit messages should be clear and describe what changed and why\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.","mcps":{},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --system-prompt You are a software developer. Your job is to write clean, correct code based on the instructions you receive.
+
+## Guidelines
+
+- Read the existing codebase before making changes
+- Follow existing patterns, naming conventions, and code style
+- Make focused, minimal changes — don't refactor code you weren't asked to change
+- Test your changes if possible (run existing tests, check for errors)
+- If you're unsure about something, read more code rather than guessing
+- Commit messages should be clear and describe what changed and why
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"QA Engineer (Browser)","description":"QA engineer who can test web applications using a local headless Chrome browser","system_prompt":"You are a QA Engineer testing web applications using a local headless Chrome browser.\n\nEnvironment facts:\n- You are running locally on the host machine (not inside a container)\n- You have access to Chrome DevTools MCP tools for browser automation\n- The browser is a headless Chrome instance managed by the extension — you can navigate, click, type, take screenshots, and interact with web pages\n- Your workspace is the currently open project directory\n\n## IMPORTANT: Browser tab rules\n\n- **NEVER open new tabs** with `new_page`. Always use `navigate_page` to navigate within the existing tab.\n- If a page is already open, use `navigate_page` to go to a different URL.\n- The browser starts with a page already open — use `list_pages` to see it and `select_page` if needed, then `navigate_page` to go where you need.\n\n## Chrome DevTools MCP tools\n\nYou have access to Chrome DevTools Protocol tools that let you:\n- Navigate to URLs\n- Click elements, type text, scroll\n- Take screenshots of the page\n- Read page content and DOM elements\n- Execute JavaScript in the page context\n- Monitor network requests and console output\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.\n\n## Testing workflow\n\n1. **Understand what to test** — read the task carefully and identify the pages/flows to verify\n2. **Navigate to the app** — use `navigate_page` to go to the app URL (e.g. `http://localhost:3000`)\n3. **Take a screenshot first** — always capture the initial state before interacting\n4. **Interact and verify** — click buttons, fill forms, navigate between pages\n5. **Screenshot after each step** — capture the result of each meaningful action\n6. **Report findings** — clearly describe what worked, what failed, and include screenshot evidence\n\n## Visual confirmation rules\n\n1. Take a screenshot before the first UI action\n2. Take a screenshot after each meaningful UI change\n3. Do not claim success unless you have a final screenshot showing the expected end state\n4. Explicitly reference the screenshots you used to verify each result\n5. If a test fails, take a screenshot of the failure state and describe what went wrong","mcps":{"chrome-devtools":{"command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:{CHROME_DEBUG_PORT}","--viewport=1280x720"],"env":{}}},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:9222","--viewport=1280x720"],"env":{}}}} --no-chrome --system-prompt You are a QA Engineer testing web applications using a local headless Chrome browser.
+
+Environment facts:
+- You are running locally on the host machine (not inside a container)
+- You have access to Chrome DevTools MCP tools for browser automation
+- The browser is a headless Chrome instance managed by the extension — you can navigate, click, type, take screenshots, and interact with web pages
+- Your workspace is the currently open project directory
+
+## IMPORTANT: Browser tab rules
+
+- **NEVER open new tabs** with `new_page`. Always use `navigate_page` to navigate within the existing tab.
+- If a page is already open, use `navigate_page` to go to a different URL.
+- The browser starts with a page already open — use `list_pages` to see it and `select_page` if needed, then `navigate_page` to go where you need.
+
+## Chrome DevTools MCP tools
+
+You have access to Chrome DevTools Protocol tools that let you:
+- Navigate to URLs
+- Click elements, type text, scroll
+- Take screenshots of the page
+- Read page content and DOM elements
+- Execute JavaScript in the page context
+- Monitor network requests and console output
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+
+## Testing workflow
+
+1. **Understand what to test** — read the task carefully and identify the pages/flows to verify
+2. **Navigate to the app** — use `navigate_page` to go to the app URL (e.g. `http://localhost:3000`)
+3. **Take a screenshot first** — always capture the initial state before interacting
+4. **Interact and verify** — click buttons, fill forms, navigate between pages
+5. **Screenshot after each step** — capture the result of each meaningful action
+6. **Report findings** — clearly describe what worked, what failed, and include screenshot evidence
+
+## Visual confirmation rules
+
+1. Take a screenshot before the first UI action
+2. Take a screenshot after each meaningful UI change
+3. Do not claim success unless you have a final screenshot showing the expected end state
+4. Explicitly reference the screenshots you used to verify each result
+5. If a test fails, take a screenshot of the failure state and describe what went wrong
+▶ agent delegation
+  ✔ dev agent resolves correctly (0.7741ms)
+  ✔ QA agent resolves correctly (0.1573ms)
+  ✔ QA-Browser agent resolves correctly (0.127ms)
+  ✔ agent lookup is case-insensitive (0.153ms)
+  ✔ buildClaudeArgs uses agent system prompt via --system-prompt (0.9796ms)
+  ✔ QA-Browser agent includes chrome-devtools in MCP config (0.4023ms)
+  ✔ per-agent sessions are tracked independently (0.1908ms)
+  ✔ setup agents exist for each env (0.1717ms)
+✔ agent delegation (4.0917ms)
+[chrome-manager] Chrome killed for panel test-pan
+▶ Browser testing - Chrome lifecycle
+  ✔ starts headless Chrome and gets a debug port (1690.1031ms)
+[chrome-manager] Chrome killed for panel test-pan
+  ✔ Chrome debug endpoint responds (3134.6252ms)
+[chrome-manager] Chrome killed for panel test-pan
+  ✔ getChromePort returns port for running instance (1605.992ms)
+  ✔ getChromePort returns null for unknown panel (0.7314ms)
+[chrome-manager] Chrome killed for panel test-pan
+  ✔ killChrome stops the instance (1706.3713ms)
+✔ Browser testing - Chrome lifecycle (8139.5531ms)
+[chrome-manager] Chrome killed for panel test-cdp
+▶ Chrome CDP interaction
+  ✔ can list pages via CDP /json endpoint (2174.3272ms)
+[chrome-manager] Chrome killed for panel test-cdp
+  ✔ can navigate via CDP /json endpoint (2034.5903ms)
+✔ Chrome CDP interaction (4209.4154ms)
+[chrome-manager] Chrome killed for panel test-scr
+▶ Chrome screencast
+  ✔ startScreencast delivers frame data (4576.608ms)
+✔ Chrome screencast (4576.9379ms)
+(node:51512) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"You are a controller. Always respond with valid JSON containing action, controller_messages, and claude_message fields.","mcps":{}} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id dd333b73-cd8c-4253-a53d-35250a8c4b0f --max-turns 1 --system-prompt You are a controller. Always respond with valid JSON containing action, controller_messages, and claude_message fields.
+▶ Claude Code as controller (live)
+  ✔ can produce structured JSON output when prompted (6265.3109ms)
+✔ Claude Code as controller (live) (6266.5065ms)
+(node:22012) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id d16012fd-63d4-4a2b-ba7c-9777d0d1780b --max-turns 1 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Claude Code as worker (live)
+  ✔ responds to a simple prompt (6138.2848ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id a40aae71-4087-42c0-8f22-42eee403b85d --max-turns 1 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+  ✔ returns a session ID (4761.6841ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 56a49325-0e38-44ae-98a8-0c6679f67761 --max-turns 1 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+  ✔ streams content_block_delta events (10733.6763ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id b5ce4063-c170-4432-8d5b-54b55a9be6ef --max-turns 1 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --resume b5ce4063-c170-4432-8d5b-54b55a9be6ef --max-turns 1 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+  ✔ resumes session and maintains context across turns (9145.9261ms)
+✔ Claude Code as worker (live) (30781.0684ms)
+(node:59248) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Codex as controller (live)
+  ✔ produces a valid JSON decision (7108.4623ms)
+✔ Codex as controller (live) (7109.6791ms)
+(node:27396) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Codex as worker (live)
+  ✔ responds to a simple prompt (9570.6339ms)
+✔ Codex as worker (live) (9572.0419ms)
+▶ Config mid-session switching
+  ✔ applyConfig changes controller model (4.3773ms)
+  ✔ applyConfig changes worker model (2.8315ms)
+  ✔ applyConfig changes chat target (2.407ms)
+  ✔ applyConfig changes chat target back to controller (1.789ms)
+  ✔ applyConfig changes worker thinking (1.742ms)
+  ✔ applyConfig changes controller thinking (2.1071ms)
+  ✔ applyConfig posts syncConfig message (2.139ms)
+  ✔ applyConfig with mode sets currentMode (1.9274ms)
+  ✔ applyConfig with mode + testEnv sets both (2.0377ms)
+✔ Config mid-session switching (23.0238ms)
+(node:24676) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Desktop testing - Docker container lifecycle
+  ✔ isRemoteCli detects remote CLIs (2.7457ms)
+[remote-desktop] Container 'cc-test-cxafyk-8b5d7492' starting, waiting for API on port 58788...
+[remote-desktop] Container 'cc-test-cxafyk-8b5d7492' ready on API port 58788
+  ✔ ensureDesktop starts a container (13864.2004ms)
+[remote-desktop] Container 'cc-test-1wwcxw-ac74f343' starting, waiting for API on port 56629...
+[remote-desktop] Container 'cc-test-1wwcxw-ac74f343' ready on API port 56629
+  ✔ container health endpoint responds (8346.0824ms)
+[remote-desktop] Container 'cc-test-tr91xm-58c45c82' starting, waiting for API on port 55295...
+[remote-desktop] Container 'cc-test-tr91xm-58c45c82' ready on API port 55295
+  ✔ listInstances shows running containers (7312.7794ms)
+[remote-desktop] Container 'cc-test-ja8lhu-eeac4a7f' starting, waiting for API on port 55379...
+[remote-desktop] Container 'cc-test-ja8lhu-eeac4a7f' ready on API port 55379
+  ✔ stopInstance stops the container (7035.2982ms)
+  ✔ getSnapshotExists checks for snapshots (200.1849ms)
+[remote-desktop] Container 'cc-test-ijnj9h-3965491a' starting, waiting for API on port 53954...
+[remote-desktop] Container 'cc-test-ijnj9h-3965491a' ready on API port 53954
+  ✔ noVNC port is accessible after container start (5956.3421ms)
+✔ Desktop testing - Docker container lifecycle (42719.2082ms)
+(node:32172) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"Developer","description":"Software developer who writes and modifies code","system_prompt":"You are a software developer. Your job is to write clean, correct code based on the instructions you receive.\n\n## Guidelines\n\n- Read the existing codebase before making changes\n- Follow existing patterns, naming conventions, and code style\n- Make focused, minimal changes — don't refactor code you weren't asked to change\n- Test your changes if possible (run existing tests, check for errors)\n- If you're unsure about something, read more code rather than guessing\n- Commit messages should be clear and describe what changed and why\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.","mcps":{},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 91959e80-857c-4a34-b728-89f9c64148e3 --max-turns 1 --system-prompt You are a software developer. Your job is to write clean, correct code based on the instructions you receive.
+
+## Guidelines
+
+- Read the existing codebase before making changes
+- Follow existing patterns, naming conventions, and code style
+- Make focused, minimal changes — don't refactor code you weren't asked to change
+- Test your changes if possible (run existing tests, check for errors)
+- If you're unsure about something, read more code rather than guessing
+- Commit messages should be clear and describe what changed and why
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+▶ direct agent mode (no controller)
+  ✔ dev agent responds directly to a prompt (8469.8352ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"Developer","description":"Software developer who writes and modifies code","system_prompt":"You are a software developer. Your job is to write clean, correct code based on the instructions you receive.\n\n## Guidelines\n\n- Read the existing codebase before making changes\n- Follow existing patterns, naming conventions, and code style\n- Make focused, minimal changes — don't refactor code you weren't asked to change\n- Test your changes if possible (run existing tests, check for errors)\n- If you're unsure about something, read more code rather than guessing\n- Commit messages should be clear and describe what changed and why\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.","mcps":{},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 415cd45e-0892-45a4-a17a-47c2fb0972cf --max-turns 1 --system-prompt You are a software developer. Your job is to write clean, correct code based on the instructions you receive.
+
+## Guidelines
+
+- Read the existing codebase before making changes
+- Follow existing patterns, naming conventions, and code style
+- Make focused, minimal changes — don't refactor code you weren't asked to change
+- Test your changes if possible (run existing tests, check for errors)
+- If you're unsure about something, read more code rather than guessing
+- Commit messages should be clear and describe what changed and why
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+  ✔ direct mode skips controller entirely (105.0091ms)
+  ✔ agent-specific CLI is used for remote agents (0.4376ms)
+✔ direct agent mode (no controller) (8576.5002ms)
+(node:17016) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"Developer","description":"Software developer who writes and modifies code","system_prompt":"You are a software developer. Your job is to write clean, correct code based on the instructions you receive.\n\n## Guidelines\n\n- Read the existing codebase before making changes\n- Follow existing patterns, naming conventions, and code style\n- Make focused, minimal changes — don't refactor code you weren't asked to change\n- Test your changes if possible (run existing tests, check for errors)\n- If you're unsure about something, read more code rather than guessing\n- Commit messages should be clear and describe what changed and why\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.","mcps":{},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id d3fc3a3a-bbff-46cf-8577-11d9994f88fe --max-turns 1 --system-prompt You are a software developer. Your job is to write clean, correct code based on the instructions you receive.
+
+## Guidelines
+
+- Read the existing codebase before making changes
+- Follow existing patterns, naming conventions, and code style
+- Make focused, minimal changes — don't refactor code you weren't asked to change
+- Test your changes if possible (run existing tests, check for errors)
+- If you're unsure about something, read more code rather than guessing
+- Commit messages should be clear and describe what changed and why
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"name":"QA Engineer (Browser)","description":"QA engineer who can test web applications using a local headless Chrome browser","system_prompt":"You are a QA Engineer testing web applications using a local headless Chrome browser.\n\nEnvironment facts:\n- You are running locally on the host machine (not inside a container)\n- You have access to Chrome DevTools MCP tools for browser automation\n- The browser is a headless Chrome instance managed by the extension — you can navigate, click, type, take screenshots, and interact with web pages\n- Your workspace is the currently open project directory\n\n## IMPORTANT: Browser tab rules\n\n- **NEVER open new tabs** with `new_page`. Always use `navigate_page` to navigate within the existing tab.\n- If a page is already open, use `navigate_page` to go to a different URL.\n- The browser starts with a page already open — use `list_pages` to see it and `select_page` if needed, then `navigate_page` to go where you need.\n\n## Chrome DevTools MCP tools\n\nYou have access to Chrome DevTools Protocol tools that let you:\n- Navigate to URLs\n- Click elements, type text, scroll\n- Take screenshots of the page\n- Read page content and DOM elements\n- Execute JavaScript in the page context\n- Monitor network requests and console output\n\n## CRITICAL: Running shell commands\n\n**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.\n\n- `start_command` — run any command (short or long-running)\n- `read_output` — read the command's stdout/stderr output\n- `list_jobs` — see all commands and their status\n- `get_job` — check if a specific command is still running or has finished\n- `stop_job` — stop a running command\n\nThe ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.\n\n## Testing workflow\n\n1. **Understand what to test** — read the task carefully and identify the pages/flows to verify\n2. **Navigate to the app** — use `navigate_page` to go to the app URL (e.g. `http://localhost:3000`)\n3. **Take a screenshot first** — always capture the initial state before interacting\n4. **Interact and verify** — click buttons, fill forms, navigate between pages\n5. **Screenshot after each step** — capture the result of each meaningful action\n6. **Report findings** — clearly describe what worked, what failed, and include screenshot evidence\n\n## Visual confirmation rules\n\n1. Take a screenshot before the first UI action\n2. Take a screenshot after each meaningful UI change\n3. Do not claim success unless you have a final screenshot showing the expected end state\n4. Explicitly reference the screenshots you used to verify each result\n5. If a test fails, take a screenshot of the failure state and describe what went wrong","mcps":{"chrome-devtools":{"command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:{CHROME_DEBUG_PORT}","--viewport=1280x720"],"env":{}}},"enabled":true,"cli":"claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id  --max-turns 1 --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:9222","--viewport=1280x720"],"env":{}}}} --no-chrome --system-prompt You are a QA Engineer testing web applications using a local headless Chrome browser.
+
+Environment facts:
+- You are running locally on the host machine (not inside a container)
+- You have access to Chrome DevTools MCP tools for browser automation
+- The browser is a headless Chrome instance managed by the extension — you can navigate, click, type, take screenshots, and interact with web pages
+- Your workspace is the currently open project directory
+
+## IMPORTANT: Browser tab rules
+
+- **NEVER open new tabs** with `new_page`. Always use `navigate_page` to navigate within the existing tab.
+- If a page is already open, use `navigate_page` to go to a different URL.
+- The browser starts with a page already open — use `list_pages` to see it and `select_page` if needed, then `navigate_page` to go where you need.
+
+## Chrome DevTools MCP tools
+
+You have access to Chrome DevTools Protocol tools that let you:
+- Navigate to URLs
+- Click elements, type text, scroll
+- Take screenshots of the page
+- Read page content and DOM elements
+- Execute JavaScript in the page context
+- Monitor network requests and console output
+
+## CRITICAL: Running shell commands
+
+**ALWAYS use the `detached-command` MCP's `start_command` tool to run ANY shell/bash/terminal commands.** NEVER use the built-in Bash tool for running commands — it can cause the session to hang.
+
+- `start_command` — run any command (short or long-running)
+- `read_output` — read the command's stdout/stderr output
+- `list_jobs` — see all commands and their status
+- `get_job` — check if a specific command is still running or has finished
+- `stop_job` — stop a running command
+
+The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep tools for file operations. But for ANY command execution, ALWAYS use `start_command`.
+
+## Testing workflow
+
+1. **Understand what to test** — read the task carefully and identify the pages/flows to verify
+2. **Navigate to the app** — use `navigate_page` to go to the app URL (e.g. `http://localhost:3000`)
+3. **Take a screenshot first** — always capture the initial state before interacting
+4. **Interact and verify** — click buttons, fill forms, navigate between pages
+5. **Screenshot after each step** — capture the result of each meaningful action
+6. **Report findings** — clearly describe what worked, what failed, and include screenshot evidence
+
+## Visual confirmation rules
+
+1. Take a screenshot before the first UI action
+2. Take a screenshot after each meaningful UI change
+3. Do not claim success unless you have a final screenshot showing the expected end state
+4. Explicitly reference the screenshots you used to verify each result
+5. If a test fails, take a screenshot of the failure state and describe what went wrong
+▶ End-to-end flow: Quick Dev
+  ✔ complete quick-dev flow: select mode → direct agent → response (6384.4183ms)
+✔ End-to-end flow: Quick Dev (6385.8366ms)
+▶ End-to-end flow: Session restore
+  ✔ transcript restore produces correct labels (0.4311ms)
+✔ End-to-end flow: Session restore (0.6095ms)
+▶ End-to-end flow: Mode → Agent → MCP chain
+  ✔ quick-test browser: mode resolves to QA-Browser with chrome-devtools MCP (0.8561ms)
+  ✔ quick-test computer: mode resolves to QA with remote CLI (0.2009ms)
+  ✔ auto-dev-test: both dev and QA agents available per env (0.1846ms)
+✔ End-to-end flow: Mode → Agent → MCP chain (1.5396ms)
+(node:58480) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Full controller→worker loop with fake backends
+  ✔ completes a run with fake codex + fake claude (4456.3243ms)
+✔ Full controller→worker loop with fake backends (4457.7928ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 5a4c239f-be8d-432b-a72c-f8378507611b --allowedTools Bash,Read,Edit --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Direct worker turn
+  ✔ runs a direct worker turn with real claude (5310.3531ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id bd9aaea1-7335-4be7-9f4b-2c13563db510 --allowedTools Bash,Read,Edit --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+  ✔ manifest tracks request lifecycle correctly (5417.1318ms)
+✔ Direct worker turn (10728.1927ms)
+(node:55920) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Claude interactive mode (live)
+  ✔ starts a session and gets a response (6549.8449ms)
+C:\Users\Server\Downloads\cc-manager-final\cc-manager\claude-parser\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (C:\Users\Server\Downloads\cc-manager-final\cc-manager\claude-parser\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1831:14)
+    at Object..js (node:internal/modules/cjs/loader:1971:10)
+    at Module.load (node:internal/modules/cjs/loader:1552:32)
+    at Module._load (node:internal/modules/cjs/loader:1354:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v25.8.0
+  ✔ maintains session across turns (10902.0609ms)
+✔ Claude interactive mode (live) (17453.588ms)
+C:\Users\Server\Downloads\cc-manager-final\cc-manager\claude-parser\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
+
+Error: AttachConsole failed
+    at Object.<anonymous> (C:\Users\Server\Downloads\cc-manager-final\cc-manager\claude-parser\node_modules\node-pty\lib\conpty_console_list_agent.js:13:26)
+    at Module._compile (node:internal/modules/cjs/loader:1831:14)
+    at Object..js (node:internal/modules/cjs/loader:1971:10)
+    at Module.load (node:internal/modules/cjs/loader:1552:32)
+    at Module._load (node:internal/modules/cjs/loader:1354:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v25.8.0
+▶ Detached Command MCP server
+  ✔ initializes successfully (400.0652ms)
+  ✔ lists available tools (378.0708ms)
+  ✔ starts a command and gets output (2632.1032ms)
+  ✔ lists jobs (1735.074ms)
+  ✔ gets job details (2695.4313ms)
+  ✔ stops a running command (10980.9719ms)
+✔ Detached Command MCP server (18823.564ms)
+▶ MCP injection and merging
+  ✔ worker gets both and worker-only MCPs (0.9246ms)
+  ✔ controller gets both and controller-only MCPs (0.1843ms)
+  ✔ worker does NOT get controller-only MCPs (0.1724ms)
+  ✔ none target excluded from both roles (0.1477ms)
+  ✔ auto-injects cc-tasks when port available (1.1332ms)
+  ✔ auto-injects qa-desktop when port available (0.1907ms)
+  ✔ auto-injects detached-command for local agents (0.2799ms)
+  ✔ auto-injects detached-command with container path for remote agents (0.1776ms)
+  ✔ remote agents get host.docker.internal URLs (0.2286ms)
+  ✔ local agents get 127.0.0.1 URLs (0.1807ms)
+  ✔ project MCPs override global on name collision (0.1518ms)
+  ✔ user-defined MCP URLs replaced for remote (0.1697ms)
+✔ MCP injection and merging (5.3243ms)
+(node:43556) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[qa-desktop-mcp] Started on port 58780
+▶ QA Desktop MCP server (HTTP)
+  ✔ starts the qa-desktop MCP server and lists tools (148.3218ms)
+[qa-desktop-mcp] Started on port 58785
+  ✔ list_instances returns data (1017.4057ms)
+[remote-desktop] Container 'cc-test-hh0cef-d85f4f76' starting, waiting for API on port 58806...
+[remote-desktop] Container 'cc-test-hh0cef-d85f4f76' ready on API port 58806
+[qa-desktop-mcp] Started on port 63200
+  ✔ get_instance_status for running container (14048.3861ms)
+✔ QA Desktop MCP server (HTTP) (15216.1154ms)
+▶ Tasks MCP server (stdio)
+  ✔ initializes successfully (73.0951ms)
+  ✔ lists available tools (66.7532ms)
+  ✔ creates a task and returns it (152.6217ms)
+  ✔ lists tasks after creation (152.0787ms)
+  ✔ updates task status (105.9492ms)
+  ✔ adds a comment to a task (101.7101ms)
+  ✔ gets task details (80.0507ms)
+  ✔ deletes a task (77.6915ms)
+  ✔ filters tasks by status (108.196ms)
+[cc-tasks-http] Started on port 58800, tasks file: C:\Users\Server\AppData\Local\Temp\cc-test-mczjOA\.cc-manager\tasks-http.json
+  ✔ adds progress update to a task (331.61ms)
+✔ Tasks MCP server (stdio) (1252.3385ms)
+▶ Tasks MCP server (HTTP)
+  ✔ starts HTTP server and handles CRUD via POST /mcp (63.0825ms)
+✔ Tasks MCP server (HTTP) (63.9781ms)
+(node:61200) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id ae2589bd-6950-4bac-bda8-877a30d7ccb5 --max-turns 10 --mcp-config {"mcpServers":{"detached-command":{"type":"stdio","command":"node","args":["C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\extension\\detached-command-mcp\\dist\\index.js"],"env":{"DETACHED_BASH_MCP_DATA_DIR":"C:\\Users\\Server\\AppData\\Local\\Temp\\cc-test-hzx7UQ\\.cc-manager\\.detached-jobs","DETACHED_COMMAND_INSTANCE_ID":"test-1774375318463"}}}} --disallowedTools Bash --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Claude Code + detached-command MCP
+  ✔ Claude can see and call detached-command MCP tools (18590.048ms)
+✔ Claude Code + detached-command MCP (18591.2627ms)
+[cc-tasks-http] Started on port 55239, tasks file: C:\Users\Server\AppData\Local\Temp\cc-test-PLzITK\.cc-manager\tasks.json
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 152a34df-899f-46a3-93fe-7dab356356ae --max-turns 10 --mcp-config {"mcpServers":{"cc-tasks":{"type":"http","url":"http://127.0.0.1:55239/mcp"}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Claude Code + cc-tasks MCP (HTTP)
+  ✔ Claude can create a task via cc-tasks MCP (12587.5696ms)
+✔ Claude Code + cc-tasks MCP (HTTP) (12587.9791ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id 092b8260-3128-4d1c-b667-ecef30157016 --max-turns 10 --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:55412","--viewport=1280x720"]}}} --no-chrome --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[chrome-manager] Chrome killed for panel test-mcp
+▶ Claude Code + chrome-devtools MCP
+  ✔ Claude can use chrome-devtools MCP to navigate (16913.7418ms)
+✔ Claude Code + chrome-devtools MCP (16914.0003ms)
+(node:42440) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Codex + detached-command MCP
+  ✔ Codex can see detached-command MCP tools (8119.2399ms)
+✔ Codex + detached-command MCP (8120.7776ms)
+[cc-tasks-http] Started on port 53992, tasks file: C:\Users\Server\AppData\Local\Temp\cc-test-4fP3yV\.cc-manager\tasks.json
+▶ Codex + cc-tasks MCP (HTTP)
+  ✔ Codex can interact with cc-tasks MCP (5615.209ms)
+✔ Codex + cc-tasks MCP (HTTP) (5615.7154ms)
+(node:41632) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[remote-desktop] Container 'cc-test-mfxsne-9e37bddd' starting, waiting for API on port 58792...
+[remote-desktop] Container 'cc-test-mfxsne-9e37bddd' ready on API port 58792
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"You are a test agent running inside a container. Use the detached-command MCP to run shell commands.","mcps":{},"cli":"qa-remote-claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --session-id dc67e16b-a44f-47e9-8460-04a1c1fd0ba1 --max-turns 5 --mcp-config {"mcpServers":{"detached-command":{"type":"stdio","command":"node","args":["/opt/detached-command-mcp/dist/index.js"],"env":{"DETACHED_BASH_MCP_DATA_DIR":"/workspace/.cc-manager/.detached-jobs","DETACHED_COMMAND_INSTANCE_ID":"remote-test-1774375329923"}}}} --system-prompt You are a test agent running inside a container. Use the detached-command MCP to run shell commands.
+▶ qa-remote-claude + MCPs inside container
+  ✔ remote Claude can use detached-command MCP inside container (39099.0446ms)
+✔ qa-remote-claude + MCPs inside container (39099.9978ms)
+▶ mode configuration (system modes)
+  ✔ quick-test mode: no controller, requires test env (1.0555ms)
+  ✔ quick-test browser: uses QA-Browser agent (0.201ms)
+  ✔ quick-test computer: uses QA agent (0.1453ms)
+  ✔ auto-test mode: uses controller, requires test env (0.119ms)
+  ✔ auto-test has env-aware controller prompt (0.1256ms)
+  ✔ quick-dev mode: no controller, no test env (0.1272ms)
+  ✔ auto-dev mode: uses controller, no test env (0.1029ms)
+  ✔ auto-dev-test mode: uses controller, requires test env (0.1169ms)
+  ✔ auto-dev-test has both dev and QA agents available (0.3935ms)
+  ✔ modes with requiresTestEnv have setupAgent (0.3863ms)
+  ✔ all default agents reference valid agents (0.3907ms)
+  ✔ all available agents reference valid agents (0.3007ms)
+✔ mode configuration (system modes) (4.9587ms)
+(node:56784) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Live CLI detection
+  ✔ detectCli finds claude (1115.2995ms)
+  ✔ detectCli finds codex (327.048ms)
+  ✔ detectCli returns unavailable for nonexistent binary (75.8788ms)
+  ✔ detectChrome finds Chrome (0.6517ms)
+  ✔ detectDocker checks Docker availability (768.4307ms)
+  ✔ detectQaDesktop checks qa-desktop availability (1474.9854ms)
+  ✔ runFullDetection returns all results (814.3648ms)
+✔ Live CLI detection (4578.3456ms)
+▶ Onboarding save + load roundtrip
+  ✔ completeOnboarding writes valid onboarding.json (31.0876ms)
+  ✔ isOnboardingComplete pattern works (14.5098ms)
+✔ Onboarding save + load roundtrip (45.9586ms)
+▶ Multiple concurrent panels
+  ✔ two panels have independent state (3.9893ms)
+  ✔ two panels have separate chat targets (2.6599ms)
+  ✔ messages go to correct panel postMessage (2.4393ms)
+  ✔ two panels have independent panelIds (2.8045ms)
+  ✔ thinking level changes are per-panel (2.7997ms)
+  ✔ mode selection is per-panel (3.9201ms)
+✔ Multiple concurrent panels (19.8961ms)
+(node:46816) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ Remote agent utilities
+  ✔ isRemoteCli identifies remote CLIs (5.6951ms)
+  ✔ injectRemotePort adds --remote-port and --remote-cwd for qa-remote-claude (2.7931ms)
+  ✔ injectRemotePort adds --remote-port and --remote-cwd for qa-remote-codex (3.4144ms)
+  ✔ injectRemotePort returns args unchanged for non-remote CLI (2.1147ms)
+✔ Remote agent utilities (15.3748ms)
+[remote-desktop] Container 'cc-test-o8lulf-aabc54db' starting, waiting for API on port 58795...
+[remote-desktop] Container 'cc-test-o8lulf-aabc54db' ready on API port 58795
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"You are a test agent. Respond briefly.","mcps":{},"cli":"qa-remote-claude"} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --session-id 737e34ca-2774-410a-82a1-ef62a80f4ba0 --max-turns 1 --system-prompt You are a test agent. Respond briefly.
+▶ qa-remote-claude plain worker (live)
+  ✔ responds to a simple prompt inside container (25523.3946ms)
+✔ qa-remote-claude plain worker (live) (25523.7992ms)
+[remote-desktop] Container 'cc-test-w6knkn-c44ebaec' starting, waiting for API on port 55330...
+[remote-desktop] Container 'cc-test-w6knkn-c44ebaec' ready on API port 55330
+▶ qa-remote-codex plain worker (live)
+  ✔ responds to a simple prompt inside container (15431.2817ms)
+✔ qa-remote-codex plain worker (live) (15431.9847ms)
+[remote-desktop] Container 'cc-test-dniv7s-18e60562' starting, waiting for API on port 54061...
+[remote-desktop] Container 'cc-test-dniv7s-18e60562' ready on API port 54061
+▶ qa-remote-codex + MCPs inside container (live)
+  ✔ qa-remote-codex can use detached-command MCP (31831.2335ms)
+✔ qa-remote-codex + MCPs inside container (live) (31831.627ms)
+▶ Transcript writing
+  ✔ prepareNewRun creates transcript file path (15.7771ms)
+  ✔ transcript file is created during run (35.6109ms)
+  ✔ transcript entries have correct format for all roles (66.3845ms)
+✔ Transcript writing (119.8453ms)
+(node:7712) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id fffe56dc-3c23-463c-a5ef-f1536ca3dd5b --allowedTools Bash,Read,Edit --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Transcript writing with real worker
+  ✔ runDirectWorkerTurn writes transcript entries (8040.0952ms)
+✔ Transcript writing with real worker (8040.6992ms)
+▶ Wait delay scheduling
+  ✔ applyConfig with waitDelay stores the delay (3.9306ms)
+  ✔ applyConfig with empty waitDelay clears the delay (1.5929ms)
+  ✔ waitDelay is persisted to manifest when run is active (22.6134ms)
+✔ Wait delay scheduling (29.6754ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-session-id --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --resume test-session-id --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --model claude-opus-4-6 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"You are a QA tester.","mcps":{}} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --system-prompt You are a QA tester.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"test-mcp":{"type":"stdio","command":"node","args":["server.js"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"test","mcps":{"agent-mcp":{"command":"node","args":["agent.js"]}}} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"base-mcp":{"type":"stdio","command":"node","args":["base.js"]},"agent-mcp":{"type":"stdio","command":"node","args":["agent.js"]}}} --system-prompt test
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"detached-command":{"type":"stdio","command":"node","args":["mcp.js"]}}} --disallowedTools Bash --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["chrome-devtools-mcp","--browser-url=http://127.0.0.1:9222"]}}} --no-chrome --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"test-mcp":{"type":"stdio","command":"node","args":["/test/extension/mcp.js"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"test-mcp":{"type":"stdio","command":"node","args":["/test/repo/mcp.js"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["chrome-devtools-mcp"]}}} --no-chrome --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: {"system_prompt":"test","mcps":{}} args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --resume agent-sess-123 --system-prompt test
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess-001 --mcp-config {"mcpServers":{"cc-tasks":{"type":"http","url":"http://localhost:12345/mcp"}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ buildClaudeArgs
+  ✔ builds basic args for print mode (1.7246ms)
+  ✔ includes --session-id for first turn (0.3256ms)
+  ✔ includes --resume for subsequent turns (0.303ms)
+  ✔ includes --model when worker model is set (0.2559ms)
+  ✔ uses --system-prompt for agents with custom system_prompt (0.2474ms)
+  ✔ uses --append-system-prompt when no agent system prompt (0.2301ms)
+  ✔ includes --mcp-config when MCPs are present (0.2643ms)
+  ✔ merges agent MCPs with base MCPs (0.2875ms)
+  ✔ disables Bash when detached-command MCP is present (0.3512ms)
+  ✔ replaces {CHROME_DEBUG_PORT} placeholder (0.4103ms)
+  ✔ replaces {EXTENSION_DIR} placeholder (0.2846ms)
+  ✔ replaces {REPO_ROOT} placeholder (0.2822ms)
+  ✔ includes --no-chrome when chrome-devtools MCP is present (0.1659ms)
+  ✔ uses agent-specific session when provided (0.1866ms)
+  ✔ includes HTTP MCP servers correctly (0.1837ms)
+✔ buildClaudeArgs (6.9906ms)
+▶ buildCodexArgs
+  ✔ builds basic controller args (0.4351ms)
+  ✔ uses resume when controller has sessionId (0.0941ms)
+  ✔ includes custom model (0.0971ms)
+  ✔ injects MCP servers as TOML -c flags (0.1483ms)
+  ✔ converts hyphens to underscores in MCP names for Codex (0.1407ms)
+  ✔ disables shell tool when detached-command present (0.1191ms)
+  ✔ includes --output-last-message with loop finalFile (0.0903ms)
+✔ buildCodexArgs (1.3514ms)
+▶ buildCodexWorkerArgs
+  ✔ builds basic worker args (0.4197ms)
+  ✔ uses resume for subsequent turns (0.0929ms)
+  ✔ uses agent session when provided (0.0848ms)
+  ✔ merges agent MCPs with base (0.1828ms)
+  ✔ disables shell when detached-command present (0.1531ms)
+✔ buildCodexWorkerArgs (1.0888ms)
+▶ lookupAgentConfig
+  ✔ finds agent by exact ID (0.9142ms)
+  ✔ finds agent case-insensitively (0.1927ms)
+  ✔ finds QA agent case-insensitively (0.2749ms)
+  ✔ finds QA-Browser by exact ID (0.1699ms)
+  ✔ returns null for unknown agent (1.7531ms)
+  ✔ returns null for null agents (0.1273ms)
+  ✔ returns null for null agentId (0.1044ms)
+  ✔ returns null for empty agentId (0.1514ms)
+✔ lookupAgentConfig (4.9068ms)
+▶ agent/mode/MCP merging logic
+  ✔ project overrides global on same key (0.2558ms)
+  ✔ global and project keys combine (1.3615ms)
+  ✔ system + global + project merge (project wins) (0.1618ms)
+  ✔ disabled agents are filtered (0.1576ms)
+  ✔ MCP target filtering (0.4743ms)
+✔ agent/mode/MCP merging logic (2.6979ms)
+▶ wait delay parsing
+  ✔ parseWaitDelay parses minute values (0.8895ms)
+  ✔ parseWaitDelay parses hour values (0.153ms)
+  ✔ parseWaitDelay parses day values (0.5801ms)
+  ✔ parseWaitDelay returns 0 for empty/null (0.8211ms)
+  ✔ WAIT_OPTIONS is an array of {value, label, ms} objects (0.2948ms)
+  ✔ formatWaitDelay formats correctly (1.1582ms)
+✔ wait delay parsing (9.747ms)
+▶ error retry constants
+  ✔ error retry uses 30 minute delay (0.1805ms)
+  ✔ error retry pattern: set flag, schedule timer, reset on fire (0.9935ms)
+✔ error retry constants (1.4185ms)
+▶ escapeHtml
+  ✔ escapes HTML special characters (0.9844ms)
+  ✔ escapes ampersands (0.1464ms)
+  ✔ escapes quotes (0.1163ms)
+  ✔ passes through plain strings unchanged (0.1345ms)
+  ✔ handles empty string (0.176ms)
+  ✔ handles object input by JSON stringifying (0.3078ms)
+  ✔ handles array input by JSON stringifying (0.2027ms)
+  ✔ handles null by returning empty string (0.2215ms)
+  ✔ handles undefined by returning empty string (0.2064ms)
+  ✔ handles number input (0.2128ms)
+  ✔ handles boolean input (0.1576ms)
+  ✔ handles nested object with HTML chars (0.1578ms)
+✔ escapeHtml (6.0733ms)
+▶ summarizeClaudeEvent
+  ✔ returns null for null/undefined input (1.2763ms)
+  ✔ parses result event (string result) (0.2484ms)
+  ✔ parses result_message event (0.2038ms)
+  ✔ parses result with no text as status (0.2427ms)
+  ✔ parses text-delta from stream_event (0.2285ms)
+  ✔ parses tool-input-delta from stream_event (0.2151ms)
+  ✔ parses tool-start from stream_event (0.2417ms)
+  ✔ parses block-stop from stream_event (0.2334ms)
+  ✔ parses error event (0.3775ms)
+  ✔ parses assistant_message event (0.4442ms)
+  ✔ returns null for unknown event types (0.2461ms)
+  ✔ handles Read tool start (0.1765ms)
+  ✔ handles Edit tool start (0.1482ms)
+✔ summarizeClaudeEvent (8.0629ms)
+▶ summarizeCodexEvent
+  ✔ returns null for null/undefined input (1.1889ms)
+  ✔ parses thread.started (0.3175ms)
+  ✔ parses turn.started (0.2595ms)
+  ✔ parses turn.completed (0.2176ms)
+  ✔ parses turn.failed (0.1509ms)
+  ✔ parses error event (0.2048ms)
+  ✔ parses command_execution item.started (0.2166ms)
+  ✔ parses mcp_tool_call item.started (0.1908ms)
+  ✔ returns null for unknown event types (0.1914ms)
+✔ summarizeCodexEvent (3.613ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-sess --mcp-config {"mcpServers":{"detached-command":{"type":"stdio","command":"node","args":["C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\extension\\detached-command-mcp\\dist\\index.js"],"env":{"DETACHED_BASH_MCP_DATA_DIR":"C:\\Users\\Server\\Downloads\\cc-manager-final\\cc-manager\\.cc-manager\\.detached-jobs"}}}} --disallowedTools Bash --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-sess --mcp-config {"mcpServers":{"cc-tasks":{"type":"http","url":"http://127.0.0.1:12345/mcp"}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-sess --mcp-config {"mcpServers":{"detached-command":{"type":"stdio","command":"node","args":["mcp.js"]},"cc-tasks":{"type":"http","url":"http://localhost:8080/mcp"},"chrome-devtools":{"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:9222"]}}} --no-chrome --disallowedTools Bash --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-sess --mcp-config {"mcpServers":{"test-mcp":{"type":"stdio","command":"node","args":["C:/Users/Server/Downloads/cc-manager-final/cc-manager/extension/mcp.js","--port=9333","--root=C:/Users/Server/Downloads/cc-manager-final/cc-manager"],"env":{"DATA":"C:/Users/Server/Downloads/cc-manager-final/cc-manager/data"}}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id test-sess --mcp-config {"mcpServers":{"test":{"type":"stdio","command":"node","args":["C:/Users/Test/.vscode/ext/mcp.js","C:/Users/Test/repo/data"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ Claude --mcp-config JSON format
+  ✔ produces valid JSON for stdio MCP (3.3555ms)
+  ✔ produces valid JSON for HTTP MCP (0.6888ms)
+  ✔ produces valid JSON for mixed MCPs (0.6935ms)
+  ✔ placeholder replacement produces valid paths in JSON (0.6246ms)
+  ✔ Windows backslash paths are forward-slashed in JSON (0.6074ms)
+✔ Claude --mcp-config JSON format (7.6762ms)
+▶ Codex -c MCP TOML format
+  ✔ produces valid -c flags for stdio MCP (1.0743ms)
+  ✔ produces valid -c flags for HTTP MCP (0.4622ms)
+  ✔ converts hyphens to underscores in MCP names (0.4247ms)
+  ✔ TOML escapes Windows backslash paths (0.407ms)
+  ✔ TOML properly quotes string values (1.2921ms)
+✔ Codex -c MCP TOML format (4.1729ms)
+▶ MCP path existence validation
+  ✔ detached-command-mcp/dist/index.js exists in extension dir (1.4385ms)
+  ✔ tasks-mcp-server.js exists in extension dir (0.3816ms)
+  ✔ tasks-mcp-http.js exists in extension dir (0.3724ms)
+  ✔ qa-desktop-mcp-server.js exists in extension dir (0.3413ms)
+  ✔ mcp-http-server.js exists in extension dir (1.9618ms)
+  ✔ system-agents.json exists in extension resources (0.5408ms)
+  ✔ system-modes.json exists in extension resources (0.3346ms)
+  ✔ {EXTENSION_DIR} placeholder resolves to real detached-command path (0.3999ms)
+  ✔ {REPO_ROOT}/.cc-manager parent dir is creatable (0.3971ms)
+  ✔ detached-command-mcp dist/index.js is a valid Node.js file (0.9462ms)
+  ✔ tasks-mcp-server.js is a valid Node.js file (0.4038ms)
+✔ MCP path existence validation (9.1829ms)
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["mcp","--port=9333"]}}} --no-chrome --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"chrome-devtools":{"type":"stdio","command":"npx","args":["mcp","--port={CHROME_DEBUG_PORT}"]}}} --no-chrome --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"test":{"type":"stdio","command":"node","args":["/my/extension/server.js"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"test":{"type":"stdio","command":"node","args":["/my/repo/tools/mcp.js"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"test":{"type":"stdio","command":"node","args":["s.js"],"env":{"DATA_DIR":"/my/extension/data"}}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"multi":{"type":"stdio","command":"node","args":["/my/extension/mcp.js","--port=9444","--root=/my/repo"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+[DEBUG claude.js] buildClaudeArgs agentConfig: null args: -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --setting-sources local --strict-mcp-config --session-id sess --mcp-config {"mcpServers":{"test":{"type":"stdio","command":"node","args":["C:/Users/Test/.vscode/extensions/cc-manager/mcp.js","C:/Users/Test/repo/data"]}}} --append-system-prompt You are the worker agent acting as the executor in a supervised workflow. A controller agent will review your work after every run and may send you another message in the same session. Do the actual repository work yourself. While working, narrate concise progress updates in plain text so the terminal stream stays readable. Mention files and commands when helpful. When you believe the task is done, clearly state what changed and whether verification or tests passed. Do not ask the human to manually continue the workflow unless you are truly blocked.
+▶ MCP placeholder replacement in buildClaudeArgs
+  ✔ replaces {CHROME_DEBUG_PORT} in MCP args (4.7206ms)
+  ✔ does NOT replace {CHROME_DEBUG_PORT} when port is null (3.4838ms)
+  ✔ replaces {EXTENSION_DIR} in MCP args (0.7193ms)
+  ✔ replaces {REPO_ROOT} in MCP args (0.5571ms)
+  ✔ replaces {EXTENSION_DIR} in MCP env values (0.3745ms)
+  ✔ handles multiple placeholders in same MCP (0.4236ms)
+  ✔ handles backslash paths (Windows) by converting to forward slashes (0.3102ms)
+✔ MCP placeholder replacement in buildClaudeArgs (11.9829ms)
+▶ getCliDefaults
+  ✔ both: codex controller, claude worker (0.8416ms)
+  ✔ claude-only: claude for both (0.1884ms)
+  ✔ codex-only: codex for both (0.1571ms)
+✔ getCliDefaults (2.2356ms)
+▶ onboarding persistence
+  ✔ save and load roundtrip (22.0453ms)
+  ✔ missing file returns null (8.1315ms)
+✔ onboarding persistence (30.6843ms)
+▶ CLI preference → agent override logic
+  ✔ both: no overrides needed (3.0764ms)
+  ✔ claude-only: overrides codex agents to claude (0.2261ms)
+  ✔ codex-only: overrides claude agents to codex (0.203ms)
+  ✔ codex-only: remote agents get qa-remote-codex (0.1661ms)
+  ✔ claude-only: local codex agents get claude (0.1842ms)
+✔ CLI preference → agent override logic (4.2449ms)
+▶ execForText
+  ✔ captures stdout from a simple command (129.1093ms)
+  ✔ captures stderr (95.8697ms)
+  ✔ returns non-zero exit code on failure (88.9311ms)
+  ✔ passes cwd option (83.9441ms)
+✔ execForText (399.3248ms)
+▶ qa-desktop labels
+  ✔ has correct label constants (0.7772ms)
+  ✔ parseInstanceLine parses tab-separated format (0.3431ms)
+  ✔ parseInstanceLine strips qa-desktop- prefix from name (0.1904ms)
+  ✔ parseInstanceLine returns null for short lines (0.1505ms)
+  ✔ parseInstanceLine handles missing ports (0.1484ms)
+✔ qa-desktop labels (2.7754ms)
+▶ qa-desktop snapshot tags
+  ✔ produces deterministic tag from workspace path (0.9873ms)
+  ✔ different paths produce different tags (0.2144ms)
+  ✔ tag format is qa-snapshot-{base}-{hash} (0.22ms)
+  ✔ strips non-alphanumeric chars from base name (0.1951ms)
+  ✔ matches Python implementation for known path (0.1635ms)
+✔ qa-desktop snapshot tags (2.0686ms)
+▶ qa-desktop mutagen helpers
+  ✔ volumeName derives from instance name (0.2233ms)
+  ✔ syncSessionName derives from instance name (0.1284ms)
+  ✔ SYNC_IGNORES has common patterns (0.1365ms)
+✔ qa-desktop mutagen helpers (0.7021ms)
+▶ qa-desktop CLI arg parsing
+  ✔ parses up command with flags (0.3788ms)
+  ✔ parses down command (0.1054ms)
+  ✔ parses ls --json (0.0988ms)
+  ✔ parses --no-snapshot as snapshot=false (0.1185ms)
+  ✔ parses = style flags (0.0981ms)
+  ✔ defaults to help command (0.0722ms)
+✔ qa-desktop CLI arg parsing (1.0497ms)
+▶ proxy flag extraction
+  ✔ extracts --agent flag (1.8653ms)
+  ✔ extracts --agent=codex flag (0.2083ms)
+  ✔ extracts --remote-port flag (0.1986ms)
+  ✔ extracts --remote-port= flag (0.1601ms)
+  ✔ extracts --remote-host flag (0.1504ms)
+  ✔ extracts --remote-cwd flag (0.1556ms)
+  ✔ extracts --remote-cwd= flag (0.1296ms)
+  ✔ extracts --remote-timeout flag (0.1571ms)
+  ✔ extracts --session-id flag (0.1734ms)
+  ✔ defaults to localhost:8765 /workspace (0.2496ms)
+  ✔ passes non-proxy args as forwardArgs (0.1743ms)
+✔ proxy flag extraction (5.1689ms)
+▶ argv rewriting
+  ✔ strips --output-last-message and captures path (0.4494ms)
+  ✔ strips --output-last-message= and captures path (0.1267ms)
+  ✔ strips --cd and consumes next arg (0.122ms)
+  ✔ strips --cd= style (0.1187ms)
+  ✔ passes through --mcp-config (0.3542ms)
+  ✔ passes through -c flags for codex (0.1583ms)
+  ✔ returns empty files when no local paths (0.1192ms)
+✔ argv rewriting (1.7332ms)
+▶ container MCP injection
+  ✔ injects container MCP config for claude (0.1282ms)
+  ✔ does not inject for codex (container handles it) (0.0964ms)
+✔ container MCP injection (0.3193ms)
+▶ controllerLabelFor
+  ✔ returns Controller (Codex) for codex (0.9669ms)
+  ✔ returns Controller (Claude) for claude (0.2103ms)
+  ✔ returns Controller (Codex) for unknown CLI (default) (0.203ms)
+  ✔ handles null/undefined (0.1436ms)
+✔ controllerLabelFor (2.7608ms)
+▶ workerLabelFor
+  ✔ returns Worker (Claude) for claude (0.3507ms)
+  ✔ returns Worker (Claude) for null/undefined CLI (0.1405ms)
+  ✔ returns Worker (Codex) for codex (0.1988ms)
+  ✔ returns agent name when provided (takes priority) (0.2042ms)
+  ✔ returns Worker (cli) for remote CLIs (0.1807ms)
+  ✔ returns Worker (cli) for unknown CLIs (0.2501ms)
+✔ workerLabelFor (1.8708ms)
+▶ CLAUDE_CODE_EFFORT_LEVEL env var
+  ✔ setting the env var works (2.0904ms)
+  ✔ deleting the env var works (0.3045ms)
+  ✔ _applyWorkerThinking pattern sets env var (0.2572ms)
+  ✔ _applyWorkerThinking pattern clears env var for null (0.2568ms)
+✔ CLAUDE_CODE_EFFORT_LEVEL env var (4.0124ms)
+▶ Codex worker thinking level in args
+  ✔ passes thinking level via -c flag when agent has thinking (0.732ms)
+  ✔ does NOT pass thinking level when agent has no thinking (0.2627ms)
+  ✔ does NOT pass thinking level when no agentConfig (0.2023ms)
+✔ Codex worker thinking level in args (1.4591ms)
+▶ transcript entry mapping
+  ✔ maps user entries (1.0419ms)
+  ✔ maps controller entries with correct label (0.1915ms)
+  ✔ maps controller STOP entries (0.1708ms)
+  ✔ maps worker entries with agent label (0.1801ms)
+  ✔ trims leading/trailing whitespace from worker text (0.1887ms)
+  ✔ falls back to Worker label when no workerLabel provided (0.1426ms)
+  ✔ handles empty transcript (0.135ms)
+  ✔ handles empty text fields (0.415ms)
+  ✔ handles missing text fields (0.1667ms)
+  ✔ uses entry-level controllerCli when present (0.2199ms)
+  ✔ maps a complete conversation (0.1749ms)
+✔ transcript entry mapping (5.2832ms)
+▶ workerLabel reconstruction from manifest
+  ✔ resolves agent name from agentSessions + agents (0.2103ms)
+  ✔ falls back to CLI label when no agent started (0.1353ms)
+  ✔ falls back to CLI label when no agentSessions (0.2384ms)
+✔ workerLabel reconstruction from manifest (0.747ms)
+▶ resolveByEnv
+  ✔ returns string as-is (1.0796ms)
+  ✔ resolves object by env key (0.4902ms)
+  ✔ falls back to browser key if env not found (1.6471ms)
+  ✔ falls back to first value if no browser key (0.2173ms)
+  ✔ returns null/undefined as-is (0.1486ms)
+  ✔ returns arrays as-is (not treated as object) (1.0334ms)
+  ✔ returns numbers as-is (0.4014ms)
+  ✔ handles env-aware controllerPrompt (1.1193ms)
+  ✔ handles env-aware defaultAgent (0.6822ms)
+  ✔ handles env-aware availableAgents (0.2499ms)
+✔ resolveByEnv (9.2905ms)
+▶ getAllEnabledModes
+  ✔ returns all enabled modes (0.3099ms)
+  ✔ filters disabled modes (0.1864ms)
+  ✔ modes without enabled field are enabled by default (0.1356ms)
+  ✔ project modes override system modes (0.1251ms)
+  ✔ combines modes from all scopes (0.2266ms)
+✔ getAllEnabledModes (1.286ms)
+▶ mode configuration
+  ✔ mode with useController=false should use direct agent (0.1716ms)
+  ✔ mode with useController=true should use controller loop (0.0982ms)
+  ✔ mode with requiresTestEnv needs test environment (0.0667ms)
+  ✔ mode with setupAgent specifies pre-run setup (0.07ms)
+✔ mode configuration (0.5999ms)
+ℹ tests 386
+ℹ suites 78
+ℹ pass 386
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 73152.7488

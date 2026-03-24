@@ -4,7 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
-const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
+const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 
 /**
@@ -181,7 +181,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let sawTextDelta = false;
 
   // Resolve binary and display label
-  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  let workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
   const agentName = agentConfig && agentConfig.name;
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabelFor(workerBin, agentName);
@@ -211,14 +211,17 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
         }
       }
       renderer.desktopReady(desktop.novncPort);
-      args = injectRemotePort(workerBin, args, desktop);
+      // Resolve to bundled Node.js proxy instead of qa-remote-* on PATH
+      const resolved = resolveRemoteCommand(workerBin, args, desktop);
+      workerBin = resolved.command;
+      args = resolved.args;
       // On abort, also send HTTP cancel directly to the container for immediate stop
       if (abortSignal) {
         const onRemoteAbort = () => cancelRemoteRun(desktop.apiPort).catch(() => {});
         abortSignal.addEventListener('abort', onRemoteAbort, { once: true });
       }
     } else {
-      renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
+      renderer.banner('Warning: Failed to start desktop container — is Docker running?');
     }
   }
 

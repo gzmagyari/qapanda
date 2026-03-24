@@ -4,7 +4,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
-const { isRemoteCli, injectRemotePort, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
+const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
@@ -160,11 +160,17 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
         abortSignal.addEventListener('abort', onRemoteAbort, { once: true });
       }
     } else {
-      renderer.banner('Warning: qa-desktop not available — install with: pip install qa-agent-desktop');
+      renderer.banner('Warning: Failed to start desktop container — is Docker running?');
     }
   }
 
-  const args = injectRemotePort(workerBin, buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession }), desktop);
+  let spawnCommand = workerBin;
+  let args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession });
+  if (isRemoteCli(workerBin) && desktop) {
+    const resolved = resolveRemoteCommand(workerBin, args, desktop);
+    spawnCommand = resolved.command;
+    args = resolved.args;
+  }
   const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
 
   await writeText(workerRecord.promptFile, `${stdinText}\n`);
@@ -195,7 +201,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     abortSignal.addEventListener('abort', () => { if (!localAbort.signal.aborted) localAbort.abort(); }, { once: true });
   }
   const result = await spawnStreamingProcess({
-    command: workerBin,
+    command: spawnCommand,
     args,
     cwd: manifest.repoRoot,
     stdinText,

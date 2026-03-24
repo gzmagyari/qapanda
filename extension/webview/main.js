@@ -874,11 +874,11 @@
     const dockerRunning = t.docker && t.docker.available && t.docker.running;
     const qaDesktopOk = t.qaDesktop && t.qaDesktop.available;
     const desktopReady = dockerRunning && qaDesktopOk;
-    html += makeOnboardItem(desktopReady ? 'ok' : 'warn', 'Desktop Testing',
-      desktopReady ? 'Docker + qa-desktop available'
-        : !t.docker || !t.docker.available ? 'Docker not found'
-        : !t.docker.running ? 'Docker installed but not running'
-        : 'qa-desktop CLI not found');
+    const dockerOk = t.docker && t.docker.available && t.docker.running;
+    html += makeOnboardItem(dockerOk ? 'ok' : 'warn', 'Desktop Testing',
+      dockerOk ? 'Docker running — desktop testing available'
+        : !t.docker || !t.docker.available ? 'Docker not found — install Docker Desktop for desktop testing'
+        : 'Docker installed but not running — start Docker Desktop');
 
     statusEl.innerHTML = html;
 

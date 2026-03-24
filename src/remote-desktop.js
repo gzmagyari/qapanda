@@ -5,20 +5,47 @@
  * a desktop container is running and provides the port info needed to
  * connect.
  *
- * Each panel/manifest gets its own container instance (keyed by a unique
- * panel ID appended to the workspace-derived name).
+ * Uses the bundled Node.js qa-desktop CLI (qa-desktop/cli.js) instead of
+ * the Python qa-desktop CLI, so no Python installation is needed.
  */
-const { exec } = require('node:child_process');
+const { exec, execFile } = require('node:child_process');
+const path = require('node:path');
 
 // Per-panel cache: panelId -> desktop info
 const _cache = new Map();
+
+// Path to the bundled qa-desktop CLI
+let _qaDesktopDir = null;
+
+/**
+ * Set the path to the qa-desktop directory (called by extension on init).
+ * If not set, falls back to ../qa-desktop relative to this file.
+ */
+function setQaDesktopPath(dirPath) {
+  _qaDesktopDir = dirPath;
+}
+
+function _qaDesktopCli() {
+  const dir = _qaDesktopDir || path.resolve(__dirname, '..', 'qa-desktop');
+  return path.join(dir, 'cli.js');
+}
+
+/**
+ * Run the bundled qa-desktop CLI and return { code, stdout, stderr }.
+ */
+function _qaExec(args, timeout = 300000) {
+  return new Promise((resolve) => {
+    execFile('node', [_qaDesktopCli(), ...args], { timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ code: err ? (err.code || err.status || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
+    });
+  });
+}
 
 /**
  * Derive a stable instance name from workspace path + panel ID.
  */
 function instanceName(repoRoot, panelId) {
   const crypto = require('node:crypto');
-  const path = require('node:path');
   const base = path.basename(repoRoot).toLowerCase().replace(/[^a-z0-9-]/g, '');
   const seed = panelId ? `${repoRoot}:${panelId}` : repoRoot;
   const hash = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 8);
@@ -35,7 +62,7 @@ async function _waitForHealthy(apiPort, maxWaitMs = 1200000, containerName = nul
     // If we have a container name, check health from inside via docker exec to avoid
     // Docker Desktop for Windows port-proxy delay (can take 2-3 min on snapshot starts)
     if (containerName) {
-      const r = await _exec(`docker exec ${containerName} curl -fsS http://127.0.0.1:8765/healthz`, 5000);
+      const r = await _shellExec(`docker exec ${containerName} curl -fsS http://127.0.0.1:8765/healthz`, 5000);
       if (r.code === 0) return true;
     } else {
       const ok = await new Promise((resolve) => {
@@ -54,34 +81,23 @@ async function _waitForHealthy(apiPort, maxWaitMs = 1200000, containerName = nul
 
 /**
  * Check if a snapshot image exists for a workspace.
- * @param {string} workspace
- * @returns {Promise<{exists: boolean, tag: string}>}
  */
 async function getSnapshotExists(workspace) {
   const safe = workspace.replace(/\\/g, '/');
-  const r = await _exec(`qa-desktop snapshot-exists --workspace "${safe}"`);
+  const r = await _qaExec(['snapshot-exists', '--workspace', safe, '--json']);
   try { return JSON.parse(r.stdout.trim()); } catch { return { exists: false, tag: '' }; }
 }
 
 /**
  * Ensure a QAAgentDesktop container is running.
- *
- * @param {string} repoRoot — workspace path
- * @param {string} [panelId] — unique panel identifier for per-panel isolation
- * @param {boolean} [useSnapshot=true] — whether to use snapshot image if available
- * @returns {{ apiPort, vncPort, novncPort, name, containerId, isNew }} or null
  */
 async function ensureDesktop(repoRoot, panelId, useSnapshot = true) {
   const cacheKey = panelId || repoRoot;
 
-  // Return cached result if container is still healthy
   if (_cache.has(cacheKey)) {
     const cached = _cache.get(cacheKey);
     const still = await _waitForHealthy(cached.apiPort, 3000);
-    if (still) {
-      return { ...cached, isNew: false };
-    }
-    // Container gone — clear cache and re-create
+    if (still) return { ...cached, isNew: false };
     _cache.delete(cacheKey);
   }
 
@@ -89,13 +105,9 @@ async function ensureDesktop(repoRoot, panelId, useSnapshot = true) {
 
   try {
     const safePath = repoRoot.replace(/\\/g, '/');
-    const noSnapshotFlag = useSnapshot ? '' : ' --no-snapshot';
-    const cmd = `qa-desktop up "${name}" --workspace "${safePath}"${noSnapshotFlag} --json`;
-    const result = await new Promise((resolve) => {
-      exec(cmd, { cwd: repoRoot, timeout: 300000 }, (err, stdout, stderr) => {
-        resolve({ code: err ? (err.code || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
-      });
-    });
+    const args = ['up', name, '--workspace', safePath, '--json'];
+    if (!useSnapshot) args.push('--no-snapshot');
+    const result = await _qaExec(args);
 
     if (result.code !== 0) {
       console.error('[remote-desktop] qa-desktop up failed:', result.stderr);
@@ -131,16 +143,10 @@ async function ensureDesktop(repoRoot, panelId, useSnapshot = true) {
   }
 }
 
-/**
- * Remove a panel's cached desktop info.
- */
 function clearPanel(panelId) {
   _cache.delete(panelId);
 }
 
-/**
- * Get the cached desktop info for a panelId, or null.
- */
 function getLinkedInstance(panelId) {
   return _cache.get(panelId) || null;
 }
@@ -153,7 +159,23 @@ function isRemoteCli(cli) {
 }
 
 /**
+ * Resolve the command + args needed to spawn a remote agent via the bundled proxy.
+ * Returns { command: 'node', args: ['proxy.js', '--agent', 'claude', '--remote-port=PORT', ...originalArgs] }
+ */
+function resolveRemoteCommand(cli, originalArgs, desktop) {
+  if (!isRemoteCli(cli) || !desktop) return { command: cli, args: originalArgs };
+  const dir = _qaDesktopDir || path.resolve(__dirname, '..', 'qa-desktop');
+  const proxyPath = path.join(dir, 'proxy.js');
+  const agent = cli.includes('codex') ? 'codex' : 'claude';
+  return {
+    command: 'node',
+    args: [proxyPath, '--agent', agent, `--remote-port=${desktop.apiPort}`, '--remote-cwd=/workspace', ...originalArgs],
+  };
+}
+
+/**
  * Inject --remote-port into args for a remote CLI invocation.
+ * @deprecated Use resolveRemoteCommand instead for bundled proxy support.
  */
 function injectRemotePort(cli, args, desktop) {
   if (!isRemoteCli(cli) || !desktop) return args;
@@ -163,7 +185,7 @@ function injectRemotePort(cli, args, desktop) {
 /**
  * Helper to run a shell command and return { code, stdout, stderr }.
  */
-function _exec(cmd, timeout = 30000) {
+function _shellExec(cmd, timeout = 30000) {
   return new Promise((resolve) => {
     exec(cmd, { timeout }, (err, stdout, stderr) => {
       resolve({ code: err ? (err.code || 1) : 0, stdout: stdout || '', stderr: stderr || '' });
@@ -173,24 +195,18 @@ function _exec(cmd, timeout = 30000) {
 
 /**
  * List all running qa-desktop instances.
- * Annotates each with `linkedPanelId` if a cached panel maps to it,
- * and `snapshotExists`/`snapshotTag` if a snapshot exists for the workspace.
- * @param {string} currentPanelId
- * @param {string} [workspace] — workspace path for snapshot lookup
  */
 async function listInstances(currentPanelId, workspace) {
   try {
-    const result = await _exec('qa-desktop ls --json');
+    const result = await _qaExec(['ls', '--json']);
     if (result.code !== 0) return [];
     const instances = JSON.parse(result.stdout.trim());
 
-    // Build reverse map: container name -> panelId
     const nameToPanel = {};
     for (const [panelId, desktop] of _cache.entries()) {
       nameToPanel[desktop.name] = panelId;
     }
 
-    // Check snapshot existence once for the workspace (shared across all instances)
     let snapshotExists = false;
     let snapshotTag = '';
     if (workspace) {
@@ -215,8 +231,7 @@ async function listInstances(currentPanelId, workspace) {
  * Stop a running instance by name.
  */
 async function stopInstance(name) {
-  const result = await _exec(`qa-desktop down "${name}"`);
-  // Remove from cache if present
+  const result = await _qaExec(['down', name]);
   for (const [key, desktop] of _cache.entries()) {
     if (desktop.name === name) {
       _cache.delete(key);
@@ -236,12 +251,10 @@ async function restartInstance(name, repoRoot, panelId) {
 
 /**
  * Check if a container already exists for this panel WITHOUT creating one.
- * Returns desktop info if found and healthy, null otherwise.
  */
 async function findExistingDesktop(repoRoot, panelId) {
   const cacheKey = panelId || repoRoot;
 
-  // Check cache first
   if (_cache.has(cacheKey)) {
     const cached = _cache.get(cacheKey);
     const healthy = await _waitForHealthy(cached.apiPort, 3000);
@@ -249,16 +262,14 @@ async function findExistingDesktop(repoRoot, panelId) {
     _cache.delete(cacheKey);
   }
 
-  // Check if container exists via qa-desktop ls
   const name = instanceName(repoRoot, panelId);
   try {
-    const result = await _exec('qa-desktop ls --json');
+    const result = await _qaExec(['ls', '--json']);
     if (result.code !== 0) return null;
     const instances = JSON.parse(result.stdout.trim());
     const match = instances.find(i => i.name === name && i.status && i.status.toLowerCase().includes('up'));
     if (!match) return null;
 
-    // Found it — verify healthy and cache
     const healthy = await _waitForHealthy(match.api_port, 1200000);
     if (!healthy) return null;
 
@@ -277,8 +288,7 @@ async function findExistingDesktop(repoRoot, panelId) {
 }
 
 /**
- * Send an immediate cancel to the container API, killing all active subprocesses.
- * Used when cc-manager aborts a remote CLI run.
+ * Send an immediate cancel to the container API.
  */
 async function cancelRemoteRun(apiPort) {
   if (!apiPort) return;
@@ -309,8 +319,10 @@ module.exports = {
   getSnapshotExists,
   isRemoteCli,
   injectRemotePort,
+  resolveRemoteCommand,
   instanceName,
   listInstances,
   stopInstance,
   restartInstance,
+  setQaDesktopPath,
 };

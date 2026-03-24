@@ -92,13 +92,15 @@ async function detectQaDesktop() {
 }
 
 async function runFullDetection() {
-  const [claude, codex, chrome, docker, qaDesktop] = await Promise.all([
+  const [claude, codex, chrome, docker] = await Promise.all([
     detectCli('claude'),
     detectCli('codex'),
     detectChrome(),
     detectDocker(),
-    detectQaDesktop(),
   ]);
+
+  // qa-desktop is bundled in the extension — always available
+  const qaDesktop = { available: true, version: 'bundled' };
 
   return {
     clis: { claude, codex },
