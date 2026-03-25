@@ -40,6 +40,21 @@ function findTasksMcpPath(hints = []) {
 }
 
 /**
+ * Find the path to tests-mcp-server.js.
+ */
+function findTestsMcpPath(hints = []) {
+  const fs = require('node:fs');
+  const candidates = [
+    ...hints,
+    path.resolve(__dirname, '..', 'extension', 'tests-mcp-server.js'),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
  * Build MCP servers for a specific role (controller or worker).
  *
  * @param {'controller'|'worker'} role
@@ -107,6 +122,19 @@ function mcpServersForRole(role, options = {}) {
     }
   }
 
+  // Auto-inject cc-tests
+  const testsMcpPath = findTestsMcpPath(extensionPath ? [path.join(extensionPath, 'tests-mcp-server.js')] : []);
+  if (testsMcpPath) {
+    result['cc-tests'] = {
+      command: 'node',
+      args: [testsMcpPath],
+      env: {
+        TESTS_FILE: path.join(repoRoot, '.cc-manager', 'tests.json'),
+        TASKS_FILE: path.join(repoRoot, '.cc-manager', 'tasks.json'),
+      },
+    };
+  }
+
   // Auto-inject qa-desktop
   if (qaDesktopMcpPort) {
     result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${qaDesktopMcpPort}/mcp` };
@@ -136,5 +164,6 @@ function mcpServersForRole(role, options = {}) {
 module.exports = {
   findDetachedCommandPath,
   findTasksMcpPath,
+  findTestsMcpPath,
   mcpServersForRole,
 };

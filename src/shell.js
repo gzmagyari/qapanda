@@ -568,6 +568,65 @@ async function runInteractiveShell(options = {}) {
           continue;
         }
 
+        // ── Tests commands ────────────────────────────────────────
+
+        if (command === '/tests') {
+          const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+          let testsData;
+          try { testsData = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { testsData = { tests: [] }; }
+          if (!testsData.tests || testsData.tests.length === 0) { renderer.banner('No tests.'); continue; }
+          const byStatus = {};
+          for (const t of testsData.tests) { (byStatus[t.status] = byStatus[t.status] || []).push(t); }
+          const lines = [];
+          for (const [status, tests] of Object.entries(byStatus)) {
+            lines.push(`\n  ${status.toUpperCase()}`);
+            for (const t of tests) {
+              const sp = (t.steps || []).filter(s => s.status === 'pass').length;
+              const st = (t.steps || []).length;
+              lines.push(`    ${t.id} — ${t.title} [${t.environment}] (${sp}/${st} steps passing)`);
+            }
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
+        if (command === '/test') {
+          if (!rest) { renderer.banner('Usage: /test <id> or /test create <title>'); continue; }
+          const parts = rest.split(' ');
+          if (parts[0] === 'create') {
+            const title = parts.slice(1).join(' ');
+            if (!title) { renderer.banner('Usage: /test create <title>'); continue; }
+            const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+            let data;
+            try { data = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { data = { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
+            const id = 'test-' + data.nextId++;
+            data.tests.push({ id, title, description: '', environment: 'browser', status: 'untested', steps: [], linkedTaskIds: [], tags: [], lastTestedAt: null, lastTestedBy: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), runs: [] });
+            fs.mkdirSync(path.dirname(testsFile), { recursive: true });
+            fs.writeFileSync(testsFile, JSON.stringify(data, null, 2), 'utf8');
+            renderer.banner(`Created: ${id} — ${title}`);
+            continue;
+          }
+          // Show test detail
+          const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+          let data;
+          try { data = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { data = { tests: [] }; }
+          const test = data.tests.find(t => t.id === parts[0]);
+          if (!test) { renderer.banner(`Test not found: ${parts[0]}`); continue; }
+          const lines = [`${test.id} — ${test.title}`, `Environment: ${test.environment}`, `Status: ${test.status}`, `Description: ${test.description || '(none)'}`];
+          if (test.steps && test.steps.length > 0) {
+            lines.push('\nSteps:');
+            for (const s of test.steps) {
+              const icon = s.status === 'pass' ? '✅' : s.status === 'fail' ? '❌' : '⬜';
+              lines.push(`  ${icon} ${s.description} — Expected: ${s.expectedResult}${s.status === 'fail' && s.actualResult ? ' — Actual: ' + s.actualResult : ''}`);
+            }
+          }
+          if (test.linkedTaskIds && test.linkedTaskIds.length > 0) {
+            lines.push(`\nLinked tasks: ${test.linkedTaskIds.join(', ')}`);
+          }
+          renderer.banner(lines.join('\n'));
+          continue;
+        }
+
         // ── Instances / MCP ──────────────────────────────────────
 
         if (command === '/instances') {

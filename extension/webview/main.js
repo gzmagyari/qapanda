@@ -17,6 +17,7 @@
   const tabPanels = {
     agent: document.getElementById('tab-agent'),
     tasks: document.getElementById('tab-tasks'),
+    tests: document.getElementById('tab-tests'),
     agents: document.getElementById('tab-agents'),
     mcp: document.getElementById('tab-mcp'),
     instances: document.getElementById('tab-instances'),
@@ -36,6 +37,7 @@
       else el.classList.add('tab-hidden');
     }
     if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
+    if (tab === 'tests') vscode.postMessage({ type: 'testsLoad' });
     if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
     if (tab === 'instances') {
       instancesActionId++;
@@ -545,6 +547,237 @@
       renderAgentList(btn.dataset.scope);
     });
   });
+
+  // ── Tests Management ──────────────────────────────────────────────
+
+  const TEST_COLUMNS = [
+    { key: 'untested', label: 'Untested', color: '#888' },
+    { key: 'passing', label: 'Passing', color: '#4caf50' },
+    { key: 'failing', label: 'Failing', color: '#f44336' },
+    { key: 'partial', label: 'Partial', color: '#ff9800' },
+  ];
+
+  let testBoardData = [];
+  const testBoardEl = document.getElementById('test-board');
+  const testDetailEl = document.getElementById('test-detail');
+
+  function renderTestBoard() {
+    if (!testBoardEl) return;
+    testBoardEl.innerHTML = '';
+
+    // Toolbar
+    const toolbar = document.createElement('div');
+    toolbar.className = 'kanban-toolbar';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'kanban-add-btn';
+    addBtn.textContent = '+ New Test';
+    addBtn.addEventListener('click', () => showTestForm(null));
+    toolbar.appendChild(addBtn);
+
+    // Summary
+    const passing = testBoardData.filter(t => t.status === 'passing').length;
+    const failing = testBoardData.filter(t => t.status === 'failing').length;
+    const total = testBoardData.length;
+    const summaryEl = document.createElement('span');
+    summaryEl.className = 'test-summary';
+    summaryEl.innerHTML = `<span style="color:#4caf50">${passing} passing</span> · <span style="color:#f44336">${failing} failing</span> · ${total} total`;
+    toolbar.appendChild(summaryEl);
+    testBoardEl.appendChild(toolbar);
+
+    // Columns
+    const cols = document.createElement('div');
+    cols.className = 'kanban-columns';
+    for (const col of TEST_COLUMNS) {
+      const colEl = document.createElement('div');
+      colEl.className = 'kanban-column';
+      const header = document.createElement('div');
+      header.className = 'kanban-column-header';
+      header.innerHTML = `<span style="color:${col.color}">●</span> ${col.label} <span class="kanban-count">${testBoardData.filter(t => t.status === col.key).length}</span>`;
+      colEl.appendChild(header);
+
+      for (const test of testBoardData.filter(t => t.status === col.key)) {
+        const card = document.createElement('div');
+        card.className = 'kanban-card test-card';
+        card.style.borderLeftColor = col.color;
+
+        const stepsTotal = (test.steps || []).length;
+        const stepsPassing = (test.steps || []).filter(s => s.status === 'pass').length;
+        const envBadge = test.environment === 'browser' ? '🌐' : '🖥️';
+        const tags = (test.tags || []).map(t => `<span class="test-tag">${escapeHtml(t)}</span>`).join(' ');
+        const lastTested = test.lastTestedAt ? new Date(test.lastTestedAt).toLocaleDateString() : 'Never';
+
+        card.innerHTML = `
+          <div class="kanban-card-title">${envBadge} ${escapeHtml(test.title)}</div>
+          <div class="test-card-meta">
+            <span class="test-steps-count">${stepsPassing}/${stepsTotal} steps passing</span>
+            <span class="test-last-tested">Last: ${lastTested}</span>
+          </div>
+          ${tags ? '<div class="test-tags">' + tags + '</div>' : ''}
+        `;
+
+        card.addEventListener('click', () => showTestForm(test));
+        colEl.appendChild(card);
+      }
+      cols.appendChild(colEl);
+    }
+    testBoardEl.appendChild(cols);
+  }
+
+  function showTestForm(editTest) {
+    if (!testDetailEl) return;
+    testDetailEl.style.display = '';
+    if (testBoardEl) testBoardEl.style.display = 'none';
+
+    const isEdit = !!editTest;
+    let html = `<div class="task-form">`;
+    html += `<div class="task-form-header"><h3>${isEdit ? 'Test: ' + escapeHtml(editTest.title) : 'New Test'}</h3>`;
+    html += `<button class="task-form-close" id="test-form-close">✕</button></div>`;
+
+    html += `<label>Title</label><input type="text" id="test-title" value="${isEdit ? escapeHtml(editTest.title) : ''}" placeholder="Test title..." />`;
+    html += `<label>Environment</label><select id="test-env"><option value="browser" ${isEdit && editTest.environment === 'browser' ? 'selected' : ''}>Browser</option><option value="computer" ${isEdit && editTest.environment === 'computer' ? 'selected' : ''}>Desktop</option></select>`;
+    html += `<label>Description</label><textarea id="test-desc" rows="2" placeholder="What does this test verify?">${isEdit ? escapeHtml(editTest.description || '') : ''}</textarea>`;
+    html += `<label>Tags (comma-separated)</label><input type="text" id="test-tags" value="${isEdit ? (editTest.tags || []).join(', ') : ''}" placeholder="auth, ui, critical" />`;
+
+    // Steps
+    if (isEdit) {
+      html += `<h4>Steps</h4><div id="test-steps-list">`;
+      for (const step of editTest.steps || []) {
+        const icon = step.status === 'pass' ? '✅' : step.status === 'fail' ? '❌' : '⬜';
+        html += `<div class="test-step-item" data-step-id="${step.id}">`;
+        html += `<span class="test-step-icon">${icon}</span>`;
+        html += `<div class="test-step-body">`;
+        html += `<div class="test-step-desc">${escapeHtml(step.description)}</div>`;
+        html += `<div class="test-step-expected">Expected: ${escapeHtml(step.expectedResult)}</div>`;
+        if (step.status === 'fail' && step.actualResult) {
+          html += `<div class="test-step-actual" style="color:#f44336">Actual: ${escapeHtml(step.actualResult)}</div>`;
+        }
+        html += `</div>`;
+        html += `<button class="mcp-btn mcp-btn-danger test-step-delete" data-step-id="${step.id}">✕</button>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+      html += `<div class="test-add-step"><input type="text" id="test-new-step-desc" placeholder="Step description..." /><input type="text" id="test-new-step-expected" placeholder="Expected result..." /><button class="mcp-btn" id="test-add-step-btn">+ Add Step</button></div>`;
+
+      // Linked tasks
+      if (editTest.linkedTaskIds && editTest.linkedTaskIds.length > 0) {
+        html += `<h4>Linked Bug Tickets</h4><div class="test-linked-tasks">`;
+        for (const taskId of editTest.linkedTaskIds) {
+          html += `<span class="test-linked-task">${escapeHtml(taskId)}</span> `;
+        }
+        html += `</div>`;
+      }
+
+      // Run history
+      if (editTest.runs && editTest.runs.length > 0) {
+        html += `<h4>Run History (last 5)</h4><div class="test-run-history">`;
+        for (const run of editTest.runs.slice(-5).reverse()) {
+          const statusColor = run.status === 'passing' ? '#4caf50' : run.status === 'failing' ? '#f44336' : '#ff9800';
+          html += `<div class="test-run-item"><span style="color:${statusColor}">● ${run.status}</span> — ${run.agent || 'agent'} — ${new Date(run.date).toLocaleString()}`;
+          if (run.notes) html += ` — <em>${escapeHtml(run.notes)}</em>`;
+          html += `</div>`;
+        }
+        html += `</div>`;
+      }
+    }
+
+    // Buttons
+    html += `<div class="task-form-actions">`;
+    html += `<button class="mcp-btn" id="test-save-btn">${isEdit ? 'Save' : 'Create'}</button>`;
+    if (isEdit) {
+      html += ` <button class="mcp-btn" id="test-retest-btn" style="background:#0e639c;color:white">Re-test</button>`;
+      html += ` <button class="mcp-btn mcp-btn-danger" id="test-delete-btn">Delete</button>`;
+    }
+    html += `</div></div>`;
+
+    testDetailEl.innerHTML = html;
+
+    // Wire events
+    document.getElementById('test-form-close').addEventListener('click', () => {
+      testDetailEl.style.display = 'none';
+      testDetailEl.innerHTML = '';
+      if (testBoardEl) testBoardEl.style.display = '';
+    });
+
+    document.getElementById('test-save-btn').addEventListener('click', () => {
+      const title = document.getElementById('test-title').value.trim();
+      if (!title) return;
+      const env = document.getElementById('test-env').value;
+      const desc = document.getElementById('test-desc').value.trim();
+      const tags = document.getElementById('test-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+      if (isEdit) {
+        vscode.postMessage({ type: 'testUpdate', test_id: editTest.id, title, description: desc, environment: env, tags });
+      } else {
+        vscode.postMessage({ type: 'testCreate', title, description: desc, environment: env, tags });
+      }
+      testDetailEl.style.display = 'none';
+      testDetailEl.innerHTML = '';
+      if (testBoardEl) testBoardEl.style.display = '';
+    });
+
+    if (isEdit) {
+      // Add step
+      const addStepBtn = document.getElementById('test-add-step-btn');
+      if (addStepBtn) {
+        addStepBtn.addEventListener('click', () => {
+          const desc = document.getElementById('test-new-step-desc').value.trim();
+          const expected = document.getElementById('test-new-step-expected').value.trim();
+          if (!desc || !expected) return;
+          vscode.postMessage({ type: 'testAddStep', test_id: editTest.id, description: desc, expectedResult: expected });
+        });
+      }
+
+      // Delete step buttons
+      testDetailEl.querySelectorAll('.test-step-delete').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'testDeleteStep', test_id: editTest.id, step_id: parseInt(btn.dataset.stepId, 10) });
+        });
+      });
+
+      // Delete test
+      const deleteBtn = document.getElementById('test-delete-btn');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'testDelete', test_id: editTest.id });
+          testDetailEl.style.display = 'none';
+          testDetailEl.innerHTML = '';
+          if (testBoardEl) testBoardEl.style.display = '';
+        });
+      }
+
+      // Re-test
+      const retestBtn = document.getElementById('test-retest-btn');
+      if (retestBtn) {
+        retestBtn.addEventListener('click', () => {
+          const agentId = editTest.environment === 'computer' ? 'QA' : 'QA-Browser';
+          const stepsText = (editTest.steps || []).map((s, i) => `${i + 1}. ${s.description} — Expected: ${s.expectedResult}`).join('\n');
+          const prompt = `Re-test the following test case using the cc-tests MCP tools:\n\nTest: ${editTest.title} (${editTest.id})\nEnvironment: ${editTest.environment}\n\nSteps:\n${stepsText}\n\nInstructions:\n1. Call run_test with test_id "${editTest.id}"\n2. Execute each step and call update_step_result for each\n3. Call complete_test_run when done\n4. If any step fails, use create_bug_from_test to create a bug ticket`;
+
+          // Switch to correct agent and send
+          const targetValue = 'agent-' + agentId;
+          if (cfgChatTarget) {
+            cfgChatTarget.value = targetValue;
+            updateConfigBarForTarget(targetValue);
+          }
+          vscode.postMessage({ type: 'configChanged', config: { chatTarget: targetValue } });
+          vscode.postMessage({ type: 'userInput', text: prompt });
+
+          // Close detail and switch to Agent tab
+          testDetailEl.style.display = 'none';
+          testDetailEl.innerHTML = '';
+          if (testBoardEl) testBoardEl.style.display = '';
+          // Switch to agent tab
+          tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          const agentBtn = tabBar.querySelector('[data-tab="agent"]');
+          if (agentBtn) agentBtn.classList.add('active');
+          for (const [key, el] of Object.entries(tabPanels)) {
+            if (key === 'agent') el.classList.remove('tab-hidden');
+            else el.classList.add('tab-hidden');
+          }
+        });
+      }
+    }
+  }
 
   // ── Modes Management ──────────────────────────────────────────────
   let modesSystem = {};
@@ -3084,6 +3317,19 @@
         else renderKanban();
       } else {
         renderKanban();
+      }
+    },
+
+    testsData(msg) {
+      testBoardData = msg.tests || [];
+      if (testDetailEl && testDetailEl.style.display !== 'none') {
+        // If detail is open, refresh it
+        const openId = testDetailEl.dataset && testDetailEl.dataset.testId;
+        const updated = testBoardData.find(t => t.id === openId);
+        if (updated) showTestForm(updated);
+        else { testDetailEl.style.display = 'none'; testDetailEl.innerHTML = ''; if (testBoardEl) testBoardEl.style.display = ''; renderTestBoard(); }
+      } else {
+        renderTestBoard();
       }
     },
 

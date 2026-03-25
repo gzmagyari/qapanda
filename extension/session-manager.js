@@ -159,6 +159,18 @@ class SessionManager {
         env: { TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json') },
       };
     }
+    if (this._testsMcpPort) {
+      result['cc-tests'] = { type: 'http', url: `http://${mcpHost}:${this._testsMcpPort}/mcp` };
+    } else if (this._extensionPath) {
+      result['cc-tests'] = {
+        command: 'node',
+        args: [path.join(this._extensionPath, 'tests-mcp-server.js')],
+        env: {
+          TESTS_FILE: path.join(this._repoRoot, '.cc-manager', 'tests.json'),
+          TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json'),
+        },
+      };
+    }
     if (this._qaDesktopMcpPort) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }

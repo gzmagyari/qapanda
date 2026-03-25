@@ -8,11 +8,13 @@ const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgent
 const { loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store');
 const { listInstances, stopInstance, restartInstance, ensureDesktop, findExistingDesktop, getLinkedInstance, getSnapshotExists, instanceName } = require('./src/remote-desktop');
 const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
+const { startTestsMcpServer, stopTestsMcpServer } = require('./tests-mcp-http');
 const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
 const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding } = require('./onboarding');
 
 const activePanels = new Set();
 let _tasksMcpPort = null;
+let _testsMcpPort = null;
 let _qaDesktopMcpPort = null;
 
 // ── MCP config file helpers ─────────────────────────────────────────
@@ -184,6 +186,88 @@ function handleTaskMessage(msg, repoRoot) {
   return null;
 }
 
+// ── Test CRUD ────────────────────────────────────────────────────
+
+function testsFilePath(repoRoot) { return path.join(repoRoot, '.cc-manager', 'tests.json'); }
+function loadTestsFile(fp) { try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; } }
+function saveTestsFile(fp, data) { const dir = path.dirname(fp); if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf8'); }
+
+function handleTestMessage(msg, repoRoot) {
+  const fp = testsFilePath(repoRoot);
+  if (msg.type === 'testsLoad') {
+    const data = loadTestsFile(fp);
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testCreate') {
+    const data = loadTestsFile(fp);
+    const id = 'test-' + data.nextId++;
+    const test = {
+      id, title: msg.title || 'New Test', description: msg.description || '',
+      environment: msg.environment || 'browser', status: 'untested',
+      steps: [], linkedTaskIds: [], tags: msg.tags || [],
+      lastTestedAt: null, lastTestedBy: null,
+      created_at: nowIso(), updated_at: nowIso(), runs: [],
+    };
+    data.tests.push(test);
+    saveTestsFile(fp, data);
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testUpdate') {
+    const data = loadTestsFile(fp);
+    const test = data.tests.find(t => t.id === msg.test_id);
+    if (test) {
+      if (msg.title !== undefined) test.title = msg.title;
+      if (msg.description !== undefined) test.description = msg.description;
+      if (msg.environment !== undefined) test.environment = msg.environment;
+      if (msg.tags !== undefined) test.tags = msg.tags;
+      test.updated_at = nowIso();
+      saveTestsFile(fp, data);
+    }
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testDelete') {
+    const data = loadTestsFile(fp);
+    data.tests = data.tests.filter(t => t.id !== msg.test_id);
+    saveTestsFile(fp, data);
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testAddStep') {
+    const data = loadTestsFile(fp);
+    const test = data.tests.find(t => t.id === msg.test_id);
+    if (test) {
+      test.steps.push({ id: data.nextStepId++, description: msg.description || '', expectedResult: msg.expectedResult || '', status: 'untested', actualResult: null });
+      test.updated_at = nowIso();
+      saveTestsFile(fp, data);
+    }
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testUpdateStep') {
+    const data = loadTestsFile(fp);
+    const test = data.tests.find(t => t.id === msg.test_id);
+    if (test) {
+      const step = test.steps.find(s => s.id === msg.step_id);
+      if (step) {
+        if (msg.description !== undefined) step.description = msg.description;
+        if (msg.expectedResult !== undefined) step.expectedResult = msg.expectedResult;
+        test.updated_at = nowIso();
+        saveTestsFile(fp, data);
+      }
+    }
+    return { type: 'testsData', tests: data.tests };
+  }
+  if (msg.type === 'testDeleteStep') {
+    const data = loadTestsFile(fp);
+    const test = data.tests.find(t => t.id === msg.test_id);
+    if (test) {
+      test.steps = test.steps.filter(s => s.id !== msg.step_id);
+      test.updated_at = nowIso();
+      saveTestsFile(fp, data);
+    }
+    return { type: 'testsData', tests: data.tests };
+  }
+  return null;
+}
+
 function handleAgentMessage(msg, repoRoot, extensionPath) {
   if (msg.type === 'agentsLoad') {
     return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
@@ -346,6 +430,7 @@ function getWebviewHtml(panel, extensionUri) {
     <div id="tab-bar">
       <button class="tab-btn active" data-tab="agent">Agent</button>
       <button class="tab-btn" data-tab="tasks">Tasks</button>
+      <button class="tab-btn" data-tab="tests">Tests</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
       <button class="tab-btn" data-tab="instances">Instances</button>
@@ -508,6 +593,11 @@ function getWebviewHtml(panel, extensionUri) {
       <div id="task-detail" class="task-detail" style="display:none"></div>
     </div><!-- /tab-tasks -->
 
+    <div id="tab-tests" class="tab-hidden">
+      <div id="test-board" class="test-board"></div>
+      <div id="test-detail" class="test-detail"></div>
+    </div><!-- /tab-tests -->
+
     <div id="tab-agents" class="tab-hidden">
       <div class="mcp-container">
         <div class="mcp-section">
@@ -652,6 +742,8 @@ function activate(context) {
   // Start HTTP MCP servers (singletons shared across all panels)
   const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.cc-manager', 'tasks.json');
   startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
+  const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.cc-manager', 'tests.json');
+  startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
   startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
 
@@ -699,6 +791,7 @@ function activate(context) {
     });
     // Pass HTTP MCP server ports so agents can reach them
     session._tasksMcpPort = _tasksMcpPort;
+    session._testsMcpPort = _testsMcpPort;
     session._qaDesktopMcpPort = _qaDesktopMcpPort;
     // Initialize MCP servers and agents from disk
     const extensionPath1 = context.extensionUri.fsPath;
@@ -778,6 +871,9 @@ function activate(context) {
         // Task CRUD messages
         const taskReply = handleTaskMessage(msg, repoRoot);
         if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+        // Test CRUD messages
+        const testReply = handleTestMessage(msg, repoRoot);
+        if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
         // Agent CRUD messages
         const agentReply = handleAgentMessage(msg, repoRoot, extensionPath1);
         if (agentReply) {
@@ -917,6 +1013,9 @@ function activate(context) {
           // Task CRUD messages
           const taskReply = handleTaskMessage(msg, repoRoot);
           if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+          // Test CRUD messages
+          const testReply = handleTestMessage(msg, repoRoot);
+          if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
           // Agent CRUD messages
           const agentReply = handleAgentMessage(msg, repoRoot, extensionPath2);
           if (agentReply) {
