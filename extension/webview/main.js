@@ -1564,8 +1564,8 @@
       indicator = document.createElement('span');
       indicator.id = 'mode-indicator';
       indicator.className = 'mode-indicator';
-      const inputArea = document.getElementById('input-area');
-      if (inputArea) inputArea.appendChild(indicator);
+      const inputBox = document.getElementById('input-box') || document.getElementById('input-area');
+      if (inputBox) inputBox.appendChild(indicator);
     }
     const envLabel = currentTestEnv ? ' (' + (currentTestEnv === 'browser' ? 'Browser' : 'Desktop') + ')' : '';
     indicator.textContent = (mode.icon || '') + ' ' + mode.name + envLabel;
@@ -2818,11 +2818,17 @@
     if (!label) return '';
     const l = label.toLowerCase();
     if (l.includes('user')) return 'role-user';
-    if (l.includes('controller')) return 'role-controller';
-    if (l.includes('claude')) return 'role-claude';
+    if (l.includes('orchestrator')) return 'role-orchestrator';
+    if (l === 'continue') return 'role-continue';
+    if (l.includes('controller')) return 'role-orchestrator';
+    if (l.includes('developer')) return 'role-agent-dev';
+    if (l.includes('qa')) return 'role-agent-qa';
+    if (l.includes('setup')) return 'role-agent-setup';
+    if (l.includes('delegation')) return 'role-delegation';
+    if (l.includes('worker') || l.includes('claude')) return 'role-claude';
     if (l.includes('shell')) return 'role-shell';
     if (l.includes('error')) return 'role-error';
-    return '';
+    return 'role-default';
   }
 
   function shouldAutoScroll() {
@@ -2857,6 +2863,29 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function renderDecisionCard(d) {
+    let html = '<div class="decision">';
+    html += '<div class="decision-action">' + escapeHtml(d.action || '?');
+    if (d.action === 'delegate' && d.agent_id) html += ' → ' + escapeHtml(d.agent_id);
+    html += '</div>';
+    if (d.controller_messages && d.controller_messages.length) {
+      for (const m of d.controller_messages) {
+        html += '<div class="decision-msg">' + escapeHtml(m) + '</div>';
+      }
+    }
+    if (d.claude_message) {
+      html += '<div class="decision-task">' + escapeHtml(d.claude_message) + '</div>';
+    }
+    if (d.stop_reason) {
+      html += '<div class="decision-stop">Stop: ' + escapeHtml(d.stop_reason) + '</div>';
+    }
+    if (d.progress_updates && d.progress_updates.length) {
+      html += '<div class="decision-progress">' + d.progress_updates.map(p => escapeHtml(p)).join(' · ') + '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   function renderInlineMarkdown(text) {
@@ -3041,7 +3070,23 @@
 
     controller(msg) {
       streamingEntry = null;
-      addEntry(msg.label || 'Controller', renderInlineMarkdown(msg.text));
+      const text = msg.text || '';
+      const label = msg.label || 'Orchestrator';
+      // Parse JSON decisions into a formatted card
+      if (text.startsWith('{') && text.includes('"action"')) {
+        try {
+          const d = JSON.parse(text);
+          addEntry(label, renderDecisionCard(d), 'decision-card');
+          return;
+        } catch {}
+      }
+      // Dim status/progress lines
+      const statusPatterns = ['Started controller session', 'Thinking about', 'Finished the current controller'];
+      if (statusPatterns.some(p => text.startsWith(p))) {
+        addEntry(label, escapeHtml(text), 'status-line');
+        return;
+      }
+      addEntry(label, renderInlineMarkdown(text));
     },
 
     claude(msg) {

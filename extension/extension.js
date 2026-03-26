@@ -514,22 +514,29 @@ function getWebviewHtml(panel, extensionUri) {
       </div>
       <div id="messages"></div>
       <div id="suggestions"></div>
-      <div id="input-area">
+      <div id="input-box">
         <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
-        <button id="btn-send">Send</button>
-        <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
-        <button id="btn-orchestrate" title="Full controller orchestration — controller investigates and delegates to agents">Orchestrate ⚡</button>
-        <button id="btn-stop">Stop</button>
-        <label class="loop-toggle" title="Auto-continue: controller runs after each agent response"><input type="checkbox" id="loop-toggle" /><span>⟳</span></label>
+        <div id="input-toolbar">
+          <div id="input-toolbar-left">
+            <span class="toolbar-label">TARGET</span>
+            <select id="cfg-chat-target">
+              <option value="controller">Orchestrator</option>
+              <option value="claude">Worker (Default)</option>
+            </select>
+          </div>
+          <div id="input-toolbar-right">
+            <button id="btn-send">Send</button>
+            <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
+            <button id="btn-orchestrate" title="Full controller orchestration">Orchestrate ⚡</button>
+            <button id="btn-stop">Stop ■</button>
+            <div class="toggle-switch" title="Auto-continue loop">
+              <input type="checkbox" id="loop-toggle" />
+              <label for="loop-toggle"><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
       </div>
       <div id="config-bar">
-      <div class="config-group">
-        <label>Target</label>
-        <select id="cfg-chat-target">
-          <option value="controller">Orchestrator</option>
-          <option value="claude">Worker (Default)</option>
-        </select>
-      </div>
       <div class="config-group cfg-controller-only">
         <label>Orchestrator CLI</label>
         <select id="cfg-controller-cli">
