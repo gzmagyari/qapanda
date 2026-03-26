@@ -129,7 +129,11 @@ html, body {
 
 /* Section: one per actor */
 .section {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  padding-left: 12px;
+}
+.section:has(.role-user) {
+  padding-left: 0;
 }
 
 .section-header {
@@ -142,16 +146,16 @@ html, body {
 }
 
 /* Role colors — section headers */
-.section-header.role-user { color: #4ec9b0; }
-.section-header.role-orchestrator { color: #e5a04b; }
-.section-header.role-continue { color: #569cd6; }
-.section-header.role-controller { color: #e5a04b; }
-.section-header.role-agent-dev { color: #6a9955; }
-.section-header.role-agent-qa { color: #c586c0; }
-.section-header.role-agent-setup { color: #4ec9b0; }
-.section-header.role-delegation { color: #4ec9b0; }
-.section-header.role-claude { color: #6a9955; }
-.section-header.role-shell { color: #c586c0; }
+.section-header.role-user { color: #6edbc5; }
+.section-header.role-orchestrator { color: #f0b865; }
+.section-header.role-continue { color: #7bb8e8; }
+.section-header.role-controller { color: #f0b865; }
+.section-header.role-agent-dev { color: #8fbf7a; }
+.section-header.role-agent-qa { color: #d9a0d4; }
+.section-header.role-agent-setup { color: #6edbc5; }
+.section-header.role-delegation { color: #6edbc5; }
+.section-header.role-claude { color: #8fbf7a; }
+.section-header.role-shell { color: #d9a0d4; }
 .section-header.role-default { color: #ccc; }
 
 /* Timeline entry: circle + content */
@@ -173,17 +177,17 @@ html, body {
 }
 
 /* Role colors — timeline circles */
-.entry.role-user::before { color: #4ec9b0; }
-.entry.role-orchestrator::before { color: #e5a04b; }
-.entry.role-continue::before { color: #569cd6; }
-.entry.role-controller::before { color: #e5a04b; }
-.entry.role-agent-dev::before { color: #6a9955; }
-.entry.role-agent-qa::before { color: #c586c0; }
-.entry.role-agent-setup::before { color: #4ec9b0; }
-.entry.role-delegation::before { color: #4ec9b0; }
-.entry.role-claude::before { color: #6a9955; }
-.entry.role-shell::before { color: #c586c0; }
-.entry.role-error::before { color: #f44747; }
+.entry.role-user::before { color: #6edbc5; }
+.entry.role-orchestrator::before { color: #f0b865; }
+.entry.role-continue::before { color: #7bb8e8; }
+.entry.role-controller::before { color: #f0b865; }
+.entry.role-agent-dev::before { color: #8fbf7a; }
+.entry.role-agent-qa::before { color: #d9a0d4; }
+.entry.role-agent-setup::before { color: #6edbc5; }
+.entry.role-delegation::before { color: #6edbc5; }
+.entry.role-claude::before { color: #8fbf7a; }
+.entry.role-shell::before { color: #d9a0d4; }
+.entry.role-error::before { color: #f55; }
 .entry.role-default::before { color: #ccc; }
 
 /* Pipe connector between entries */
@@ -203,16 +207,16 @@ html, body {
 }
 
 /* Role colors — pipe connectors */
-.pipe.role-user::before { color: #4ec9b0; }
-.pipe.role-orchestrator::before { color: #e5a04b; }
-.pipe.role-continue::before { color: #569cd6; }
-.pipe.role-controller::before { color: #e5a04b; }
-.pipe.role-agent-dev::before { color: #6a9955; }
-.pipe.role-agent-qa::before { color: #c586c0; }
-.pipe.role-agent-setup::before { color: #4ec9b0; }
-.pipe.role-delegation::before { color: #4ec9b0; }
-.pipe.role-claude::before { color: #6a9955; }
-.pipe.role-shell::before { color: #c586c0; }
+.pipe.role-user::before { color: #6edbc5; }
+.pipe.role-orchestrator::before { color: #f0b865; }
+.pipe.role-continue::before { color: #7bb8e8; }
+.pipe.role-controller::before { color: #f0b865; }
+.pipe.role-agent-dev::before { color: #8fbf7a; }
+.pipe.role-agent-qa::before { color: #d9a0d4; }
+.pipe.role-agent-setup::before { color: #6edbc5; }
+.pipe.role-delegation::before { color: #6edbc5; }
+.pipe.role-claude::before { color: #8fbf7a; }
+.pipe.role-shell::before { color: #d9a0d4; }
 .pipe.role-default::before { color: #ccc; }
 
 /* Thinking indicator */
@@ -318,7 +322,7 @@ html, body {
 /* Banner / status messages */
 .banner {
   color: var(--vscode-descriptionForeground, #888);
-  padding: 4px 4px;
+  padding: 4px 4px 4px 12px;
   margin: 8px 0;
   font-size: 12px;
   white-space: pre-wrap;
