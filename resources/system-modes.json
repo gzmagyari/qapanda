@@ -1,64 +1,57 @@
 {
-  "quick-test": {
-    "name": "Quick Test",
-    "description": "Test one thing at a time — you describe what to test, the QA agent runs it",
+  "test": {
+    "name": "Test",
+    "description": "Manual testing — you direct the QA agent, toggle Auto for autonomous testing",
     "category": "test",
     "icon": "🔍",
     "useController": false,
     "defaultAgent": { "browser": "QA-Browser", "computer": "QA" },
     "requiresTestEnv": true,
     "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "autoDefault": false,
     "enabled": true
   },
-  "auto-test": {
-    "name": "Auto Test",
-    "description": "Give a test plan and the system runs everything autonomously",
-    "category": "test",
-    "icon": "🔄",
-    "useController": true,
-    "controllerPrompt": {
-      "browser": "You are a QA test coordinator. Your job is to plan and execute a comprehensive test plan.\n\nWorkflow:\n1. Read the user's test requirements carefully\n2. Break them down into individual test cases\n3. Delegate each test case to the QA agent (agent_id: \"QA-Browser\") one at a time\n4. Review each test result — if a test fails, document the bug clearly\n5. Continue until all test cases are covered\n6. Provide a final summary of all pass/fail results\n\nFor each delegation, set action to \"delegate\" with agent_id \"QA-Browser\" and a clear, specific test instruction.\nWhen all tests are complete, set action to \"stop\" with a summary.",
-      "computer": "You are a QA test coordinator. Your job is to plan and execute a comprehensive test plan.\n\nWorkflow:\n1. Read the user's test requirements carefully\n2. Break them down into individual test cases\n3. Delegate each test case to the QA agent (agent_id: \"QA\") one at a time\n4. Review each test result — if a test fails, document the bug clearly\n5. Continue until all test cases are covered\n6. Provide a final summary of all pass/fail results\n\nFor each delegation, set action to \"delegate\" with agent_id \"QA\" and a clear, specific test instruction.\nWhen all tests are complete, set action to \"stop\" with a summary."
-    },
-    "availableAgents": { "browser": ["QA-Browser"], "computer": ["QA"] },
-    "requiresTestEnv": true,
-    "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
-    "enabled": true
-  },
-  "quick-dev": {
-    "name": "Quick Dev",
-    "description": "Quick code changes — talk directly to a dev agent",
+  "dev": {
+    "name": "Dev",
+    "description": "Development — you direct the dev agent, toggle Auto for autonomous coding",
     "category": "develop",
     "icon": "💻",
     "useController": false,
     "defaultAgent": "dev",
     "requiresTestEnv": false,
+    "autoDefault": false,
     "enabled": true
   },
-  "auto-dev": {
-    "name": "Auto Dev",
-    "description": "Autonomous development — give it a plan, it implements everything",
-    "category": "develop",
-    "icon": "⚡",
-    "useController": true,
-    "controllerPrompt": "You are a development coordinator. Your job is to plan and implement features autonomously.\n\nWorkflow:\n1. Read the user's requirements carefully\n2. Break them down into implementation steps\n3. Delegate each step to the dev agent (agent_id: \"dev\") one at a time\n4. Review each result — if something needs fixing, delegate a follow-up\n5. Continue until the full implementation is complete\n6. Provide a final summary of all changes made\n\nFor each delegation, set action to \"delegate\" with agent_id \"dev\" and a clear, specific implementation instruction.\nWhen all work is complete, set action to \"stop\" with a summary.",
-    "availableAgents": ["dev"],
-    "requiresTestEnv": false,
-    "enabled": true
-  },
-  "auto-dev-test": {
-    "name": "Auto Dev & Test",
-    "description": "Build and verify — develop features with continuous QA testing",
+  "dev-test": {
+    "name": "Dev & Test",
+    "description": "Develop and verify — dev agent implements, delegates to QA for testing. Auto mode on by default.",
     "category": "develop",
     "icon": "🚀",
-    "useController": true,
-    "controllerPrompt": {
-      "browser": "You are a development and QA coordinator. Your job is to implement features and verify they work correctly.\n\nWorkflow:\n1. Read the user's requirements carefully\n2. Break them down into implementation steps\n3. Delegate implementation to the dev agent (agent_id: \"dev\")\n4. After each implementation step, delegate testing to the QA agent (agent_id: \"QA-Browser\")\n5. If QA finds bugs, delegate fixes to the dev agent, then re-test\n6. Continue the implement → test → fix cycle until everything passes\n7. Provide a final summary of all changes and test results\n\nAvailable agents:\n- \"dev\": Software developer — delegates code changes\n- \"QA-Browser\": QA Engineer (Browser) — delegates browser-based testing\n\nFor each delegation, set action to \"delegate\" with agent_id and a clear instruction.\nWhen all work is complete and tests pass, set action to \"stop\" with a summary.",
-      "computer": "You are a development and QA coordinator. Your job is to implement features and verify they work correctly.\n\nWorkflow:\n1. Read the user's requirements carefully\n2. Break them down into implementation steps\n3. Delegate implementation to the dev agent (agent_id: \"dev\")\n4. After each implementation step, delegate testing to the QA agent (agent_id: \"QA\")\n5. If QA finds bugs, delegate fixes to the dev agent, then re-test\n6. Continue the implement → test → fix cycle until everything passes\n7. Provide a final summary of all changes and test results\n\nAvailable agents:\n- \"dev\": Software developer — delegates code changes\n- \"QA\": QA Engineer (Computer) — delegates desktop-based testing\n\nFor each delegation, set action to \"delegate\" with agent_id and a clear instruction.\nWhen all work is complete and tests pass, set action to \"stop\" with a summary."
-    },
-    "availableAgents": { "browser": ["dev", "QA-Browser"], "computer": ["dev", "QA"] },
+    "useController": false,
+    "defaultAgent": "dev",
     "requiresTestEnv": true,
     "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "autoDefault": true,
+    "controllerPrompt": {
+      "browser": "You are a copilot overseeing a development and QA session. The user is working with a dev agent who can delegate to a QA-Browser agent for testing.\n\nAfter each dev task, suggest testing. After test results, suggest fixes if needed. Available agents: dev, QA-Browser.\n\nOutput JSON with action (delegate/stop), claude_message, and controller_messages.",
+      "computer": "You are a copilot overseeing a development and QA session. The user is working with a dev agent who can delegate to a QA agent for desktop testing.\n\nAfter each dev task, suggest testing. After test results, suggest fixes if needed. Available agents: dev, QA.\n\nOutput JSON with action (delegate/stop), claude_message, and controller_messages."
+    },
+    "enabled": true
+  },
+  "test-fix": {
+    "name": "Test & Fix",
+    "description": "QA-driven — QA agent tests, delegates to dev for bug fixes. Auto mode on by default.",
+    "category": "test",
+    "icon": "🔧",
+    "useController": false,
+    "defaultAgent": { "browser": "QA-Browser", "computer": "QA" },
+    "requiresTestEnv": true,
+    "setupAgent": { "browser": "setup-browser", "computer": "setup-computer" },
+    "autoDefault": true,
+    "controllerPrompt": {
+      "browser": "You are a copilot overseeing a QA and bug-fix session. The user is working with a QA-Browser agent who can delegate to a dev agent for fixes.\n\nAfter each test failure, suggest delegating the fix to dev. After fixes, suggest re-testing. Available agents: QA-Browser, dev.\n\nOutput JSON with action (delegate/stop), claude_message, and controller_messages.",
+      "computer": "You are a copilot overseeing a QA and bug-fix session. The user is working with a QA agent who can delegate to a dev agent for fixes.\n\nAfter each test failure, suggest delegating the fix to dev. After fixes, suggest re-testing. Available agents: QA, dev.\n\nOutput JSON with action (delegate/stop), claude_message, and controller_messages."
+    },
     "enabled": true
   }
 }

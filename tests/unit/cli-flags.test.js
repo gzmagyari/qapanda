@@ -24,8 +24,8 @@ const RUN_SPEC = {
 
 describe('CLI flag parsing', () => {
   it('parses --mode flag', () => {
-    const { options } = parseArgs(['--mode', 'quick-dev'], RUN_SPEC);
-    assert.equal(options.mode, 'quick-dev');
+    const { options } = parseArgs(['--mode', 'dev'], RUN_SPEC);
+    assert.equal(options.mode, 'dev');
   });
 
   it('parses --agent flag', () => {
@@ -69,8 +69,8 @@ describe('CLI flag parsing', () => {
   });
 
   it('parses combination of flags + positional', () => {
-    const { options, positionals } = parseArgs(['--mode', 'quick-dev', '--print', '--agent', 'dev', 'hello world'], RUN_SPEC);
-    assert.equal(options.mode, 'quick-dev');
+    const { options, positionals } = parseArgs(['--mode', 'dev', '--print', '--agent', 'dev', 'hello world'], RUN_SPEC);
+    assert.equal(options.mode, 'dev');
     assert.equal(options.print, true);
     assert.equal(options.agent, 'dev');
     assert.deepEqual(positionals, ['hello world']);
@@ -87,7 +87,7 @@ describe('loadConfig', () => {
     assert.ok(config.allAgents, 'should have agents');
     assert.ok(config.allAgents.dev, 'should have dev agent');
     assert.ok(config.allModes, 'should have modes');
-    assert.ok(config.allModes['quick-dev'], 'should have quick-dev mode');
+    assert.ok(config.allModes['dev'], 'should have dev mode');
     assert.ok(config.defaults, 'should have defaults');
   });
 });
@@ -101,30 +101,30 @@ describe('applyConfigToOptions', () => {
     assert.ok(enriched.workerCli, 'should set worker CLI from defaults');
   });
 
-  it('--mode quick-dev sets direct agent to dev', () => {
+  it('--mode dev sets direct agent to dev', () => {
     const config = loadConfig(PROJECT_ROOT);
-    const options = { repoRoot: PROJECT_ROOT, mode: 'quick-dev' };
+    const options = { repoRoot: PROJECT_ROOT, mode: 'dev' };
     const { directAgent } = applyConfigToOptions(options, config);
     assert.equal(directAgent, 'dev');
   });
 
-  it('--mode auto-dev does NOT set direct agent (uses controller)', () => {
+  it('--mode dev-test sets dev as direct agent (with auto default)', () => {
     const config = loadConfig(PROJECT_ROOT);
-    const options = { repoRoot: PROJECT_ROOT, mode: 'auto-dev' };
+    const options = { repoRoot: PROJECT_ROOT, mode: 'dev-test', testEnv: 'browser' };
     const { directAgent } = applyConfigToOptions(options, config);
-    assert.equal(directAgent, null);
+    assert.equal(directAgent, 'dev');
   });
 
-  it('--mode quick-test with --test-env browser sets QA-Browser agent', () => {
+  it('--mode test with --test-env browser sets QA-Browser agent', () => {
     const config = loadConfig(PROJECT_ROOT);
-    const options = { repoRoot: PROJECT_ROOT, mode: 'quick-test', testEnv: 'browser' };
+    const options = { repoRoot: PROJECT_ROOT, mode: 'test', testEnv: 'browser' };
     const { directAgent } = applyConfigToOptions(options, config);
     assert.equal(directAgent, 'QA-Browser');
   });
 
-  it('--mode quick-test with --test-env computer sets QA agent', () => {
+  it('--mode test with --test-env computer sets QA agent', () => {
     const config = loadConfig(PROJECT_ROOT);
-    const options = { repoRoot: PROJECT_ROOT, mode: 'quick-test', testEnv: 'computer' };
+    const options = { repoRoot: PROJECT_ROOT, mode: 'test', testEnv: 'computer' };
     const { directAgent } = applyConfigToOptions(options, config);
     assert.equal(directAgent, 'QA');
   });

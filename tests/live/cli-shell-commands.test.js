@@ -18,9 +18,9 @@ describe('cc-manager shell commands (e2e)', { timeout: 30000 }, () => {
   it('/modes lists available modes', async () => {
     const r = await runShell(['/modes']);
     const out = stripAnsi(r.stdout);
-    assert.ok(out.includes('quick-test'), 'should list quick-test');
-    assert.ok(out.includes('quick-dev'), 'should list quick-dev');
-    assert.ok(out.includes('auto-dev'), 'should list auto-dev');
+    assert.ok(out.includes('test'), 'should list test');
+    assert.ok(out.includes('dev'), 'should list dev');
+    assert.ok(out.includes('dev-test'), 'should list dev-test');
   });
 
   it('/agents lists available agents', async () => {
@@ -36,10 +36,10 @@ describe('cc-manager shell commands (e2e)', { timeout: 30000 }, () => {
     assert.ok(out.includes('MCP') || out.includes('Auto-injected') || out.includes('detached-command'), 'should show MCP info');
   });
 
-  it('/mode quick-dev changes mode', async () => {
-    const r = await runShell(['/mode quick-dev']);
+  it('/mode dev changes mode', async () => {
+    const r = await runShell(['/mode dev']);
     const out = stripAnsi(r.stdout);
-    assert.ok(out.includes('quick-dev') && out.includes('direct'), 'should confirm mode set to quick-dev with direct agent');
+    assert.ok(out.includes('dev') && out.includes('direct'), 'should confirm mode set to dev with direct agent');
   });
 
   it('/agent dev sets direct agent', async () => {

@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
-const { loadWorkflows } = require('./prompts');
+const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./prompts');
 const {
   WAIT_OPTIONS,
   defaultStateRoot,
@@ -117,6 +117,7 @@ async function runInteractiveShell(options = {}) {
   let currentMode = options.mode || null;
   let currentTestEnv = options.testEnv || null;
   let directAgent = options.agent || null;
+  let loopMode = false;
 
   let activeManifest = null;
   let waitDelay = options.wait || '';
@@ -305,6 +306,47 @@ async function runInteractiveShell(options = {}) {
 
         if (command === '/quit' || command === '/exit') break;
         if (command === '/help') { printHelp(renderer); continue; }
+
+        if (command === '/loop') {
+          loopMode = !loopMode;
+          renderer.banner(`Loop mode: ${loopMode ? 'ON — controller auto-continues after each response' : 'OFF'}`);
+          continue;
+        }
+
+        if (command === '/continue') {
+          const guidance = rest || '';
+          renderer.banner('Running controller continue...');
+          clearWaitTimer();
+          try {
+            if (!activeManifest) {
+              activeManifest = await prepareNewRun(guidance || '[AUTO-CONTINUE]', buildRunOptions());
+              renderer.requestStarted(activeManifest.runId);
+            }
+            // Set copilot prompt + continue directive so controller knows what to do
+            const originalPrompt = activeManifest.controllerSystemPrompt;
+            const basePrompt = originalPrompt || buildCopilotBasePrompt();
+            const directive = buildContinueDirective(guidance, directAgent);
+            activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + directive;
+            // Copilot mode: fresh one-shot controller — don't resume any existing session
+            const savedControllerSessionId = activeManifest.controller.sessionId;
+            activeManifest.controller.sessionId = null;
+            const userMessage = guidance
+              ? `[CONTROLLER GUIDANCE] ${guidance}`
+              : '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.';
+            activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage });
+            // Restore original prompt and direct-mode controller session
+            activeManifest.controllerSystemPrompt = originalPrompt;
+            activeManifest.controller.sessionId = savedControllerSessionId;
+            await saveManifest(activeManifest);
+            if (loopMode && activeManifest.status === 'running') {
+              scheduleNextPass();
+            }
+          } catch (error) {
+            if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+            else renderer.banner('Run stopped by user.');
+          } finally { renderer.close(); }
+          continue;
+        }
 
         if (command === '/clear') {
           clearWaitTimer();

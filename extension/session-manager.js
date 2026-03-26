@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } = require('./src/orchestrator');
 const { closeInteractiveSessions } = require('./src/claude');
-const { loadWorkflows } = require('./src/prompts');
+const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./src/prompts');
 const {
   WAIT_OPTIONS,
   defaultStateRoot,
@@ -93,6 +93,9 @@ class SessionManager {
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
     this._currentMode = null;
     this._testEnv = null;
+    this._loopMode = false;
+    this._agentDelegateMcpServer = null;
+    this._delegationDepth = 0;
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
@@ -174,6 +177,10 @@ class SessionManager {
     if (this._qaDesktopMcpPort) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
+    // Auto-inject agent delegation MCP
+    if (this._agentDelegateMcpServer) {
+      result['cc-agent-delegate'] = { type: 'http', url: `http://${mcpHost}:${this._agentDelegateMcpServer.port}/mcp` };
+    }
     // Auto-inject detached-command MCP (for running shell commands without hanging)
     if (isRemote) {
       // Remote agents: use container-baked path
@@ -191,6 +198,97 @@ class SessionManager {
       };
     }
     return result;
+  }
+
+  // ── Agent delegation MCP ──────────────────────────────────────
+
+  /** Lazy-start the agent delegation MCP HTTP server. */
+  async _startAgentDelegateMcp() {
+    if (this._agentDelegateMcpServer) return;
+    try {
+      const { startAgentDelegateMcpServer } = require('./agent-delegate-mcp');
+      this._agentDelegateMcpServer = await startAgentDelegateMcpServer({
+        onDelegate: (agentId, message) => this._handleDelegation(agentId, message),
+        onListAgents: () => this._handleListAgents(),
+      });
+    } catch (err) {
+      console.error('[cc-manager] Failed to start agent-delegate MCP:', err.message);
+    }
+  }
+
+  /** Stop the agent delegation MCP server. */
+  _stopAgentDelegateMcp() {
+    if (this._agentDelegateMcpServer) {
+      try { this._agentDelegateMcpServer.close(); } catch {}
+      this._agentDelegateMcpServer = null;
+    }
+  }
+
+  /**
+   * Handle a delegate_to_agent tool call from an agent.
+   * Runs the target agent to completion and returns its response text.
+   */
+  async _handleDelegation(agentId, message) {
+    if (this._delegationDepth >= 3) {
+      throw new Error('Delegation depth limit reached (max 3). Cannot delegate further to prevent infinite loops.');
+    }
+    if (!this._activeManifest) {
+      throw new Error('No active run. Cannot delegate.');
+    }
+    const agents = this._enabledAgents();
+    if (!agents[agentId]) {
+      const available = Object.entries(agents).map(([id, a]) => `${id} (${a.name || id})`).join(', ');
+      throw new Error(`Unknown agent "${agentId}". Available agents: ${available}`);
+    }
+
+    // Save manifest transient state — runDirectWorkerTurn overwrites these
+    const savedStatus = this._activeManifest.status;
+    const savedActiveRequestId = this._activeManifest.activeRequestId;
+    const savedStopReason = this._activeManifest.stopReason;
+    const savedWorkerMcpServers = this._activeManifest.workerMcpServers;
+
+    this._delegationDepth++;
+    try {
+      // Setup for the delegated agent (same steps as _runDirectAgent)
+      this._syncMcpToManifest(agentId);
+      await this._ensureChromeIfNeeded(agentId);
+      if (this._extensionPath && this._activeManifest) {
+        this._activeManifest.extensionDir = this._extensionPath;
+      }
+
+      const { runDirectWorkerTurn } = require('./src/orchestrator');
+      this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
+        userMessage: message,
+        agentId,
+        isDelegation: true,
+        abortSignal: this._abortController ? this._abortController.signal : undefined,
+      });
+
+      // Extract the delegated agent's response
+      const lastReq = this._activeManifest.requests[this._activeManifest.requests.length - 1];
+      const resultText = (lastReq && lastReq.latestWorkerResult && lastReq.latestWorkerResult.resultText) || 'Agent completed but returned no text.';
+      return resultText;
+    } finally {
+      this._delegationDepth--;
+      // Restore manifest state so the calling agent's run isn't corrupted
+      if (this._activeManifest) {
+        this._activeManifest.status = savedStatus;
+        this._activeManifest.activeRequestId = savedActiveRequestId;
+        this._activeManifest.stopReason = savedStopReason;
+        this._activeManifest.workerMcpServers = savedWorkerMcpServers;
+      }
+    }
+  }
+
+  /** Handle a list_agents tool call — return available agents as JSON. */
+  _handleListAgents() {
+    const agents = this._enabledAgents();
+    const list = Object.entries(agents).map(([id, agent]) => ({
+      id,
+      name: agent.name || id,
+      description: agent.description || '',
+    }));
+    return JSON.stringify(list, null, 2);
   }
 
   applyConfig(config) {
@@ -254,6 +352,9 @@ class SessionManager {
         }
         this._syncConfig();
       }
+    }
+    if (config.loopMode !== undefined) {
+      this._loopMode = !!config.loopMode;
     }
     if (config.waitDelay !== undefined) {
       this._waitDelay = config.waitDelay || '';
@@ -549,6 +650,13 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'continueInput') {
+      // Continue button: send to controller with optional guidance
+      const guidance = (msg.text || '').trim();
+      this._handleContinue(guidance);
+      return;
+    }
+
     if (msg.type === 'userInput') {
       await this._handleInput(String(msg.text || '').trim());
       return;
@@ -600,13 +708,18 @@ class SessionManager {
         // Direct-to-default-worker: skip controller, no auto-pass scheduling
         await this._runDirectWorker(text);
       } else if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
-        // Direct-to-agent: skip controller, use agent's session and CLI
         const agentId = this._chatTarget.slice('agent-'.length);
         const agents = this._enabledAgents();
         const agent = agents[agentId];
         this._renderer.workerLabel = workerLabelFor(agent && agent.cli, agent && agent.name);
+        // Direct-to-agent: Send goes to agent, Loop auto-continues via controller after response
         await this._runDirectAgent(text, agentId);
+        // If loop mode is on, auto-fire controller continue after agent responds
+        if (this._loopMode && this._activeManifest && this._activeManifest.status === 'idle') {
+          this._scheduleLoopContinue();
+        }
       } else {
+        // Controller mode (traditional)
         await this._runLoop({ userMessage: text });
         this._scheduleNextPass();
       }
@@ -1194,6 +1307,7 @@ class SessionManager {
   }
 
   async _runDirectWorker(userMessage) {
+    await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
     await this._ensureChromeIfNeeded();
     // Ensure extensionDir is always on the manifest for MCP placeholder replacement
@@ -1221,6 +1335,7 @@ class SessionManager {
   }
 
   async _runDirectAgent(userMessage, agentId) {
+    await this._startAgentDelegateMcp();
     this._syncMcpToManifest(agentId);
     this._running = true;
     this._abortController = new AbortController();
@@ -1248,7 +1363,109 @@ class SessionManager {
     }
   }
 
+  /**
+   * Copilot mode: user → agent directly, then controller watches and auto-continues.
+   */
+  /**
+   * Handle Continue button: run one controller→agent cycle with optional guidance.
+   */
+  async _handleContinue(guidance) {
+    if (this._running) return;
+    try {
+      await this._runControllerContinue(guidance);
+    } catch (error) {
+      if (!isAbortError(error)) {
+        this._renderer.banner(`Run error: ${formatRunError(error)}`);
+      } else {
+        this._renderer.banner('Run stopped by user.');
+      }
+    }
+  }
+
+  /**
+   * Run one controller turn (reads transcript, decides what to tell the agent).
+   * The controller uses singlePass=true so it runs one controller→agent cycle then returns.
+   */
+  async _runControllerContinue(guidance) {
+    // Ensure we have an active manifest
+    if (!this._activeManifest) {
+      this._renderer.banner('No active run. Send a message first, then use Continue.');
+      return;
+    }
+
+    // Determine the current target agent for the directive
+    let currentAgentId = null;
+    if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
+      currentAgentId = this._chatTarget.slice('agent-'.length);
+    }
+
+    // Save original prompt, temporarily append continue directive
+    const originalPrompt = this._activeManifest.controllerSystemPrompt;
+    const basePrompt = originalPrompt || this._buildCopilotBasePrompt();
+    const continueDirective = this._buildContinueDirective(guidance, currentAgentId);
+    this._activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + continueDirective;
+
+    // Copilot mode: fresh one-shot controller — don't resume any existing session.
+    // Save the direct-mode session ID so it's not lost.
+    const savedControllerSessionId = this._activeManifest.controller.sessionId;
+    this._activeManifest.controller.sessionId = null;
+
+    await this._startAgentDelegateMcp();
+    this._syncMcpToManifest();
+    this._running = true;
+    this._abortController = new AbortController();
+    this._postMessage({ type: 'running', value: true });
+    try {
+      const { runManagerLoop } = require('./src/orchestrator');
+      // The user message for the controller is always a neutral "decide next step" instruction.
+      // User guidance is already in the system prompt via the continue directive.
+      const userMessage = guidance
+        ? `[CONTROLLER GUIDANCE] ${guidance}`
+        : '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.';
+      this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
+        userMessage,
+        abortSignal: this._abortController.signal,
+        singlePass: true,
+      });
+      await saveManifest(this._activeManifest);
+      // If loop mode is on and the run didn't stop, auto-continue
+      if (this._loopMode && this._activeManifest && this._activeManifest.status === 'running') {
+        this._scheduleLoopContinue();
+      }
+    } finally {
+      // Restore original prompt and direct-mode controller session ID
+      this._activeManifest.controllerSystemPrompt = originalPrompt;
+      this._activeManifest.controller.sessionId = savedControllerSessionId;
+      this._running = false;
+      this._abortController = null;
+      this._postMessage({ type: 'running', value: false });
+    }
+  }
+
+  /** Base copilot prompt — delegates to shared builder in prompts.js */
+  _buildCopilotBasePrompt() {
+    return buildCopilotBasePrompt();
+  }
+
+  /** Continue directive — delegates to shared builder in prompts.js */
+  _buildContinueDirective(guidance, currentAgentId) {
+    return buildContinueDirective(guidance, currentAgentId);
+  }
+
+  /**
+   * Schedule the next loop iteration (auto-continue via controller).
+   */
+  _scheduleLoopContinue() {
+    if (!this._loopMode) return;
+    // Small delay to let UI update before next cycle
+    setTimeout(() => {
+      if (!this._loopMode || this._running) return;
+      this._handleContinue('');
+    }, 500);
+  }
+
   async _runLoop(options) {
+    await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
     this._running = true;
     this._abortController = new AbortController();
@@ -1277,6 +1494,7 @@ class SessionManager {
   dispose() {
     this._stopWaitTimer();
     this.abort();
+    this._stopAgentDelegateMcp();
     // Close any persistent interactive Claude sessions
     if (this._activeManifest) {
       try { closeInteractiveSessions(this._activeManifest); } catch {}

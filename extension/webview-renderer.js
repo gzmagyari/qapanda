@@ -88,14 +88,14 @@ class WebviewRenderer {
     }
   }
 
-  launchClaude(prompt, sameSession, agentId, agentCli, agentName) {
+  launchClaude(prompt, sameSession, agentId, agentCli, agentName, overrideLabel) {
     this.flushStream();
     const backendLabel = agentCli ? workerLabelFor(agentCli, agentName) : this.workerLabel;
     const agentLabel = !agentName && agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;
-    this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: this.controllerLabel });
+    this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: overrideLabel || this.controllerLabel });
   }
 
   stop() {

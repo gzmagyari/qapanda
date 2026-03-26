@@ -17,7 +17,7 @@ describe('modes-store CRUD', () => {
 
   it('saveModesFile creates directories and writes JSON', () => {
     const filePath = path.join(tmp.root, 'sub', 'modes.json');
-    const data = { 'quick-test': { name: 'Quick Test', category: 'test' } };
+    const data = { 'test': { name: 'Quick Test', category: 'test' } };
     saveModesFile(filePath, data);
     const loaded = readJson(filePath);
     assert.deepEqual(loaded, data);
@@ -26,12 +26,11 @@ describe('modes-store CRUD', () => {
   it('loadSystemModes loads bundled modes from extension dir', () => {
     const extDir = path.resolve(__dirname, '../../extension');
     const { modes, meta } = loadSystemModes(extDir);
-    assert.ok(modes['quick-test'], 'should have quick-test mode');
-    assert.ok(modes['auto-test'], 'should have auto-test mode');
-    assert.ok(modes['quick-dev'], 'should have quick-dev mode');
-    assert.ok(modes['auto-dev'], 'should have auto-dev mode');
-    assert.ok(modes['auto-dev-test'], 'should have auto-dev-test mode');
-    assert.equal(Object.keys(modes).length, 5, 'should have exactly 5 system modes');
+    assert.ok(modes['test'], 'should have test mode');
+    assert.ok(modes['dev'], 'should have dev mode');
+    assert.ok(modes['dev-test'], 'should have dev-test mode');
+    assert.ok(modes['test-fix'], 'should have test-fix mode');
+    assert.equal(Object.keys(modes).length, 4, 'should have exactly 4 system modes');
   });
 
   it('system modes have required fields', () => {
@@ -48,40 +47,40 @@ describe('modes-store CRUD', () => {
   it('loadMergedModes merges system + global + project', () => {
     const extDir = path.join(tmp.root, 'ext');
     writeJson(path.join(extDir, 'resources', 'system-modes.json'), {
-      'quick-test': { name: 'Quick Test', category: 'test', useController: false, requiresTestEnv: true, enabled: true },
+      'test': { name: 'Quick Test', category: 'test', useController: false, requiresTestEnv: true, enabled: true },
     });
     const repoRoot = path.join(tmp.root, 'repo');
     writeJson(path.join(repoRoot, '.cc-manager', 'modes.json'), {
       'custom-mode': { name: 'Custom', category: 'custom', useController: false, requiresTestEnv: false, enabled: true },
     });
     const result = loadMergedModes(repoRoot, extDir);
-    assert.ok(result.system['quick-test'], 'should have system mode');
+    assert.ok(result.system['test'], 'should have system mode');
     assert.ok(result.project['custom-mode'], 'should have project mode');
   });
 
   it('enabledModes filters disabled modes', () => {
     const data = {
       system: {
-        'quick-test': { name: 'Quick Test', enabled: true },
+        'test': { name: 'Quick Test', enabled: true },
         'disabled-mode': { name: 'Disabled', enabled: false },
       },
       global: {},
       project: { 'project-mode': { name: 'Project Mode' } },
     };
     const enabled = enabledModes(data);
-    assert.ok(enabled['quick-test']);
+    assert.ok(enabled['test']);
     assert.ok(!enabled['disabled-mode']);
     assert.ok(enabled['project-mode']);
   });
 
   it('enabledModes: project overrides system', () => {
     const data = {
-      system: { 'quick-test': { name: 'QT System', category: 'test' } },
+      system: { 'test': { name: 'QT System', category: 'test' } },
       global: {},
-      project: { 'quick-test': { name: 'QT Project', category: 'custom' } },
+      project: { 'test': { name: 'QT Project', category: 'custom' } },
     };
     const enabled = enabledModes(data);
-    assert.equal(enabled['quick-test'].name, 'QT Project');
+    assert.equal(enabled['test'].name, 'QT Project');
   });
 
   it('save then load roundtrip', () => {

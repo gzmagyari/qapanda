@@ -79,14 +79,14 @@ describe('Config mid-session switching', () => {
 
   it('applyConfig with mode sets currentMode', () => {
     const { session } = createSession();
-    session.applyConfig({ mode: 'quick-dev', chatTarget: 'agent-dev' });
-    assert.equal(session._currentMode, 'quick-dev');
+    session.applyConfig({ mode: 'dev', chatTarget: 'agent-dev' });
+    assert.equal(session._currentMode, 'dev');
   });
 
   it('applyConfig with mode + testEnv sets both', () => {
     const { session } = createSession();
-    session.applyConfig({ mode: 'quick-test', testEnv: 'browser', chatTarget: 'agent-QA-Browser' });
+    session.applyConfig({ mode: 'test', testEnv: 'browser', chatTarget: 'agent-QA-Browser' });
     assert.equal(session._testEnv, 'browser');
-    assert.equal(session._currentMode, 'quick-test');
+    assert.equal(session._currentMode, 'test');
   });
 });

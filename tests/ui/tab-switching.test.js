@@ -5,7 +5,7 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 let wv;
 
 beforeEach(() => {
-  wv = createWebviewDom({ savedState: { currentMode: 'quick-dev', runId: 'test-run-1' } });
+  wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'test-run-1' } });
   // Send initConfig with an active mode + runId so wizard is hidden and chat is shown
   wv.postMessage(sampleInitConfig({ runId: 'test-run-1' }));
 });

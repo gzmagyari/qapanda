@@ -94,7 +94,7 @@ describe('Detached Command MCP server', () => {
 
     // Poll until job finishes (instead of fixed sleep — handles system load)
     let status = 'starting';
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 1000));
       const pollRes = await mcp.callTool('get_job', { job_id: jobId });
       const pollStructured = getStructured(pollRes);

@@ -44,9 +44,9 @@ describe('loadSystemAgents from shared resources', () => {
 describe('loadSystemModes from shared resources', () => {
   it('loads bundled system modes', () => {
     const { modes } = loadSystemModes(RESOURCES_DIR);
-    assert.ok(modes['quick-test'], 'should have quick-test');
-    assert.ok(modes['quick-dev'], 'should have quick-dev');
-    assert.ok(modes['auto-dev'], 'should have auto-dev');
+    assert.ok(modes['test'], 'should have test');
+    assert.ok(modes['dev'], 'should have dev');
+    assert.ok(modes['dev-test'], 'should have dev-test');
   });
 });
 
@@ -75,7 +75,7 @@ describe('loadMergedModes', () => {
       'custom-mode': { name: 'Custom', category: 'custom', useController: false, requiresTestEnv: false, enabled: true },
     });
     const data = loadMergedModes(tmp.root, RESOURCES_DIR);
-    assert.ok(data.system['quick-test'], 'should have system mode');
+    assert.ok(data.system['test'], 'should have system mode');
     assert.ok(data.project['custom-mode'], 'should have project mode');
   });
 });
@@ -127,12 +127,12 @@ describe('enabledAgents', () => {
 describe('enabledModes', () => {
   it('filters disabled modes', () => {
     const data = {
-      system: { 'quick-test': { name: 'QT', enabled: true }, 'disabled': { name: 'Off', enabled: false } },
+      system: { 'test': { name: 'QT', enabled: true }, 'disabled': { name: 'Off', enabled: false } },
       global: {},
       project: {},
     };
     const enabled = enabledModes(data);
-    assert.ok(enabled['quick-test']);
+    assert.ok(enabled['test']);
     assert.ok(!enabled['disabled']);
   });
 });

@@ -5,7 +5,7 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 let wv;
 
 beforeEach(() => {
-  wv = createWebviewDom({ savedState: { currentMode: 'quick-dev', runId: 'run-1' } });
+  wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
   wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
   wv.click('[data-tab="instances"]');
 });

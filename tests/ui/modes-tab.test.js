@@ -5,7 +5,7 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 let wv;
 
 beforeEach(() => {
-  wv = createWebviewDom({ savedState: { currentMode: 'quick-dev', runId: 'run-1' } });
+  wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
   wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
   wv.click('[data-tab="modes"]');
 });
@@ -15,8 +15,8 @@ describe('Modes tab', () => {
   it('system modes are listed', () => {
     const systemList = wv.document.getElementById('mode-list-system');
     assert.ok(systemList, 'system mode list should exist');
-    assert.ok(systemList.innerHTML.includes('Quick Test'), 'should show Quick Test mode');
-    assert.ok(systemList.innerHTML.includes('Quick Dev'), 'should show Quick Dev mode');
+    assert.ok(systemList.innerHTML.includes('Test'), 'should show Test mode');
+    assert.ok(systemList.innerHTML.includes('Dev'), 'should show Dev mode');
   });
 
   it('modes show category', () => {

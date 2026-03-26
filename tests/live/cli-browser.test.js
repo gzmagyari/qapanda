@@ -7,12 +7,12 @@ let chromeManager;
 try { chromeManager = require('../../extension/chrome-manager'); } catch {}
 
 describe('cc-manager browser testing (e2e)', { timeout: 180000 }, () => {
-  it('--mode quick-test --test-env browser auto-starts Chrome', async (t) => {
+  it('--mode test --test-env browser auto-starts Chrome', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     if (!chromeManager) { t.skip('chrome-manager not available'); return; }
 
     const r = await runCcManager([
-      'run', '--mode', 'quick-test', '--test-env', 'browser', '--worker-max-turns', '3',
+      'run', '--mode', 'test', '--test-env', 'browser', '--worker-max-turns', '3',
       'List your available MCP tools. Just list the tool names.',
     ], { timeout: 120000 });
 

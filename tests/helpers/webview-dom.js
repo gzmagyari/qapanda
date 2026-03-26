@@ -165,10 +165,10 @@ function sampleInitConfig(overrides = {}) {
     },
     modes: {
       system: {
-        'quick-test': { name: 'Quick Test', description: 'Test one thing', category: 'test', icon: '🔍', useController: false, defaultAgent: { browser: 'QA-Browser', computer: 'QA' }, requiresTestEnv: true, setupAgent: { browser: 'setup-browser', computer: 'setup-computer' }, enabled: true },
-        'quick-dev': { name: 'Quick Dev', description: 'Quick code changes', category: 'develop', icon: '💻', useController: false, defaultAgent: 'dev', requiresTestEnv: false, enabled: true },
-        'auto-test': { name: 'Auto Test', description: 'Autonomous testing', category: 'test', icon: '🔄', useController: true, requiresTestEnv: true, enabled: true },
-        'auto-dev': { name: 'Auto Dev', description: 'Autonomous development', category: 'develop', icon: '⚡', useController: true, requiresTestEnv: false, enabled: true },
+        'test': { name: 'Test', description: 'Manual testing', category: 'test', icon: '🔍', useController: false, defaultAgent: { browser: 'QA-Browser', computer: 'QA' }, requiresTestEnv: true, autoDefault: false, enabled: true },
+        'dev': { name: 'Dev', description: 'Development', category: 'develop', icon: '💻', useController: false, defaultAgent: 'dev', requiresTestEnv: false, autoDefault: false, enabled: true },
+        'dev-test': { name: 'Dev & Test', description: 'Develop and verify', category: 'develop', icon: '🚀', useController: false, defaultAgent: 'dev', requiresTestEnv: true, autoDefault: true, enabled: true },
+        'test-fix': { name: 'Test & Fix', description: 'QA-driven testing and fixing', category: 'test', icon: '🔧', useController: false, defaultAgent: { browser: 'QA-Browser', computer: 'QA' }, requiresTestEnv: true, autoDefault: true, enabled: true },
       },
       systemMeta: {},
       global: {},

@@ -89,10 +89,10 @@ describe('Multiple concurrent panels', () => {
     const panelA = createPanel('panel-a');
     const panelB = createPanel('panel-b');
 
-    panelA.session.applyConfig({ mode: 'quick-dev' });
-    panelB.session.applyConfig({ mode: 'auto-test' });
+    panelA.session.applyConfig({ mode: 'dev' });
+    panelB.session.applyConfig({ mode: 'test' });
 
-    assert.equal(panelA.session._currentMode, 'quick-dev');
-    assert.equal(panelB.session._currentMode, 'auto-test');
+    assert.equal(panelA.session._currentMode, 'dev');
+    assert.equal(panelB.session._currentMode, 'test');
   });
 });

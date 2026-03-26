@@ -517,7 +517,9 @@ function getWebviewHtml(panel, extensionUri) {
       <div id="input-area">
         <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
         <button id="btn-send">Send</button>
+        <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
         <button id="btn-stop">Stop</button>
+        <label class="loop-toggle" title="Auto-continue: controller runs after each agent response"><input type="checkbox" id="loop-toggle" /><span>⟳</span></label>
       </div>
       <div id="config-bar">
       <div class="config-group">

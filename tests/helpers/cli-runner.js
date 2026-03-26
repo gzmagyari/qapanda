@@ -10,7 +10,7 @@ const PROJECT_ROOT = path.resolve(__dirname, '../..');
 /**
  * Run cc-manager with arguments and return { code, stdout, stderr }.
  *
- * @param {string[]} args - CLI arguments (e.g., ['doctor'] or ['run', '--mode', 'quick-dev', 'hello'])
+ * @param {string[]} args - CLI arguments (e.g., ['doctor'] or ['run', '--mode', 'dev', 'hello'])
  * @param {object} [options]
  * @param {string} [options.stdin] - Text to pipe to stdin
  * @param {number} [options.timeout] - Timeout in ms (default 60s)

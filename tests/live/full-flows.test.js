@@ -21,12 +21,12 @@ function resolveByEnv(val, env) {
   return val;
 }
 
-describe('End-to-end flow: Quick Dev', { timeout: 60000 }, () => {
-  it('complete quick-dev flow: select mode → direct agent → response', async (t) => {
+describe('End-to-end flow: Dev', { timeout: 60000 }, () => {
+  it('complete dev flow: select mode → direct agent → response', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
 
     // Step 1: Select mode
-    const mode = allModes['quick-dev'];
+    const mode = allModes['dev'];
     assert.ok(mode);
     assert.equal(mode.useController, false);
 
@@ -118,8 +118,8 @@ describe('End-to-end flow: Session restore', () => {
 });
 
 describe('End-to-end flow: Mode → Agent → MCP chain', () => {
-  it('quick-test browser: mode resolves to QA-Browser with chrome-devtools MCP', () => {
-    const mode = allModes['quick-test'];
+  it('test browser: mode resolves to QA-Browser with chrome-devtools MCP', () => {
+    const mode = allModes['test'];
     const agentId = resolveByEnv(mode.defaultAgent, 'browser');
     const agent = allAgents[agentId];
 
@@ -144,28 +144,21 @@ describe('End-to-end flow: Mode → Agent → MCP chain', () => {
     assert.ok(cdArgs.some(a => a.includes('9222')), 'should have chrome port');
   });
 
-  it('quick-test computer: mode resolves to QA with remote CLI', () => {
-    const mode = allModes['quick-test'];
+  it('test computer: mode resolves to QA with remote CLI', () => {
+    const mode = allModes['test'];
     const agentId = resolveByEnv(mode.defaultAgent, 'computer');
     const agent = allAgents[agentId];
 
     assert.equal(agentId, 'QA');
-    assert.equal(agent.cli, 'qa-remote-claude', 'should use remote CLI');
+    assert.ok(agent.cli.startsWith('qa-remote-'), `should use remote CLI, got: ${agent.cli}`);
   });
 
-  it('auto-dev-test: both dev and QA agents available per env', () => {
-    const mode = allModes['auto-dev-test'];
-    const browserAgents = resolveByEnv(mode.availableAgents, 'browser');
-    const computerAgents = resolveByEnv(mode.availableAgents, 'computer');
-
-    assert.ok(browserAgents.includes('dev'));
-    assert.ok(browserAgents.includes('QA-Browser'));
-    assert.ok(computerAgents.includes('dev'));
-    assert.ok(computerAgents.includes('QA'));
-
-    // Verify all referenced agents exist
-    for (const id of [...browserAgents, ...computerAgents]) {
-      assert.ok(allAgents[id], `agent "${id}" should exist`);
-    }
+  it('dev-test: dev agent with auto default and copilot prompt', () => {
+    const mode = allModes['dev-test'];
+    assert.equal(mode.defaultAgent, 'dev');
+    assert.equal(mode.autoDefault, true);
+    assert.ok(mode.controllerPrompt, 'should have controller prompt for copilot');
+    const browserPrompt = resolveByEnv(mode.controllerPrompt, 'browser');
+    assert.ok(browserPrompt.includes('dev') || browserPrompt.includes('QA'), 'prompt should reference agents');
   });
 });

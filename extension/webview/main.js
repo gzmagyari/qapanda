@@ -8,7 +8,9 @@
   const messagesEl = document.getElementById('messages');
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
+  const btnContinue = document.getElementById('btn-continue');
   const btnStop = document.getElementById('btn-stop');
+  const loopToggle = document.getElementById('loop-toggle');
   const progressBubble = document.getElementById('progress-bubble');
   const progressBody = progressBubble ? progressBubble.querySelector('.progress-body') : null;
 
@@ -1439,6 +1441,15 @@
       cfgChatTarget.value = config.chatTarget;
       updateConfigBarForTarget(config.chatTarget);
     }
+    // Set loop mode from mode's default
+    if (mode.autoDefault) {
+      config.loopMode = true;
+      if (loopToggle) loopToggle.checked = true;
+    } else {
+      config.loopMode = false;
+      if (loopToggle) loopToggle.checked = false;
+    }
+
     suppressTargetConfirm = false;
     vscode.postMessage({ type: 'configChanged', config });
     updateModeIndicator();
@@ -3117,6 +3128,7 @@
       if (msg.value) {
         isRunning = true;
         btnSend.style.display = 'none';
+        if (btnContinue) btnContinue.style.display = 'none';
         btnStop.style.display = 'inline-block';
         textarea.disabled = true;
         showThinking();
@@ -3128,6 +3140,7 @@
         if (splitVncWrapper) teardownSplitVnc(true);
         if (splitChromeWrapper) teardownSplitChrome(true);
         btnSend.style.display = 'inline-block';
+        if (btnContinue) btnContinue.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
         textarea.focus();
@@ -3615,6 +3628,22 @@
   btnStop.addEventListener('click', () => {
     vscode.postMessage({ type: 'abort' });
   });
+
+  // Continue button — sends to controller with optional guidance
+  if (btnContinue) {
+    btnContinue.addEventListener('click', () => {
+      const text = textarea.value.trim();
+      textarea.value = '';
+      vscode.postMessage({ type: 'continueInput', text });
+    });
+  }
+
+  // Loop toggle — auto-continue after each agent response
+  if (loopToggle) {
+    loopToggle.addEventListener('change', () => {
+      vscode.postMessage({ type: 'configChanged', config: { loopMode: loopToggle.checked } });
+    });
+  }
 
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

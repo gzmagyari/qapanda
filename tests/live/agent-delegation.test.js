@@ -14,7 +14,7 @@ describe('agent delegation', () => {
     const agent = lookupAgentConfig(systemAgents, 'dev');
     assert.ok(agent, 'should find dev agent');
     assert.equal(agent.name, 'Developer');
-    assert.equal(agent.cli, 'claude');
+    assert.ok(agent.cli === 'claude' || agent.cli === 'codex', `dev CLI should be claude or codex, got: ${agent.cli}`);
     assert.ok(agent.system_prompt.includes('software developer'));
   });
 
@@ -22,7 +22,7 @@ describe('agent delegation', () => {
     const agent = lookupAgentConfig(systemAgents, 'QA');
     assert.ok(agent, 'should find QA agent');
     assert.equal(agent.name, 'QA Engineer (Computer)');
-    assert.equal(agent.cli, 'qa-remote-claude');
+    assert.ok(agent.cli === 'qa-remote-claude' || agent.cli === 'qa-remote-codex', `QA CLI should be qa-remote-*, got: ${agent.cli}`);
   });
 
   it('QA-Browser agent resolves correctly', () => {
@@ -88,7 +88,7 @@ describe('agent delegation', () => {
     const setupComputer = lookupAgentConfig(systemAgents, 'setup-computer');
     assert.ok(setupBrowser, 'should have setup-browser agent');
     assert.ok(setupComputer, 'should have setup-computer agent');
-    assert.equal(setupBrowser.cli, 'claude');
-    assert.equal(setupComputer.cli, 'qa-remote-claude');
+    assert.ok(setupBrowser.cli === 'claude' || setupBrowser.cli === 'codex', `setup-browser CLI should be claude or codex, got: ${setupBrowser.cli}`);
+    assert.ok(setupComputer.cli === 'qa-remote-claude' || setupComputer.cli === 'qa-remote-codex', `setup-computer CLI should be qa-remote-*, got: ${setupComputer.cli}`);
   });
 });

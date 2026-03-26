@@ -5,7 +5,7 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 let wv;
 
 beforeEach(() => {
-  wv = createWebviewDom({ savedState: { currentMode: 'quick-dev', runId: 'run-1' } });
+  wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
   wv.postMessage(sampleInitConfig({
     runId: 'run-1',
     mcpServers: {
@@ -42,7 +42,7 @@ describe('MCP Servers tab', () => {
   });
 
   it('empty scope shows placeholder', () => {
-    wv = createWebviewDom({ savedState: { currentMode: 'quick-dev', runId: 'run-1' } });
+    wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
     wv.postMessage(sampleInitConfig({ runId: 'run-1', mcpServers: { global: {}, project: {} } }));
     wv.click('[data-tab="mcp"]');
     const globalList = wv.document.getElementById('mcp-list-global');

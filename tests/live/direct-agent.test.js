@@ -64,8 +64,7 @@ describe('direct agent mode (no controller)', { timeout: 60000 }, () => {
 
   it('agent-specific CLI is used for remote agents', () => {
     const qaAgent = lookupAgentConfig(systemAgents, 'QA');
-    assert.equal(qaAgent.cli, 'qa-remote-claude');
-    // In direct mode, the orchestrator would use qa-remote-claude as the command
-    // instead of the default 'claude'
+    // CLI may be qa-remote-claude or qa-remote-codex depending on user config
+    assert.ok(qaAgent.cli.startsWith('qa-remote-'), `QA CLI should be qa-remote-*, got: ${qaAgent.cli}`);
   });
 });

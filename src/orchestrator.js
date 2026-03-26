@@ -356,7 +356,29 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
   const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
   if (!userMessage) throw new Error('No message provided for direct worker turn.');
 
-  const request = await startUserRequest(manifest, renderer, userMessage);
+  const agentId = options.agentId || null;
+  const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
+
+  let request;
+  if (options.isDelegation) {
+    // Agent-to-agent delegation: create request record and show launch message with "Agent delegation" label
+    request = createRequest(manifest, userMessage);
+    manifest.status = 'running';
+    manifest.phase = 'controller';
+    manifest.stopReason = null;
+    manifest.error = null;
+    const agentCli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
+    const agentName = agentConfig ? agentConfig.name : null;
+    const sameSession = agentId && agentId !== 'default'
+      ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted
+      : manifest.worker.hasStarted;
+    renderer.launchClaude(userMessage, sameSession, agentId, agentCli, agentName, 'Agent delegation');
+    await appendTranscript(manifest, { ts: nowIso(), role: 'delegation', text: userMessage, requestId: request.id, agentId });
+    await emitEvent(manifest, { ts: nowIso(), source: 'delegation', requestId: request.id, text: userMessage, agentId }, renderer);
+    await saveManifest(manifest);
+  } else {
+    request = await startUserRequest(manifest, renderer, userMessage);
+  }
 
   const signalController = new AbortController();
   const onSignal = (signal) => {
@@ -397,8 +419,6 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       renderer,
     );
 
-    const agentId = options.agentId || null;
-    const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
     const runWorker = getWorkerRunner(manifest, agentConfig);
 
     const workerResult = await runWorker({
@@ -468,9 +488,163 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
   }
 }
 
+/**
+ * Copilot mode: User talks directly to agent, controller watches transcript and
+ * sends follow-up instructions automatically.
+ *
+ * Flow:
+ * 1. User message → agent directly (first turn)
+ * 2. Controller reads transcript → decides: send more instructions or stop
+ * 3. If delegate → controller's message sent to agent (prefixed "Controller: ")
+ * 4. Loop steps 2-3 until controller stops or user interrupts
+ *
+ * @param {object} manifest
+ * @param {object} renderer
+ * @param {object} options — { userMessage, agentId, abortSignal, singlePass }
+ */
+async function runCopilotLoop(manifest, renderer, options = {}) {
+  const { userMessage, agentId, singlePass } = options;
+
+  // Set up signal handling
+  const signalController = new AbortController();
+  const onSigInt = () => signalController.abort();
+  const onSigTerm = () => signalController.abort();
+  process.on('SIGINT', onSigInt);
+  process.on('SIGTERM', onSigTerm);
+  if (options.abortSignal) {
+    options.abortSignal.addEventListener('abort', () => signalController.abort(), { once: true });
+  }
+
+  try {
+    // Step 1: Run user's message as direct agent turn
+    if (userMessage) {
+      const prefixedMessage = 'User: ' + userMessage;
+      manifest = await runDirectWorkerTurn(manifest, renderer, {
+        userMessage: prefixedMessage,
+        agentId,
+        abortSignal: signalController.signal,
+      });
+      // runDirectWorkerTurn sets status to 'idle' — set back to 'running' for copilot loop
+      manifest.status = 'running';
+      manifest.phase = 'idle';
+      await saveManifest(manifest);
+    }
+
+    if (signalController.signal.aborted) return manifest;
+
+    // Step 2-4: Controller watches and sends follow-ups
+    while (!signalController.signal.aborted) {
+      // Create a new request for the controller turn
+      const request = manifest.requests[manifest.requests.length - 1] || await startUserRequest(manifest, '[copilot-auto]');
+      const loop = await createLoopRecord(manifest, request);
+      await saveManifest(manifest);
+
+      // Run controller turn — controller reads transcript and decides
+      const runControllerTurn = getControllerRunner(manifest);
+      const controllerResult = await runControllerTurn({
+        manifest, request, loop, renderer,
+        abortSignal: signalController.signal,
+        emitEvent: async (event) => {
+          if (event.rawLine && loop.controller.stdoutFile) {
+            await appendJsonl(loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+          }
+          if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
+            await appendJsonl(loop.controller.stderrFile, { text: event.text });
+          }
+          await emitEvent(manifest, event, renderer);
+        },
+      });
+
+      loop.controller.decision = controllerResult.decision;
+      request.latestControllerDecision = controllerResult.decision;
+
+      // Show controller messages
+      for (const message of controllerResult.decision.controller_messages) {
+        renderer.controller(message);
+        await appendTranscript(manifest, {
+          ts: nowIso(), role: 'controller', text: message,
+          controllerCli: manifest.controller.cli || 'codex',
+          requestId: request.id, loopIndex: loop.index,
+        });
+        await emitEvent(manifest, { ts: nowIso(), source: 'controller-message', requestId: request.id, loopIndex: loop.index, text: message }, renderer);
+      }
+
+      for (const line of controllerResult.decision.progress_updates || []) {
+        await appendProgress(manifest, truncate(line, 120), renderer);
+      }
+
+      // Decision: stop or delegate
+      if (controllerResult.decision.action === 'stop') {
+        request.status = 'stopped';
+        request.stopReason = controllerResult.decision.stop_reason || 'Copilot auto-pass stopped.';
+        request.finishedAt = nowIso();
+        loop.finishedAt = nowIso();
+        manifest.status = 'idle';
+        manifest.phase = 'idle';
+        manifest.stopReason = request.stopReason;
+        manifest.activeRequestId = null;
+        await appendTranscript(manifest, { ts: nowIso(), role: 'controller', text: '[STOP]', controllerCli: manifest.controller.cli || 'codex', requestId: request.id, loopIndex: loop.index });
+        await saveManifest(manifest);
+        renderer.stop(controllerResult.decision.stop_reason || 'Copilot stopped.');
+        return manifest;
+      }
+
+      // Delegate: send controller's message to the agent
+      const delegateAgentId = controllerResult.decision.agent_id || agentId || null;
+      const delegateMessage = 'Controller: ' + (controllerResult.decision.claude_message || '');
+      const workerRecord = attachWorkerRecord(manifest, loop);
+      manifest.phase = 'worker';
+      await saveManifest(manifest);
+
+      const delegateAgentConfig = delegateAgentId && delegateAgentId !== 'default'
+        ? lookupAgentConfig(manifest.agents, delegateAgentId) : null;
+      const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
+
+      renderer.launchClaude(delegateMessage, true, delegateAgentId, (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli, delegateAgentConfig ? delegateAgentConfig.name : null);
+
+      const workerResult = await runWorker({
+        manifest, request, loop, workerRecord,
+        prompt: delegateMessage,
+        agentId: delegateAgentId,
+        renderer,
+        abortSignal: signalController.signal,
+        emitEvent: async (event) => {
+          if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+          if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
+          await emitEvent(manifest, event, renderer);
+        },
+      });
+
+      await appendTranscript(manifest, { ts: nowIso(), role: 'claude', text: workerResult.resultText, requestId: request.id, loopIndex: loop.index });
+
+      request.latestWorkerResult = workerResult;
+      loop.finishedAt = nowIso();
+      manifest.transcriptSummary = truncate(workerResult.resultText || delegateMessage, 120);
+      manifest.updatedAt = nowIso();
+      await saveManifest(manifest);
+
+      // singlePass: return after one controller→agent cycle (for wait delay scheduling)
+      if (singlePass) return manifest;
+    }
+
+    return manifest;
+  } catch (error) {
+    const message = summarizeError(error);
+    const request = manifest.requests && manifest.requests[manifest.requests.length - 1];
+    if (request) markInterrupted(manifest, request, message);
+    await emitEvent(manifest, { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message }, renderer);
+    await saveManifest(manifest);
+    throw error;
+  } finally {
+    process.off('SIGINT', onSigInt);
+    process.off('SIGTERM', onSigTerm);
+  }
+}
+
 module.exports = {
   printEventTail,
   printRunSummary,
+  runCopilotLoop,
   runDirectWorkerTurn,
   runManagerLoop,
 };

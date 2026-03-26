@@ -50,3 +50,58 @@
 - Test Stripe payments, OAuth flows, webhook receivers with mock/sandbox services
 - "Simulated a Stripe webhook for failed payment — app doesn't handle it, user sees blank page"
 - Covers the integrations that break silently and are hardest to test manually
+
+## Autonomous QA Department
+- Not a tool — a virtual QA team that runs 24/7
+- Test lead agent monitors every PR, assigns work to specialist sub-agents (security tester, performance tester, UX tester, accessibility tester)
+- They collaborate, file bugs, verify fixes, block merges if quality drops
+- Go from "we have a QA tool" to "we have an AI QA team"
+
+## User Persona Simulation
+- Simulate real human behavior, not just happy-path flows
+- The confused user who clicks back 5 times, the impatient user who double-clicks everything, the power user who opens 20 tabs, the user on a 5-year-old phone
+- Each persona finds different classes of bugs
+- "The impatient user broke the checkout by submitting the form twice"
+
+## AI-to-Playwright Regression Pipeline
+- Agent tests features in the real browser UI (exploratory or directed testing)
+- Automatically generates Playwright test scripts from every UI test it performs
+- These Playwright tests can run independently — no agent, no browser, no AI needed — making re-testing fast and cheap
+- When a Playwright test breaks, the agent is called back to verify: is this a real bug, or is the test outdated because the UI changed?
+- If the test is outdated, agent updates the Playwright script to match the new UI
+- If the bug is real, agent files a detailed report with reproduction steps
+- Creates the feel of an automated QA agency: AI does the initial smart testing, Playwright handles cheap regression, AI steps back in only when something breaks
+- Playwright chosen because it's the most robust modern framework for this (cross-browser, auto-wait, codegen-friendly)
+
+## Named Environments with Context Packs
+- New "Environments" tab where users save named environments (e.g. "Staging - Chrome", "Production - Linux Desktop")
+- An environment can be browser-based or Linux container-based (we already support both + snapshots)
+- Saving an environment captures full state: open URLs, open apps, window positions, UI state — everything needed to restore exactly where you left off
+- Each environment has a linked **Context Pack** containing:
+  - App URL (local, staging, production, or any custom URL)
+  - Setup instructions for the agent
+  - Custom configuration / environment variables
+  - Any other context the agent needs to understand the app
+- When restoring an environment, it reopens the browser at the saved URL, restores app state, and loads the context pack — agent is ready to go instantly
+- Enables testing apps that don't run locally — point at staging/production URLs directly
+- An MCP server allows agents to create, manage, and restore environments programmatically
+- Makes switching between projects/environments instant: "Switch to Production - Safari" → full state restored in seconds
+- Agents can spin up purpose-specific environments: "Create a clean environment for payment testing on staging"
+
+## Test Run Dashboard with History
+- Every test run tracked: what was tested, what passed/failed, how long it took, which agent ran it
+- Trends over time: "Test reliability improved 15% this month"
+- Flaky test tracking built in — "This test has failed 4 of the last 20 runs"
+- Makes QA visible to the whole team, not a black box
+
+## Scheduled Test Runs
+- "Run the smoke suite every morning at 8am against production"
+- "Run the full regression suite after every deploy to staging"
+- Results delivered via Slack/email — team sees a green/red report before standup
+- Ties synthetic monitoring + Playwright pipeline + environments together
+
+## Bug Reproduction Packs
+- When agent finds a bug during any test, it automatically saves a full reproduction package: steps, screenshots, network requests, console logs, environment state
+- One-click replay: anyone can reproduce the exact bug from the package
+- No more "works on my machine" — the reproduction is environment-independent
+- Shareable with developers — they get everything needed to debug without asking QA a single question

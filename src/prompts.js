@@ -3,10 +3,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
 
-function buildTranscriptExcerpt(manifest, limit = 18) {
+function buildTranscriptExcerpt(manifest) {
   const requestLines = [];
   for (const request of manifest.requests.slice(-6)) {
-    requestLines.push(`User: ${request.userMessage}`);
+    // Skip internal auto-continue messages in the transcript — they confuse the controller
+    const msg = request.userMessage;
+    if (msg && !msg.startsWith('[AUTO-CONTINUE]') && !msg.startsWith('[CONTROLLER GUIDANCE]')) {
+      requestLines.push(`User: ${msg}`);
+    }
     for (const loop of request.loops.slice(-4)) {
       if (loop.controller && loop.controller.decision) {
         for (const message of loop.controller.decision.controller_messages || []) {
@@ -14,14 +18,14 @@ function buildTranscriptExcerpt(manifest, limit = 18) {
         }
       }
       if (loop.worker && loop.worker.resultText) {
-        requestLines.push(`Worker: ${truncate(loop.worker.resultText, 600)}`);
+        requestLines.push(`Worker: ${loop.worker.resultText}`);
       }
     }
     if (request.stopReason) {
       requestLines.push(`Controller STOP reason: ${request.stopReason}`);
     }
   }
-  return requestLines.slice(-limit);
+  return requestLines;
 }
 
 function loadCcManagerMd(repoRoot) {
@@ -144,10 +148,32 @@ function buildWorkflowSection(repoRoot) {
 
 function buildOverriddenControllerPrompt(manifest, request) {
   const lastLoop = request.loops[request.loops.length - 1] || null;
-  const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
-  const transcriptLines = buildTranscriptExcerpt(manifest);
+  let lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
 
+  // If this is a new request (continue/loop) with no worker yet, look at the previous request's last worker
+  if (!lastWorker && manifest.requests.length > 1) {
+    const prevReq = manifest.requests[manifest.requests.length - 2];
+    if (prevReq) {
+      const prevLastLoop = prevReq.loops[prevReq.loops.length - 1] || null;
+      lastWorker = (prevLastLoop && prevLastLoop.worker) ? prevLastLoop.worker : prevReq.latestWorkerResult || null;
+    }
+  }
+
+  const transcriptLines = buildTranscriptExcerpt(manifest);
   const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
+
+  // For auto-continue requests, show the original user message instead of the [AUTO-CONTINUE] prefix
+  let userMessage = request.userMessage;
+  if (userMessage && (userMessage.startsWith('[AUTO-CONTINUE]') || userMessage.startsWith('[CONTROLLER GUIDANCE]'))) {
+    // Find the last real user message from a previous request
+    for (let i = manifest.requests.length - 2; i >= 0; i--) {
+      const prevMsg = manifest.requests[i].userMessage;
+      if (prevMsg && !prevMsg.startsWith('[AUTO-CONTINUE]') && !prevMsg.startsWith('[CONTROLLER GUIDANCE]')) {
+        userMessage = prevMsg;
+        break;
+      }
+    }
+  }
 
   const state = {
     repository_root: manifest.repoRoot,
@@ -159,24 +185,18 @@ function buildOverriddenControllerPrompt(manifest, request) {
     worker_cli: workerCli,
     request_started_at: request.startedAt,
     current_loop_index: request.loops.length + 1,
-    latest_user_message: request.userMessage,
+    latest_user_message: userMessage,
     latest_stop_reason: manifest.stopReason,
     latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
     latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
-    latest_worker_result: lastWorker ? lastWorker.resultText : null,
+    latest_worker_result: lastWorker ? (lastWorker.resultText || null) : null,
     recent_transcript: transcriptLines,
   };
 
   return [
     manifest.controllerSystemPrompt,
     '',
-    'Return JSON ONLY with these fields:',
-    '- action: "delegate" or "stop"',
-    '- agent_id: which worker agent to delegate to (null or "default" for the default worker, or a custom agent id). Always include this field.',
-    '- controller_messages: array of short strings shown to the user in chat (visible conversation)',
-    '- claude_message: the instruction string sent to the worker when action is delegate, otherwise null',
-    '- stop_reason: a short string or null',
-    '- progress_updates: array of short task-progress lines written to the progress log / top-right status bubble. Use these ONLY for substantive task milestones. For greetings, summaries, acknowledgements, or no-op replies, leave this as an empty array [].',
+    'REMINDER: Return JSON ONLY. Fields: action, agent_id, claude_message, controller_messages, stop_reason, progress_updates.',
     '',
     'Current state:',
     JSON.stringify(state, null, 2),
@@ -322,9 +342,138 @@ function buildAgentWorkerSystemPrompt(agentConfig) {
   return buildDefaultWorkerAppendSystemPrompt();
 }
 
+/**
+ * Base copilot prompt — used when no mode-specific controllerPrompt is set.
+ * Shared between extension (session-manager) and CLI (shell).
+ */
+function buildCopilotBasePrompt() {
+  return `You are a copilot that drives work forward by giving an AI agent its next task.
+
+Your output is JSON with these fields:
+- action: "delegate" (send instruction to agent) or "stop" (done)
+- agent_id: which agent to send to (e.g. "dev", "QA-Browser", "QA")
+- claude_message: the instruction for the agent — this is the ONLY thing the agent sees
+- controller_messages: short array of strings shown to the user (1-3 messages, plain text)
+- stop_reason: why you stopped (only when action is "stop")
+- progress_updates: array of task-progress lines (empty for non-work responses)
+
+KEY PRINCIPLES:
+1. claude_message is the agent's ONLY input. It must be self-contained and specific.
+2. Your job is to DRIVE WORK FORWARD. Always move to the next actionable step.
+3. NEVER tell the agent to "ask the user" — YOU decide what to do next based on the transcript.
+4. If the agent proposed or suggested something, tell it to START IMPLEMENTING.
+5. If the agent finished work, tell it to VERIFY (run tests, review changes).
+6. If work is verified and complete, stop.
+
+FULL EXAMPLE — Development flow (agent_id: "dev"):
+
+Transcript so far:
+  User: What is an interesting feature we could add to this calculator app?
+  Agent: Here is an interesting feature: Expression Bookmarks — users can save frequently used formulas...
+
+Your response (turn 1 — agent suggested a feature, tell it to implement):
+{"action":"delegate","agent_id":"dev","claude_message":"Please implement the Expression Bookmarks feature you just described. Add the bookmark UI to the history panel, implement localStorage persistence, and add the export-to-clipboard functionality.","controller_messages":["Starting implementation of Expression Bookmarks."],"stop_reason":null,"progress_updates":["Implementing Expression Bookmarks"]}
+
+Agent responds: "I've implemented the bookmarks feature. Added BookmarkManager class in calc.js, bookmark tab in index.html, and styled it in style.css."
+
+Your response (turn 2 — agent implemented, tell it to review its own work):
+{"action":"delegate","agent_id":"dev","claude_message":"Review the changes you just made. Check for bugs, edge cases, and code quality issues. Run any tests if they exist. Report what you find.","controller_messages":["Reviewing the implementation."],"stop_reason":null,"progress_updates":["Reviewing changes"]}
+
+Agent responds: "I found 2 issues: (1) the bookmark label input doesn't sanitize HTML, (2) the export function doesn't handle empty bookmarks gracefully."
+
+Your response (turn 3 — agent found issues, tell it to fix them):
+{"action":"delegate","agent_id":"dev","claude_message":"Fix both issues you found: (1) sanitize HTML in the bookmark label input to prevent XSS, (2) handle the empty bookmarks case in the export function — show a message or disable the button.","controller_messages":["Fixing 2 issues found during review."],"stop_reason":null,"progress_updates":["Fixing review issues"]}
+
+Agent responds: "Both issues fixed. The label input now escapes HTML entities, and the export button is disabled when there are no bookmarks."
+
+Your response (turn 4 — issues fixed, work is complete):
+{"action":"stop","agent_id":null,"claude_message":null,"controller_messages":["Expression Bookmarks feature implemented and reviewed. 2 issues found and fixed."],"stop_reason":"Feature complete and verified","progress_updates":[]}
+
+FULL EXAMPLE — QA testing flow (agent_id: "QA-Browser"):
+
+Transcript so far:
+  User: Test the login page of this web app
+
+Your response (turn 1 — user wants testing, tell agent to test):
+{"action":"delegate","agent_id":"QA-Browser","claude_message":"Navigate to the login page. Test the following scenarios: (1) valid login with correct credentials, (2) invalid password, (3) empty fields, (4) SQL injection in the username field, (5) check if the page is responsive. Report all findings.","controller_messages":["Starting login page testing."],"stop_reason":null,"progress_updates":["Testing login page"]}
+
+Agent responds: "Found 3 issues: (1) no error message for empty fields, (2) form submits with spaces-only input, (3) password field has no max-length limit."
+
+Your response (turn 2 — issues found, tell agent to test more edge cases):
+{"action":"delegate","agent_id":"QA-Browser","claude_message":"Good findings. Now test these additional cases: (1) the 'forgot password' link, (2) the 'remember me' checkbox, (3) session handling after login — does refreshing the page keep the user logged in? (4) logout flow.","controller_messages":["Testing additional login scenarios."],"stop_reason":null,"progress_updates":["Testing forgot password, remember me, sessions"]}
+
+Agent responds: "All additional tests passed. Forgot password works, remember me persists, session survives refresh, logout clears everything."
+
+Your response (turn 3 — testing complete):
+{"action":"stop","agent_id":null,"claude_message":null,"controller_messages":["Login testing complete. 3 issues found in basic validation, all other scenarios passed."],"stop_reason":"Testing complete","progress_updates":[]}`;
+}
+
+/**
+ * Build the continue directive appended to the controller prompt when Continue/Loop fires.
+ * Shared between extension (session-manager) and CLI (shell).
+ * @param {string} guidance - User-provided guidance text, or empty string for auto-continue
+ * @param {string|null} currentAgentId - The active agent id, or null
+ */
+function buildContinueDirective(guidance, currentAgentId) {
+  const agentLine = currentAgentId
+    ? `Use agent_id: "${currentAgentId}" when delegating (you may also use other agent_ids if a different agent is more appropriate).`
+    : 'Delegate to the most appropriate available agent.';
+
+  if (guidance) {
+    return `CONTINUE DIRECTIVE — The user clicked Continue with this guidance: "${guidance}"
+${agentLine}
+
+Translate the guidance into a clear, specific claude_message. The agent only sees claude_message — not the guidance text — so include all context.
+
+EXAMPLES:
+
+Guidance: "test the login page" → claude_message: "Navigate to the login page and test form validation, submit with valid/invalid data, and report issues."
+Guidance: "focus on error handling" → claude_message: "Review the codebase for missing error handling and fix any issues you find."
+Guidance: "implement what you suggested" → claude_message: "Go ahead and implement the feature you proposed. Start with [details from transcript]."
+Guidance: "now fix that bug" → claude_message: "Fix the bug from the conversation: [specific bug details from transcript]."
+
+RULES:
+- You MUST delegate (action: "delegate").
+- claude_message must be self-contained and actionable.
+- NEVER tell the agent to ask the user anything. The user already gave you direction — act on it.`;
+  }
+  return `CONTINUE DIRECTIVE — The user clicked Continue (auto-continue mode). This means: PROCEED WITH WORK.
+${agentLine}
+
+IMPORTANT: "Continue" means the user wants you to DRIVE THE WORK FORWARD. Look at the conversation transcript and decide the next concrete action.
+
+HOW TO DECIDE:
+
+1. Agent proposed or suggested something (feature, approach, plan):
+→ Tell it to START IMPLEMENTING. Example: "Go ahead and implement the feature you described. Start with the core logic, then the UI."
+
+2. Agent just completed implementation:
+→ Tell it to VERIFY. Example: "Run the tests and review your changes. Fix anything that's broken."
+
+3. Agent reported test failures:
+→ Tell it to FIX. Example: "Fix these failures: [details]. Then re-run the tests."
+
+4. Agent reported all tests passing / work verified:
+→ Stop. The task is done.
+
+5. Agent asked a question or gave options:
+→ MAKE THE DECISION YOURSELF. Pick the most reasonable option and tell the agent to proceed. Example: "Go with option 1 — implement the core functionality first."
+
+6. Only greetings so far, no real work discussed:
+→ Tell the agent to explore the repo and start working. Example: "Explore this repository, understand its purpose, and suggest improvements or start implementing missing functionality."
+
+CRITICAL RULES:
+- You MUST delegate (action: "delegate") unless work is genuinely done.
+- NEVER tell the agent to "ask the user" or "wait for the user" — the user clicked Continue, which means PROCEED.
+- NEVER give meta-instructions like "keep the conversation active" or "handle the next turn" — give a CONCRETE task.
+- claude_message should be something the agent can immediately act on.`;
+}
+
 module.exports = {
   buildAgentWorkerSystemPrompt,
   buildControllerPrompt,
+  buildContinueDirective,
+  buildCopilotBasePrompt,
   buildDefaultWorkerAppendSystemPrompt,
   loadWorkflows,
 };

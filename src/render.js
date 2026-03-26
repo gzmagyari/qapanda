@@ -317,13 +317,14 @@ class Renderer {
     this.line(this.workerLabel, text, color.claude);
   }
 
-  launchClaude(prompt, sameSession, agentId, agentCli, agentName) {
+  launchClaude(prompt, sameSession, agentId, agentCli, agentName, overrideLabel) {
     const backendLabel = agentCli ? workerLabelFor(agentCli, agentName) : this.workerLabel;
     const agentLabel = !agentName && agentId && agentId !== 'default' ? ` [${agentId}]` : '';
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;
-    this.controller(`${prefix}"${truncate(prompt, 400)}"`);
+    const label = overrideLabel || this.controllerLabel;
+    this.line(label, `${prefix}"${truncate(prompt, 400)}"`, color.controller);
   }
 
   stop() {
