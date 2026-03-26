@@ -155,6 +155,15 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   loop.controller.exitCode = result.code;
   loop.controller.sessionId = discoveredSessionId;
   manifest.controller.sessionId = discoveredSessionId;
+  // Track how far the controller has seen in chat.jsonl for incremental transcript on resume
+  try {
+    const chatLogFile = manifest.files && manifest.files.chatLog;
+    if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {
+      const lineCount = require('node:fs').readFileSync(chatLogFile, 'utf8').trim().split('\n').length;
+      manifest.controller.lastSeenChatLine = lineCount;
+    }
+  } catch {}
+
 
   if (result.aborted) {
     throw new Error('Codex controller process was interrupted.');

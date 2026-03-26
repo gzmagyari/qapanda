@@ -3,15 +3,52 @@ const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
 
-function buildTranscriptExcerpt(manifest) {
+/**
+ * Build transcript excerpt from chat.jsonl — the unified chat history.
+ * Falls back to manifest.requests if chat.jsonl doesn't exist (backward compat).
+ * @param {object} manifest
+ * @param {number} [sinceLine] - If provided, only include chat lines from this index onward (for incremental resume).
+ */
+function buildTranscriptExcerpt(manifest, sinceLine) {
+  // Try reading from chat.jsonl first (unified chat log with everything the user sees)
+  const chatLogFile = manifest.files && manifest.files.chatLog;
+  if (chatLogFile) {
+    try {
+      const raw = fs.readFileSync(chatLogFile, 'utf8').trim();
+      if (raw) {
+        const allLines = raw.split('\n');
+        const lines = (sinceLine != null && sinceLine > 0) ? allLines.slice(sinceLine) : allLines;
+        return lines.map(line => {
+          try {
+            const e = JSON.parse(line);
+            if (e.type === 'user') return `User: ${e.text}`;
+            if (e.type === 'controller') return `${e.label || 'Controller'}: ${e.text}`;
+            if (e.type === 'claude' || e.type === 'mdLine') return `${e.label || 'Worker'}: ${e.text}`;
+            if (e.type === 'toolCall') return `${e.label || 'Worker'} tool: ${e.text}`;
+            if (e.type === 'stop') return `${e.label || 'Controller'}: STOP`;
+            if (e.type === 'error') return `Error: ${e.text}`;
+            if (e.type === 'banner') return `System: ${e.text}`;
+            if (e.type === 'shell') return `Shell: ${e.text}`;
+            if (e.type === 'line') return `${e.label || ''}: ${e.text}`;
+            return null;
+          } catch { return null; }
+        }).filter(Boolean);
+      }
+    } catch {
+      // chat.jsonl unreadable — fall through to legacy
+    }
+  }
+
+  // Fallback: build from manifest.requests (legacy, no tool calls or delegations)
+  const allRequests = manifest.requests || [];
+  const requests = allRequests;
   const requestLines = [];
-  for (const request of manifest.requests.slice(-6)) {
-    // Skip internal auto-continue messages in the transcript — they confuse the controller
+  for (const request of requests) {
     const msg = request.userMessage;
-    if (msg && !msg.startsWith('[AUTO-CONTINUE]') && !msg.startsWith('[CONTROLLER GUIDANCE]')) {
+    if (msg && !msg.startsWith('[AUTO-CONTINUE]') && !msg.startsWith('[CONTROLLER GUIDANCE]') && !msg.startsWith('[ORCHESTRATE]')) {
       requestLines.push(`User: ${msg}`);
     }
-    for (const loop of request.loops.slice(-4)) {
+    for (const loop of request.loops || []) {
       if (loop.controller && loop.controller.decision) {
         for (const message of loop.controller.decision.controller_messages || []) {
           requestLines.push(`Controller: ${message}`);
@@ -22,7 +59,7 @@ function buildTranscriptExcerpt(manifest) {
       }
     }
     if (request.stopReason) {
-      requestLines.push(`Controller STOP reason: ${request.stopReason}`);
+      requestLines.push(`Stop reason: ${request.stopReason}`);
     }
   }
   return requestLines;
@@ -220,7 +257,14 @@ function buildControllerPrompt(manifest, request) {
 
   const lastLoop = request.loops[request.loops.length - 1] || null;
   const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
-  const transcriptLines = buildTranscriptExcerpt(manifest);
+
+  // Incremental transcript: on resume, only send NEW chat lines since the controller's last turn
+  const isResume = !!manifest.controller.sessionId;
+  const lastSeen = manifest.controller.lastSeenChatLine || 0;
+  const isIncremental = isResume && lastSeen > 0;
+  const transcriptLines = isIncremental
+    ? buildTranscriptExcerpt(manifest, lastSeen)
+    : buildTranscriptExcerpt(manifest);
 
   const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
 
@@ -239,8 +283,18 @@ function buildControllerPrompt(manifest, request) {
     latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
     latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
     latest_worker_result: lastWorker ? lastWorker.resultText : null,
-    recent_transcript: transcriptLines,
   };
+
+  // Use different key to signal incremental vs full transcript
+  if (isIncremental) {
+    state.new_messages_since_your_last_turn = transcriptLines;
+  } else {
+    state.recent_transcript = transcriptLines;
+  }
+
+  const resumeNote = isIncremental
+    ? 'You are resuming a previous session. You already have earlier conversation history. Below are only the NEW messages since your last turn.\n'
+    : '';
 
   return [
     'You are the CONTROLLER agent — a senior developer who supervises a worker agent inside a terminal workflow.',
@@ -292,6 +346,7 @@ function buildControllerPrompt(manifest, request) {
     '- stop_reason: a short string or null',
     '- progress_updates: array of short task-progress lines written to the progress log / top-right status bubble. Use these ONLY for substantive task milestones (e.g. "Running tests", "Fixing bug in auth.js", "Tests passing"). For greetings, summaries, acknowledgements, or no-op replies, leave this as an empty array [].',
     '',
+    resumeNote || null,
     'Current state:',
     JSON.stringify(state, null, 2),
     '',

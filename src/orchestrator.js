@@ -5,6 +5,78 @@ const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn, runWorkerTurnInteractive, closeInteractiveSessions } = require('./claude');
 const { runCodexWorkerTurn } = require('./codex-worker');
 const { controllerLabelFor, workerLabelFor } = require('./render');
+const { formatToolCall, summarizeCodexWorkerEvent } = require('./events');
+
+/**
+ * Create an activity log accumulator that captures tool calls and text
+ * from worker events — the same info the user sees in the UI.
+ * Returns { log: string[], feed(parsedEvent) }.
+ */
+function createActivityLog() {
+  const log = [];
+  const pendingTools = new Map(); // index → { name, inputJson }
+  let textBuffer = '';
+
+  function flushText() {
+    if (textBuffer.trim()) {
+      log.push(textBuffer.trim());
+      textBuffer = '';
+    }
+  }
+
+  return {
+    log,
+    feed(parsed) {
+      if (!parsed) return;
+
+      // Claude streaming events (content_block_start/delta/stop)
+      const event = (parsed.type === 'stream_event') ? (parsed.event || {}) : parsed;
+
+      if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+        flushText();
+        pendingTools.set(event.index, { name: event.content_block.name || 'tool', inputJson: '' });
+        return;
+      }
+      if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+        const tc = pendingTools.get(event.index);
+        if (tc) tc.inputJson += (event.delta.partial_json || '');
+        return;
+      }
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        textBuffer += (event.delta.text || '');
+        return;
+      }
+      if (event.type === 'content_block_stop') {
+        const tc = pendingTools.get(event.index);
+        if (tc) {
+          let input = {};
+          try { input = JSON.parse(tc.inputJson); } catch {}
+          log.push(formatToolCall(tc.name, input));
+          pendingTools.delete(event.index);
+        }
+        return;
+      }
+
+      // Codex worker events (item.started/item.completed)
+      if (parsed.type === 'item.started' || parsed.type === 'item.completed') {
+        const summary = summarizeCodexWorkerEvent(parsed);
+        if (summary && summary.kind === 'status') {
+          log.push(summary.text);
+        }
+        return;
+      }
+
+      // Codex agent_message (text output)
+      if (parsed.type === 'item.started' && parsed.item?.type === 'agent_message' && parsed.item?.text) {
+        flushText();
+        log.push(parsed.item.text);
+      }
+    },
+    finish() {
+      flushText();
+    },
+  };
+}
 
 function getControllerRunner(manifest) {
   if (manifest.controller.cli === 'claude') return runClaudeControllerTurn;
@@ -104,7 +176,11 @@ function getRunnableRequest(manifest) {
 }
 
 async function runManagerLoop(manifest, renderer, options = {}) {
-  setControllerLabel(renderer, manifest);
+  if (options.controllerLabel) {
+    renderer.controllerLabel = options.controllerLabel;
+  } else {
+    setControllerLabel(renderer, manifest);
+  }
   setWorkerLabel(renderer, manifest);
   const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
   let request = null;
@@ -193,7 +269,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       }
 
       for (const line of controllerResult.decision.progress_updates || []) {
-        await appendProgress(manifest, truncate(line, 120), renderer);
+        await appendProgress(manifest, line, renderer);
       }
 
       if (controllerResult.decision.action === 'stop') {
@@ -258,6 +334,8 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       );
 
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
+      const activityLog = createActivityLog();
+      workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
       const workerResult = await runWorker({
         manifest,
         request,
@@ -274,9 +352,11 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
             await appendJsonl(workerRecord.stderrFile, { text: event.text });
           }
+          activityLog.feed(event.parsed);
           await emitEvent(manifest, event, renderer);
         },
       });
+      activityLog.finish();
 
       await appendTranscript(manifest, {
         ts: nowIso(),
@@ -420,6 +500,8 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     );
 
     const runWorker = getWorkerRunner(manifest, agentConfig);
+    const activityLog = createActivityLog();
+    workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
 
     const workerResult = await runWorker({
       manifest,
@@ -437,9 +519,11 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
           await appendJsonl(workerRecord.stderrFile, { text: event.text });
         }
+        activityLog.feed(event.parsed);
         await emitEvent(manifest, event, renderer);
       },
     });
+    activityLog.finish();
 
     await appendTranscript(manifest, {
       ts: nowIso(),
@@ -570,7 +654,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
       }
 
       for (const line of controllerResult.decision.progress_updates || []) {
-        await appendProgress(manifest, truncate(line, 120), renderer);
+        await appendProgress(manifest, line, renderer);
       }
 
       // Decision: stop or delegate

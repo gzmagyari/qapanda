@@ -98,6 +98,13 @@ class SessionManager {
     this._delegationDepth = 0;
   }
 
+  /** Sync the chat log path to the renderer whenever the manifest changes. */
+  _syncChatLogPath() {
+    if (this._activeManifest && this._activeManifest.files && this._activeManifest.files.chatLog) {
+      this._renderer.chatLogPath = this._activeManifest.files.chatLog;
+    }
+  }
+
   /** Update the MCP server data (both scopes). Called from extension.js. */
   setMcpServers(mcpData) {
     this._mcpData = mcpData || { global: {}, project: {} };
@@ -397,6 +404,7 @@ class SessionManager {
     try {
       const runDir = await resolveRunDir(runId, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
+      this._syncChatLogPath();
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
       }
@@ -423,45 +431,58 @@ class SessionManager {
   }
 
   /**
-   * Read the transcript file and send it to the webview for chat history rebuild.
-   * Maps transcript roles to webview message types.
+   * Read the chat history file and send it to the webview for chat rebuild.
+   * Uses chat.jsonl (unified chat log) if available, falls back to transcript.jsonl (legacy).
    */
   async sendTranscript() {
-    if (!this._activeManifest || !this._activeManifest.files || !this._activeManifest.files.transcript) {
-      return;
-    }
+    if (!this._activeManifest || !this._activeManifest.files) return;
     try {
-      const raw = await readText(this._activeManifest.files.transcript, '');
+      // Prefer chat.jsonl (has full history including tool calls, delegations, etc.)
+      const chatLogFile = this._activeManifest.files.chatLog;
+      const transcriptFile = this._activeManifest.files.transcript;
+      const filePath = (chatLogFile && fs.existsSync(chatLogFile)) ? chatLogFile : transcriptFile;
+      if (!filePath) return;
+
+      const raw = await readText(filePath, '');
       if (!raw.trim()) return;
       const entries = raw.trim().split('\n').map(line => {
         try { return JSON.parse(line); } catch { return null; }
       }).filter(Boolean);
       if (entries.length === 0) return;
 
-      // Map transcript entries to webview message types
-      const messages = [];
-      for (const entry of entries) {
-        if (entry.role === 'user') {
-          messages.push({ type: 'user', text: entry.text || '' });
-        } else if (entry.role === 'controller') {
-          const cli = entry.controllerCli
-            || (this._activeManifest && this._activeManifest.controller && this._activeManifest.controller.cli)
-            || 'codex';
-          const label = controllerLabelFor(cli);
-          if (entry.text === '[STOP]') {
-            messages.push({ type: 'stop', label });
-          } else {
-            messages.push({ type: 'controller', text: entry.text || '', label });
+      let messages;
+      if (filePath === chatLogFile) {
+        // chat.jsonl: entries are already in webview message format {type, text, label, ...}
+        messages = entries.map(e => {
+          const { ts, ...msg } = e; // strip timestamp, keep the rest
+          return msg;
+        });
+      } else {
+        // Legacy transcript.jsonl: map roles to webview types
+        messages = [];
+        for (const entry of entries) {
+          if (entry.role === 'user') {
+            messages.push({ type: 'user', text: entry.text || '' });
+          } else if (entry.role === 'controller') {
+            const cli = entry.controllerCli
+              || (this._activeManifest.controller && this._activeManifest.controller.cli)
+              || 'codex';
+            const label = controllerLabelFor(cli);
+            if (entry.text === '[STOP]') {
+              messages.push({ type: 'stop', label });
+            } else {
+              messages.push({ type: 'controller', text: entry.text || '', label });
+            }
+          } else if (entry.role === 'claude') {
+            messages.push({ type: 'claude', text: (entry.text || '').trim(), label: this._renderer.workerLabel || 'Worker' });
           }
-        } else if (entry.role === 'claude') {
-          messages.push({ type: 'claude', text: (entry.text || '').trim(), label: this._renderer.workerLabel || 'Worker' });
         }
       }
       if (messages.length > 0) {
         this._postMessage({ type: 'transcriptHistory', messages });
       }
     } catch {
-      // Transcript unreadable — not fatal
+      // Chat log unreadable — not fatal
     }
   }
 
@@ -707,6 +728,7 @@ class SessionManager {
 
       if (!this._activeManifest) {
         this._activeManifest = await prepareNewRun(text, this._buildNewRunOpts());
+        this._syncChatLogPath();
         this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       }
       this._applyWorkerThinking();
@@ -814,6 +836,7 @@ class SessionManager {
       this._clearWaitTimer();
       const runDir = await resolveRunDir(rest, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
+      this._syncChatLogPath();
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
       }
@@ -894,6 +917,7 @@ class SessionManager {
       this._clearWaitTimer();
 
       this._activeManifest = await prepareNewRun(rest, this._buildNewRunOpts());
+      this._syncChatLogPath();
       this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       this._renderer.requestStarted(this._activeManifest.runId);
       this._applyWorkerThinking();
@@ -1055,6 +1079,7 @@ class SessionManager {
   
         if (!this._activeManifest) {
           this._activeManifest = await prepareNewRun(message, this._buildNewRunOpts());
+          this._syncChatLogPath();
           this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
         }
         this._applyWorkerThinking();
@@ -1433,6 +1458,7 @@ class SessionManager {
         userMessage,
         abortSignal: this._abortController.signal,
         singlePass: true,
+        controllerLabel: 'Continue',
       });
       await saveManifest(this._activeManifest);
       // If loop mode is on and the run didn't stop, auto-continue
@@ -1440,7 +1466,7 @@ class SessionManager {
         this._scheduleLoopContinue();
       }
     } finally {
-      // Restore original prompt and direct-mode controller session ID
+      // Restore original prompt and controller session ID
       this._activeManifest.controllerSystemPrompt = originalPrompt;
       this._activeManifest.controller.sessionId = savedControllerSessionId;
       this._running = false;
@@ -1481,6 +1507,7 @@ class SessionManager {
     try {
       if (!this._activeManifest) {
         this._activeManifest = await prepareNewRun(text || '[ORCHESTRATE]', this._buildNewRunOpts());
+        this._syncChatLogPath();
         this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       }
       this._applyWorkerThinking();

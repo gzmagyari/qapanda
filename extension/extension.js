@@ -526,19 +526,19 @@ function getWebviewHtml(panel, extensionUri) {
       <div class="config-group">
         <label>Target</label>
         <select id="cfg-chat-target">
-          <option value="controller">Controller</option>
+          <option value="controller">Orchestrator</option>
           <option value="claude">Worker (Default)</option>
         </select>
       </div>
       <div class="config-group cfg-controller-only">
-        <label>Controller CLI</label>
+        <label>Orchestrator CLI</label>
         <select id="cfg-controller-cli">
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
         </select>
       </div>
       <div class="config-group cfg-controller-only">
-        <label>Controller</label>
+        <label>Orchestrator</label>
         <select id="cfg-controller-model">
           <option value="">Model: default</option>
         </select>

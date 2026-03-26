@@ -1,4 +1,4 @@
-const { truncate, safeJsonParse } = require('./utils');
+const { safeJsonParse } = require('./utils');
 
 function parseJsonLine(line) {
   return safeJsonParse(line);
@@ -65,7 +65,7 @@ function summarizeCodexEvent(raw) {
     return {
       source: 'controller',
       kind: 'error',
-      text: truncate(raw.message || raw.error || JSON.stringify(raw), 300),
+      text: raw.message || raw.error || JSON.stringify(raw),
     };
   }
 
@@ -78,7 +78,7 @@ function summarizeCodexEvent(raw) {
       return {
         source: 'controller',
         kind: 'status',
-        text: started ? `Running command: ${truncate(item.command, 200)}` : `${prefix}${truncate(item.command, 200)}`,
+        text: started ? `Running command: ${item.command}` : `${prefix}${item.command}`,
       };
     }
 
@@ -114,7 +114,7 @@ function summarizeCodexEvent(raw) {
       return {
         source: 'controller',
         kind: 'status',
-        text: truncate(item.text, 200),
+        text: item.text,
       };
     }
 
@@ -154,7 +154,7 @@ function summarizeCodexWorkerEvent(raw) {
 
   // Errors are still worth showing
   if (raw.type === 'error') {
-    return { kind: 'error', text: truncate(raw.message || raw.error || JSON.stringify(raw), 300) };
+    return { kind: 'error', text: raw.message || raw.error || JSON.stringify(raw) };
   }
 
   if (raw.type === 'item.started' || raw.type === 'item.completed') {
@@ -162,7 +162,7 @@ function summarizeCodexWorkerEvent(raw) {
     const started = raw.type === 'item.started';
 
     if (item.type === 'command_execution' && item.command) {
-      return { kind: 'status', text: started ? `Running: ${truncate(item.command, 200)}` : `Done: ${truncate(item.command, 200)}` };
+      return { kind: 'status', text: started ? `Running: ${item.command}` : `Done: ${item.command}` };
     }
     if (item.type === 'mcp_tool_call') {
       const label = [item.server, item.tool].filter(Boolean).join(':') || 'MCP tool';
@@ -176,7 +176,7 @@ function summarizeCodexWorkerEvent(raw) {
       return { kind: 'status', text: started ? `Checking ${p}` : `Reviewed ${p}` };
     }
     if (item.type === 'plan_update' && item.text) {
-      return { kind: 'status', text: truncate(item.text, 200) };
+      return { kind: 'status', text: item.text };
     }
     if (item.type === 'reasoning' && item.text) {
       return { kind: 'reasoning', text: item.text };
@@ -236,15 +236,43 @@ function summarizeClaudeEvent(raw) {
     return {
       source: 'worker',
       kind: 'error',
-      text: truncate(raw.message || raw.error || JSON.stringify(raw), 300),
+      text: raw.message || raw.error || JSON.stringify(raw),
     };
   }
 
   return null;
 }
 
+/**
+ * Format a tool call into a human-readable one-liner (same format the UI shows).
+ * Used by both the renderer and the orchestrator for transcript building.
+ */
+function formatToolCall(name, input) {
+  if (!input) input = {};
+  if (name === 'Bash' && input.command) return `Running command: ${input.command}`;
+  if (name === 'Read' && input.file_path) return `Reading ${input.file_path}`;
+  if (name === 'Write' && input.file_path) return `Writing ${input.file_path}`;
+  if (name === 'Edit' && input.file_path) return `Editing ${input.file_path}`;
+  if (name === 'Glob' && input.pattern) return `Glob: ${input.pattern}`;
+  if (name === 'Grep' && input.pattern) {
+    const p = input.path || input.include || '';
+    return `Grep: ${input.pattern}${p ? ` in ${p}` : ''}`;
+  }
+  if (name === 'TodoWrite') return 'Updating todos';
+  // MCP tools: show server:tool(brief args)
+  const filePath = input.file_path || input.path || input.target_file || input.filename;
+  if (filePath) return `${name}: ${filePath}`;
+  const keys = Object.keys(input);
+  if (keys.length > 0) {
+    const brief = keys.map(k => `${k}=${String(input[k])}`).join(', ');
+    return `${name}: ${brief}`;
+  }
+  return `Using ${name}`;
+}
+
 module.exports = {
   extractTextFromClaudeContent,
+  formatToolCall,
   parseJsonLine,
   summarizeClaudeEvent,
   summarizeCodexEvent,

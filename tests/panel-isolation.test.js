@@ -115,8 +115,8 @@ test('two panels with different configs remain independent', () => {
     assert.equal(configB.workerModel, 'sonnet');
 
     // Renderer labels should differ
-    assert.equal(rendererA.controllerLabel, 'Controller (Claude)');
-    assert.equal(rendererB.controllerLabel, 'Controller (Codex)');
+    assert.equal(rendererA.controllerLabel, 'Orchestrator (Claude)');
+    assert.equal(rendererB.controllerLabel, 'Orchestrator (Codex)');
 
     panelA.dispose();
     panelB.dispose();
@@ -151,11 +151,11 @@ test('applyConfig on one panel does not affect another', () => {
 
     // Panel A should be claude
     assert.equal(panelA._getConfig().controllerCli, 'claude');
-    assert.equal(rendererA.controllerLabel, 'Controller (Claude)');
+    assert.equal(rendererA.controllerLabel, 'Orchestrator (Claude)');
 
     // Panel B should still be codex
     assert.equal(panelB._getConfig().controllerCli, 'codex');
-    assert.equal(rendererB.controllerLabel, 'Controller (Codex)');
+    assert.equal(rendererB.controllerLabel, 'Orchestrator (Codex)');
 
     panelA.dispose();
     panelB.dispose();
@@ -172,7 +172,7 @@ test('panel created with empty config gets defaults', () => {
     assert.equal(config.controllerModel, '');
     assert.equal(config.workerModel, '');
     assert.equal(config.chatTarget, 'controller');
-    assert.equal(renderer.controllerLabel, 'Controller (Codex)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Codex)');
     session.dispose();
   } finally {
     restoreFakes();
@@ -193,7 +193,7 @@ test('panel restored with saved config uses that config', () => {
     assert.equal(config.controllerCli, 'claude');
     assert.equal(config.workerModel, 'opus');
     assert.equal(config.chatTarget, 'claude');
-    assert.equal(renderer.controllerLabel, 'Controller (Claude)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Claude)');
     session.dispose();
   } finally {
     restoreFakes();

@@ -3,22 +3,22 @@ const assert = require('node:assert/strict');
 const { controllerLabelFor, workerLabelFor } = require('../../src/render');
 
 describe('controllerLabelFor', () => {
-  it('returns Controller (Codex) for codex', () => {
-    assert.equal(controllerLabelFor('codex'), 'Controller (Codex)');
+  it('returns Orchestrator (Codex) for codex', () => {
+    assert.equal(controllerLabelFor('codex'), 'Orchestrator (Codex)');
   });
 
-  it('returns Controller (Claude) for claude', () => {
-    assert.equal(controllerLabelFor('claude'), 'Controller (Claude)');
+  it('returns Orchestrator (Claude) for claude', () => {
+    assert.equal(controllerLabelFor('claude'), 'Orchestrator (Claude)');
   });
 
-  it('returns Controller (Codex) for unknown CLI (default)', () => {
-    assert.equal(controllerLabelFor('something-else'), 'Controller (Codex)');
+  it('returns Orchestrator (Codex) for unknown CLI (default)', () => {
+    assert.equal(controllerLabelFor('something-else'), 'Orchestrator (Codex)');
   });
 
   it('handles null/undefined', () => {
     // null/undefined are not 'claude', so should get Codex label
-    assert.equal(controllerLabelFor(null), 'Controller (Codex)');
-    assert.equal(controllerLabelFor(undefined), 'Controller (Codex)');
+    assert.equal(controllerLabelFor(null), 'Orchestrator (Codex)');
+    assert.equal(controllerLabelFor(undefined), 'Orchestrator (Codex)');
   });
 });
 

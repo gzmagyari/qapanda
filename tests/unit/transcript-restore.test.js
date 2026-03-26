@@ -36,7 +36,7 @@ describe('transcript entry mapping', () => {
     const entries = [{ role: 'controller', text: 'Thinking...' }];
     const messages = mapTranscriptEntries(entries, { controllerCli: 'codex' });
     assert.equal(messages[0].type, 'controller');
-    assert.equal(messages[0].label, 'Controller (Codex)');
+    assert.equal(messages[0].label, 'Orchestrator (Codex)');
   });
 
   it('maps controller STOP entries', () => {
@@ -93,7 +93,7 @@ describe('transcript entry mapping', () => {
   it('uses entry-level controllerCli when present', () => {
     const entries = [{ role: 'controller', text: 'Hi', controllerCli: 'claude' }];
     const messages = mapTranscriptEntries(entries, { controllerCli: 'codex' });
-    assert.equal(messages[0].label, 'Controller (Claude)');
+    assert.equal(messages[0].label, 'Orchestrator (Claude)');
   });
 
   it('maps a complete conversation', () => {
@@ -110,7 +110,7 @@ describe('transcript entry mapping', () => {
     assert.equal(messages.length, 4);
     assert.equal(messages[0].type, 'user');
     assert.equal(messages[1].type, 'controller');
-    assert.equal(messages[1].label, 'Controller (Codex)');
+    assert.equal(messages[1].label, 'Orchestrator (Codex)');
     assert.equal(messages[2].type, 'claude');
     assert.equal(messages[2].label, 'Developer');
     assert.equal(messages[2].text, 'I\'ve fixed the bug in file.js');

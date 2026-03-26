@@ -2684,6 +2684,9 @@
     document.querySelectorAll('.cfg-worker-only').forEach(el => el.classList.toggle('tab-hidden', isAgent));
   }
 
+  // Saved chatTarget from vscode.getState — used to restore after dropdown is populated
+  let _pendingChatTarget = null;
+
   function refreshTargetDropdown() {
     if (!cfgChatTarget) return;
     const currentValue = cfgChatTarget.value;
@@ -2701,11 +2704,14 @@
         cfgChatTarget.appendChild(opt);
       }
     }
-    // Restore previous value if still valid, otherwise reset to controller
+    // Restore: prefer pending saved target (from vscode.getState), then current value, then 'controller'
     const validValues = Array.from(cfgChatTarget.options).map(o => o.value);
+    const preferred = _pendingChatTarget || currentValue;
     suppressTargetConfirm = true;
-    cfgChatTarget.value = validValues.includes(currentValue) ? currentValue : 'controller';
+    cfgChatTarget.value = validValues.includes(preferred) ? preferred : 'controller';
     suppressTargetConfirm = false;
+    _pendingChatTarget = null; // consumed
+    updateConfigBarForTarget(cfgChatTarget.value);
   }
 
   function onConfigChange() {
@@ -3170,6 +3176,10 @@
         renderAgentList('global');
         renderAgentList('project');
         refreshTargetDropdown();
+        // Sync restored chatTarget to session manager (dropdown now has agent options)
+        if (cfgChatTarget) {
+          vscode.postMessage({ type: 'configChanged', config: { chatTarget: cfgChatTarget.value } });
+        }
       }
       if (msg.modes) {
         modesSystem = msg.modes.system || {};
@@ -3450,6 +3460,8 @@
   if (savedState) {
     currentRunId = savedState.runId || null;
     if (savedState.config) {
+      // Save chatTarget for later — dropdown options aren't populated yet (agents arrive in initConfig)
+      if (savedState.config.chatTarget) _pendingChatTarget = savedState.config.chatTarget;
       setConfig(savedState.config);
     }
     if (savedState.panelId) {

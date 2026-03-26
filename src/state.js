@@ -32,6 +32,10 @@ function transcriptPath(runDir) {
   return path.join(runDir, 'transcript.jsonl');
 }
 
+function chatLogPath(runDir) {
+  return path.join(runDir, 'chat.jsonl');
+}
+
 function progressPath(runDir) {
   return path.join(runDir, 'progress.md');
 }
@@ -146,6 +150,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     manifest: manifestPath(runDir),
     events: eventsPath(runDir),
     transcript: transcriptPath(runDir),
+    chatLog: chatLogPath(runDir),
     progress: progressPath(runDir),
     schema: defaultSchemaPath(runDir),
     requestsDir: path.join(runDir, 'requests'),
@@ -170,6 +175,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     controller: {
       ...normalized.controller,
       sessionId: null,
+      lastSeenChatLine: 0,
       schemaFile: files.schema,
     },
     worker: {

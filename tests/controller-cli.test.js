@@ -541,7 +541,7 @@ test('switching controllerCli clears claudeSessionId on attached manifest', asyn
 
 // ── Controller output uses backend-specific label ────────────────────────────
 
-test('Claude-controller output uses Controller (Claude) label', async () => {
+test('Claude-controller output uses Orchestrator (Claude) label', async () => {
   const { repoRoot, stateRoot } = await setupWorkspace();
   const result = await runCli([
     'run',
@@ -555,12 +555,12 @@ test('Claude-controller output uses Controller (Claude) label', async () => {
 
   assert.equal(result.code, 0, `stderr: ${result.stderr}\nstdout: ${result.stdout}`);
   assert.match(result.stdout, /Controller \(Claude\)/,
-    'output should contain Controller (Claude) label');
+    'output should contain Orchestrator (Claude) label');
   assert.doesNotMatch(result.stdout, /Controller \(Codex\)/,
-    'should not contain Controller (Codex) label');
+    'should not contain Orchestrator (Codex) label');
 });
 
-test('Codex-controller output uses Controller (Codex) label', async () => {
+test('Codex-controller output uses Orchestrator (Codex) label', async () => {
   const { repoRoot, stateRoot } = await setupWorkspace();
   const result = await runCli([
     'run',
@@ -573,9 +573,9 @@ test('Codex-controller output uses Controller (Codex) label', async () => {
 
   assert.equal(result.code, 0, `stderr: ${result.stderr}\nstdout: ${result.stdout}`);
   assert.match(result.stdout, /Controller \(Codex\)/,
-    'output should contain Controller (Codex) label');
+    'output should contain Orchestrator (Codex) label');
   assert.doesNotMatch(result.stdout, /Controller \(Claude\)/,
-    'should not contain Controller (Claude) label');
+    'should not contain Orchestrator (Claude) label');
 });
 
 test('printRunSummary includes controller CLI', async () => {

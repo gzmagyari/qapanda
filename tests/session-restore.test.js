@@ -299,9 +299,9 @@ test('sendTranscript posts transcriptHistory with mapped message types', async (
     assert.ok(hist, 'should post transcriptHistory');
     assert.equal(hist.messages.length, 4);
     assert.deepEqual(hist.messages[0], { type: 'user', text: 'Hello' });
-    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating to Claude', label: 'Controller (Codex)' });
+    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating to Claude', label: 'Orchestrator (Codex)' });
     assert.deepEqual(hist.messages[2], { type: 'claude', text: 'Done editing file.js' });
-    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Controller (Codex)' });
+    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Orchestrator (Codex)' });
   } finally {
     cleanup();
   }
@@ -567,8 +567,8 @@ test('sendTranscript uses manifest CLI for old entries without controllerCli', a
     const hist = posted.find(m => m.type === 'transcriptHistory');
     assert.ok(hist, 'should post transcriptHistory');
     // Controller entries should use manifest's CLI (claude), not session default (codex)
-    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating', label: 'Controller (Claude)' });
-    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Controller (Claude)' });
+    assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating', label: 'Orchestrator (Claude)' });
+    assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Orchestrator (Claude)' });
   } finally {
     session.dispose();
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -619,9 +619,9 @@ test('reattachRun updates renderer.controllerLabel from manifest', async () => {
   });
 
   try {
-    assert.equal(renderer.controllerLabel, 'Controller (Codex)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Codex)');
     await session.reattachRun('claude-run');
-    assert.equal(renderer.controllerLabel, 'Controller (Claude)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Claude)');
   } finally {
     session.dispose();
     delete require.cache[smPath];
@@ -682,9 +682,9 @@ test('/resume updates renderer.controllerLabel from manifest', async () => {
   });
 
   try {
-    assert.equal(renderer.controllerLabel, 'Controller (Codex)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Codex)');
     await session.handleMessage({ type: 'userInput', text: '/resume claude-resume-run' });
-    assert.equal(renderer.controllerLabel, 'Controller (Claude)');
+    assert.equal(renderer.controllerLabel, 'Orchestrator (Claude)');
   } finally {
     session.dispose();
     fs.rmSync(tmpDir, { recursive: true, force: true });

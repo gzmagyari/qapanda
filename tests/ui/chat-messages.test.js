@@ -26,7 +26,7 @@ describe('Chat messages', () => {
   });
 
   it('controller message renders', () => {
-    wv.postMessage({ type: 'controller', text: 'Thinking...', label: 'Controller (Codex)' });
+    wv.postMessage({ type: 'controller', text: 'Thinking...', label: 'Orchestrator (Codex)' });
     const msgs = wv.document.getElementById('messages');
     assert.ok(msgs.innerHTML.includes('Thinking...'), 'should contain controller text');
   });
@@ -39,7 +39,7 @@ describe('Chat messages', () => {
   });
 
   it('stop message renders', () => {
-    wv.postMessage({ type: 'stop', label: 'Controller (Codex)' });
+    wv.postMessage({ type: 'stop', label: 'Orchestrator (Codex)' });
     const msgs = wv.document.getElementById('messages');
     assert.ok(msgs.innerHTML.includes('STOP') || msgs.innerHTML.includes('stop') || msgs.innerHTML.includes('●'), 'should show stop indicator');
   });

@@ -89,7 +89,7 @@ const glyph = {
 };
 
 function controllerLabelFor(cli) {
-  return cli === 'claude' ? 'Orchestrator (Claude)' : 'Orchestrator (Codex)';
+  return cli === 'claude' ? 'Controller (Claude)' : 'Controller (Codex)';
 }
 
 function workerLabelFor(cli, agentName) {
@@ -116,7 +116,7 @@ class Renderer {
     // Whether we've written at least one content line in the current section
     this._hasContent = false;
     // Controller label — set from manifest.controller.cli
-    this.controllerLabel = 'Orchestrator';
+    this.controllerLabel = 'Controller';
     // Worker label — set from manifest.worker.cli
     this.workerLabel = 'Worker';
     // Chat log path — set when manifest is available
@@ -321,7 +321,6 @@ class Renderer {
       this.write(`${this._circlePfx()}${text}\n`);
     }
     this._hasContent = true;
-    this._logChat({ type: 'user', text });
   }
 
   controller(text) {
@@ -339,7 +338,7 @@ class Renderer {
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;
     const label = overrideLabel || this.controllerLabel;
-    this.line(label, `${prefix}"${prompt}"`, color.controller);
+    this.line(label, `${prefix}"${truncate(prompt, 400)}"`, color.controller);
   }
 
   stop() {
@@ -445,7 +444,6 @@ class Renderer {
         const desc = this._formatToolCall(tc.name, input);
         this._ensureHeader(this.workerLabel, color.claude);
         this._contentLine(`${color.dim}${desc}${color.reset}`);
-        this._logChat({ type: 'toolCall', label: this.workerLabel, text: desc });
         this._toolCalls.delete(summary.index);
       }
       return;

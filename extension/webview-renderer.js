@@ -1,6 +1,16 @@
+const fs = require('node:fs');
 const { truncate } = require('./src/utils');
-const { summarizeClaudeEvent, summarizeCodexEvent } = require('./src/events');
+const { summarizeClaudeEvent, summarizeCodexEvent, formatToolCall } = require('./src/events');
 const { workerLabelFor } = require('./src/render');
+
+// Message types to skip when logging to chat.jsonl (internal/transient only)
+const CHAT_LOG_SKIP = new Set([
+  'running', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId',
+  'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory',
+  'streamLine', 'flushStream', 'close', 'initConfig',
+  'desktopReady', 'desktopGone', 'chromeReady', 'chromeFrame', 'chromeGone',
+  'computerUseDetected', 'requestStarted', 'requestFinished',
+]);
 
 class WebviewRenderer {
   constructor(panel, options = {}) {
@@ -13,9 +23,11 @@ class WebviewRenderer {
     // Tool call tracking: index -> { name, inputJson }
     this._toolCalls = new Map();
     // Controller label — set from manifest.controller.cli
-    this.controllerLabel = 'Controller';
+    this.controllerLabel = 'Orchestrator';
     // Worker label — set from manifest.worker.cli
     this.workerLabel = 'Worker';
+    // Chat log path — set by session-manager when manifest is available
+    this.chatLogPath = null;
   }
 
   _post(msg) {
@@ -23,6 +35,19 @@ class WebviewRenderer {
       this._panel.webview.postMessage(msg);
     } catch {
       // Panel may be disposed
+    }
+    this._logChat(msg);
+  }
+
+  /** Append a message to chat.jsonl — the unified chat history file. */
+  _logChat(msg) {
+    if (!this.chatLogPath || !msg || !msg.type) return;
+    if (CHAT_LOG_SKIP.has(msg.type)) return;
+    try {
+      const entry = { ts: new Date().toISOString(), ...msg };
+      fs.appendFileSync(this.chatLogPath, JSON.stringify(entry) + '\n');
+    } catch {
+      // File write may fail if run dir doesn't exist yet
     }
   }
 
@@ -95,7 +120,7 @@ class WebviewRenderer {
     const prefix = sameSession
       ? `Launching ${backendLabel}${agentLabel} (same session) with: `
       : `Launching ${backendLabel}${agentLabel} with: `;
-    this._post({ type: 'controller', text: `${prefix}"${truncate(prompt, 400)}"`, label: overrideLabel || this.controllerLabel });
+    this._post({ type: 'controller', text: `${prefix}"${prompt}"`, label: overrideLabel || this.controllerLabel });
   }
 
   stop() {
@@ -126,38 +151,7 @@ class WebviewRenderer {
   }
 
   _formatToolCall(name, input) {
-    if (name === 'Bash' && input.command) {
-      return `Running command: ${input.command}`;
-    }
-    if (name === 'Read' && input.file_path) {
-      return `Reading ${input.file_path}`;
-    }
-    if (name === 'Write' && input.file_path) {
-      return `Writing ${input.file_path}`;
-    }
-    if (name === 'Edit' && input.file_path) {
-      return `Editing ${input.file_path}`;
-    }
-    if (name === 'Glob' && input.pattern) {
-      return `Glob: ${input.pattern}`;
-    }
-    if (name === 'Grep' && input.pattern) {
-      const path = input.path || input.include || '';
-      return `Grep: ${input.pattern}${path ? ` in ${path}` : ''}`;
-    }
-    if (name === 'TodoWrite') {
-      return `Updating todos`;
-    }
-    const filePath = input.file_path || input.path || input.target_file || input.filename;
-    if (filePath) {
-      return `${name}: ${filePath}`;
-    }
-    const keys = Object.keys(input);
-    if (keys.length > 0) {
-      const brief = keys.map(k => `${k}=${truncate(String(input[k]), 80)}`).join(', ');
-      return `${name}: ${brief}`;
-    }
-    return `Using ${name}`;
+    return formatToolCall(name, input);
   }
 
   controllerEvent(raw) {
