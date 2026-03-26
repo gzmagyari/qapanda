@@ -418,7 +418,9 @@ html, body {
 
 /* ── Input box (Claude Code-style) ─────────────────────── */
 #input-box {
-  margin: 0 16px 12px;
+  width: 90%;
+  max-width: 700px;
+  margin: 0 auto 12px;
   background: var(--vscode-input-background, #2a2a2a);
   border: 1px solid var(--vscode-panel-border, #333);
   border-radius: 12px;
