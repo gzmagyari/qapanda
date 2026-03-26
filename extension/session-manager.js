@@ -657,6 +657,13 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'orchestrateInput') {
+      // Orchestrate button: full controller orchestration with persistent session
+      const text = (msg.text || '').trim();
+      await this._handleOrchestrate(text);
+      return;
+    }
+
     if (msg.type === 'userInput') {
       await this._handleInput(String(msg.text || '').trim());
       return;
@@ -1462,6 +1469,36 @@ class SessionManager {
       if (!this._loopMode || this._running) return;
       this._handleContinue('');
     }, 500);
+  }
+
+  /**
+   * Handle Orchestrate button — full controller orchestration with persistent session.
+   * Loop OFF = one controller→agent cycle, Loop ON = keeps going until controller says STOP.
+   */
+  async _handleOrchestrate(text) {
+    if (this._running) return;
+    this._clearWaitTimer();
+    try {
+      if (!this._activeManifest) {
+        this._activeManifest = await prepareNewRun(text || '[ORCHESTRATE]', this._buildNewRunOpts());
+        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      }
+      this._applyWorkerThinking();
+
+      // Run the direct controller (persistent session, full prompt)
+      // Always loop until the controller says STOP — that's the point of Orchestrate
+      await this._runLoop({
+        userMessage: text || '[ORCHESTRATE] Decide the next step based on the conversation transcript.',
+      });
+    } catch (error) {
+      if (!isAbortError(error)) {
+        this._renderer.banner(`Orchestrate error: ${formatRunError(error)}`);
+      } else {
+        this._renderer.banner('Orchestrate stopped by user.');
+      }
+    } finally {
+      this._renderer.close();
+    }
   }
 
   async _runLoop(options) {

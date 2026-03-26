@@ -9,6 +9,7 @@
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
   const btnContinue = document.getElementById('btn-continue');
+  const btnOrchestrate = document.getElementById('btn-orchestrate');
   const btnStop = document.getElementById('btn-stop');
   const loopToggle = document.getElementById('loop-toggle');
   const progressBubble = document.getElementById('progress-bubble');
@@ -3129,6 +3130,7 @@
         isRunning = true;
         btnSend.style.display = 'none';
         if (btnContinue) btnContinue.style.display = 'none';
+        if (btnOrchestrate) btnOrchestrate.style.display = 'none';
         btnStop.style.display = 'inline-block';
         textarea.disabled = true;
         showThinking();
@@ -3141,6 +3143,7 @@
         if (splitChromeWrapper) teardownSplitChrome(true);
         btnSend.style.display = 'inline-block';
         if (btnContinue) btnContinue.style.display = 'inline-block';
+        if (btnOrchestrate) btnOrchestrate.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
         textarea.focus();
@@ -3635,6 +3638,16 @@
       const text = textarea.value.trim();
       textarea.value = '';
       vscode.postMessage({ type: 'continueInput', text });
+    });
+  }
+
+  // Orchestrate button — full controller orchestration with persistent session
+  if (btnOrchestrate) {
+    btnOrchestrate.addEventListener('click', () => {
+      const text = textarea.value.trim();
+      textarea.value = '';
+      textarea.style.height = '';
+      vscode.postMessage({ type: 'orchestrateInput', text });
     });
   }
 

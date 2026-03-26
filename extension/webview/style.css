@@ -1530,6 +1530,19 @@ html, body {
 #btn-continue:hover {
   background: var(--vscode-button-secondaryHoverBackground, #45494e);
 }
+#btn-orchestrate {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#btn-orchestrate:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
 .loop-toggle {
   display: flex;
   align-items: center;

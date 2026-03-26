@@ -313,6 +313,27 @@ async function runInteractiveShell(options = {}) {
           continue;
         }
 
+        if (command === '/orchestrate') {
+          const text = rest || '';
+          renderer.banner('Running orchestration...');
+          clearWaitTimer();
+          try {
+            if (!activeManifest) {
+              activeManifest = await prepareNewRun(text || '[ORCHESTRATE]', buildRunOptions());
+              renderer.requestStarted(activeManifest.runId);
+            }
+            // Direct controller with persistent session — loops until controller says STOP
+            activeManifest = await runWithScheduling(activeManifest, renderer, {
+              userMessage: text || '[ORCHESTRATE] Decide the next step based on the conversation transcript.',
+            });
+            await saveManifest(activeManifest);
+          } catch (error) {
+            if (!isAbortError(error)) { renderer.banner(`Run error: ${summarizeError(error)}`); scheduleErrorRetry(); }
+            else renderer.banner('Run stopped by user.');
+          } finally { renderer.close(); }
+          continue;
+        }
+
         if (command === '/continue') {
           const guidance = rest || '';
           renderer.banner('Running controller continue...');
