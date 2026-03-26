@@ -10,7 +10,7 @@ html, body {
   font-family: var(--vscode-font-family, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif);
   font-size: var(--vscode-font-size, 13px);
   color: var(--vscode-editor-foreground, #ccc);
-  background: var(--vscode-editor-background, #1e1e1e);
+  background: var(--vscode-panel-background, var(--vscode-sideBar-background, #181818));
 }
 
 #app {
@@ -238,14 +238,21 @@ html, body {
   flex: 1;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.5;
+  line-height: 1.55;
+  font-size: 14px;
+  color: #e0e0e0;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* User message background */
+/* User messages — no label, no circle, no pipe, no left padding */
+.section-header.role-user { display: none; }
+.entry.role-user { padding-left: 0; }
+.entry.role-user::before { display: none; }
+.pipe.role-user::before { display: none; }
 .entry.role-user .entry-content {
   background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  padding: 4px 8px;
+  border-radius: 6px;
+  padding: 6px 10px;
 }
 
 /* Tool call styling */
