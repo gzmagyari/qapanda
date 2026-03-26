@@ -319,6 +319,7 @@ html, body {
 .banner {
   color: var(--vscode-descriptionForeground, #888);
   padding: 4px 4px;
+  margin: 8px 0;
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
