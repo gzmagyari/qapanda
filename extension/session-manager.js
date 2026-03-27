@@ -690,6 +690,17 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'logChatEntry') {
+      // Append an arbitrary entry to chat.jsonl (used for client-side events like screenshots)
+      if (this._activeManifest && this._activeManifest.files && this._activeManifest.files.chatLog && msg.entry) {
+        try {
+          const entry = { ts: new Date().toISOString(), ...msg.entry };
+          fs.appendFileSync(this._activeManifest.files.chatLog, JSON.stringify(entry) + '\n');
+        } catch {}
+      }
+      return;
+    }
+
     if (msg.type === 'browserStart') {
       const _sdbg = require('./chrome-manager')._dbg || (() => {});
       _sdbg('[session-manager] browserStart received');

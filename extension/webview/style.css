@@ -1348,6 +1348,21 @@ html, body {
   color: var(--vscode-editor-foreground, #ccc);
 }
 
+/* Inline screenshot thumbnail in chat */
+.chat-screenshot {
+  max-width: 400px;
+  max-height: 300px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  margin: 8px 0 8px 25px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  display: block;
+}
+.chat-screenshot:hover {
+  opacity: 0.85;
+}
+
 /* Reused for "Show Desktop" expanded popup */
 .inline-vnc-wrapper {
   margin: 8px 0;

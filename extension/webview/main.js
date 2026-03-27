@@ -1996,6 +1996,21 @@
         bar.insertAdjacentElement('afterend', frame);
       });
       lastMoved.insertAdjacentElement('afterend', bar);
+      // Insert a thumbnail screenshot of the desktop at this point in the chat
+      const canvas = splitVncWrapper.querySelector('canvas');
+      if (canvas) {
+        try {
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            const thumb = document.createElement('img');
+            thumb.src = dataUrl;
+            thumb.className = 'chat-screenshot';
+            thumb.alt = 'Desktop screenshot';
+            bar.insertAdjacentElement('afterend', thumb);
+            vscode.postMessage({ type: 'logChatEntry', entry: { type: 'chatScreenshot', data: dataUrl, alt: 'Desktop screenshot' } });
+          }
+        } catch {}
+      }
       splitVncWrapper.remove();
     } else {
       splitVncWrapper.remove();
@@ -2128,6 +2143,18 @@
         bar.insertAdjacentElement('afterend', frame);
       });
       lastMoved.insertAdjacentElement('afterend', bar);
+      // Insert a thumbnail screenshot of the browser at this point in the chat
+      const tabFrame = document.getElementById('browser-chrome-frame');
+      const frameSrc = (chromeImgEl && chromeImgEl.src) || (tabFrame && tabFrame.src);
+      if (frameSrc && frameSrc.startsWith('data:')) {
+        const thumb = document.createElement('img');
+        thumb.src = frameSrc;
+        thumb.className = 'chat-screenshot';
+        thumb.alt = 'Browser screenshot';
+        bar.insertAdjacentElement('afterend', thumb);
+        // Log to chat.jsonl for restore
+        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'chatScreenshot', data: frameSrc, alt: 'Browser screenshot' } });
+      }
       splitChromeWrapper.remove();
     } else {
       splitChromeWrapper.remove();
@@ -3151,6 +3178,18 @@
     stop(msg) {
       streamingEntry = null;
       addEntry((msg && msg.label) || 'Controller', 'STOP');
+    },
+
+    chatScreenshot(msg) {
+      // Inline screenshot thumbnail (from Chrome/VNC teardown or restored from chat.jsonl)
+      if (msg.data && msg.data.startsWith('data:')) {
+        const thumb = document.createElement('img');
+        thumb.src = msg.data;
+        thumb.className = 'chat-screenshot';
+        thumb.alt = msg.alt || 'Screenshot';
+        messagesEl.appendChild(thumb);
+        autoScroll();
+      }
     },
 
     requestStarted(msg) {
