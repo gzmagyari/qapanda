@@ -1,21 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <!-- Background -->
-  <rect width="24" height="24" rx="4" fill="#1a1a1a"/>
   <!-- Ears -->
-  <circle cx="6.5" cy="5.5" r="3" fill="#444"/>
-  <circle cx="17.5" cy="5.5" r="3" fill="#444"/>
+  <circle cx="5" cy="3.5" r="4" fill="#7B8EC8"/>
+  <circle cx="19" cy="3.5" r="4" fill="#7B8EC8"/>
   <!-- Face -->
-  <ellipse cx="12" cy="13" rx="8" ry="7.5" fill="#e8e8e8"/>
+  <ellipse cx="12" cy="13.5" rx="10.5" ry="10" fill="white"/>
   <!-- Eye patches -->
-  <ellipse cx="8.5" cy="11" rx="2.5" ry="2" fill="#444" transform="rotate(-10 8.5 11)"/>
-  <ellipse cx="15.5" cy="11" rx="2.5" ry="2" fill="#444" transform="rotate(10 15.5 11)"/>
+  <ellipse cx="7.5" cy="11" rx="3.5" ry="3" fill="#7B8EC8" transform="rotate(-8 7.5 11)"/>
+  <ellipse cx="16.5" cy="11" rx="3.5" ry="3" fill="#7B8EC8" transform="rotate(8 16.5 11)"/>
   <!-- Eyes -->
-  <circle cx="8.5" cy="11" r="1" fill="white"/>
-  <circle cx="15.5" cy="11" r="1" fill="white"/>
-  <circle cx="8.8" cy="10.8" r="0.5" fill="#1a1a1a"/>
-  <circle cx="15.8" cy="10.8" r="0.5" fill="#1a1a1a"/>
+  <circle cx="7.5" cy="11" r="1.5" fill="white"/>
+  <circle cx="16.5" cy="11" r="1.5" fill="white"/>
+  <circle cx="7.9" cy="10.6" r="0.8" fill="#3B4A7A"/>
+  <circle cx="16.9" cy="10.6" r="0.8" fill="#3B4A7A"/>
   <!-- Nose -->
-  <ellipse cx="12" cy="14.5" rx="1.5" ry="1" fill="#444"/>
+  <ellipse cx="12" cy="15" rx="2" ry="1.4" fill="#7B8EC8"/>
   <!-- Mouth -->
-  <path d="M10.5 15.5 Q12 17 13.5 15.5" stroke="#444" stroke-width="0.6" fill="none"/>
+  <path d="M9.5 16.5 Q12 19 14.5 16.5" stroke="#7B8EC8" stroke-width="0.9" fill="none"/>
 </svg>
