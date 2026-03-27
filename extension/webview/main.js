@@ -2553,7 +2553,7 @@
 
   function hideProgressBubble() {
     if (progressBubble) progressBubble.classList.add('hidden');
-    if (progressBody) progressBody.textContent = '';
+    if (progressBody) progressBody.innerHTML = '';
   }
 
   function setProgressContent(text) {
@@ -2562,18 +2562,23 @@
       hideProgressBubble();
       return;
     }
-    progressBody.textContent = text;
-    showProgressBubble();
-    progressBody.scrollTop = progressBody.scrollHeight;
+    progressBody.innerHTML = '';
+    for (const line of text.split('\n')) {
+      if (line.trim()) appendProgressLine(line);
+    }
   }
 
   function appendProgressLine(line) {
     if (!progressBody) return;
-    if (progressBody.textContent) {
-      progressBody.textContent += '\n' + line;
+    const match = line.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$/);
+    const entry = document.createElement('div');
+    entry.className = 'progress-entry';
+    if (match) {
+      entry.innerHTML = '<span class="progress-time">' + escapeHtml(match[1]) + '</span> ' + escapeHtml(match[2]);
     } else {
-      progressBody.textContent = line;
+      entry.textContent = line;
     }
+    progressBody.appendChild(entry);
     showProgressBubble();
     progressBody.scrollTop = progressBody.scrollHeight;
   }
