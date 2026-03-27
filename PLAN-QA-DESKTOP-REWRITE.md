@@ -84,7 +84,7 @@ Note: No `server/` directory — the container-side server stays Python (in the 
 
 ### Bundling
 
-`qa-desktop/` lives at the root of cc-manager (sibling to `src/` and `extension/`). During `ext:build`:
+`qa-desktop/` lives at the root of qapanda (sibling to `src/` and `extension/`). During `ext:build`:
 - Copy `qa-desktop/` into `extension/qa-desktop/`
 - The CLIs are invoked via `node extension/qa-desktop/cli.js` and `node extension/qa-desktop/proxy.js`
 
@@ -186,7 +186,7 @@ Only Docker itself needs to be installed by the user.
 ### Phase 3: Docker image publishing
 - Publish the existing QAAgentDesktop Docker image to Docker Hub (no changes to image)
 - Image name: e.g., `ccmanager/qa-agent-desktop:latest`
-- Done from the QAAgentDesktop repo, not from cc-manager
+- Done from the QAAgentDesktop repo, not from qapanda
 
 ### Phase 4: Extension integration
 - Bundle `qa-desktop/` in extension
@@ -305,5 +305,5 @@ npm run test:all            # Everything including existing 328+ tests
 
 # Extension build
 npm run ext:install
-# Open CC Manager → onboarding → desktop testing works without Python qa-desktop on PATH
+# Open QA Panda → onboarding → desktop testing works without Python qa-desktop on PATH
 ```

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CC Manager Tests MCP Server — manages repeatable test cases with steps,
+ * QA Panda Tests MCP Server — manages repeatable test cases with steps,
  * pass/fail tracking, run history, and task linking.
  *
  * Protocol: JSON-RPC 2.0 over stdio (one JSON message per line).

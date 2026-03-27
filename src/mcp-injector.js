@@ -117,7 +117,7 @@ function mcpServersForRole(role, options = {}) {
       result['cc-tasks'] = {
         command: 'node',
         args: [tasksPath],
-        env: { TASKS_FILE: path.join(repoRoot, '.cc-manager', 'tasks.json') },
+        env: { TASKS_FILE: path.join(repoRoot, '.qpanda', 'tasks.json') },
       };
     }
   }
@@ -129,8 +129,8 @@ function mcpServersForRole(role, options = {}) {
       command: 'node',
       args: [testsMcpPath],
       env: {
-        TESTS_FILE: path.join(repoRoot, '.cc-manager', 'tests.json'),
-        TASKS_FILE: path.join(repoRoot, '.cc-manager', 'tasks.json'),
+        TESTS_FILE: path.join(repoRoot, '.qpanda', 'tests.json'),
+        TASKS_FILE: path.join(repoRoot, '.qpanda', 'tasks.json'),
       },
     };
   }
@@ -145,7 +145,7 @@ function mcpServersForRole(role, options = {}) {
     result['detached-command'] = {
       command: 'node',
       args: ['/opt/detached-command-mcp/dist/index.js'],
-      env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.cc-manager/.detached-jobs' },
+      env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.qpanda/.detached-jobs' },
     };
   } else {
     const dcPath = explicitDetachedPath || findDetachedCommandPath(extensionPath ? [path.join(extensionPath, 'detached-command-mcp', 'dist', 'index.js')] : []);
@@ -153,7 +153,7 @@ function mcpServersForRole(role, options = {}) {
       result['detached-command'] = {
         command: 'node',
         args: [dcPath],
-        env: { DETACHED_BASH_MCP_DATA_DIR: path.join(repoRoot, '.cc-manager', '.detached-jobs') },
+        env: { DETACHED_BASH_MCP_DATA_DIR: path.join(repoRoot, '.qpanda', '.detached-jobs') },
       };
     }
   }

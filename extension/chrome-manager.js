@@ -1,6 +1,6 @@
 /**
  * Manages headless Chrome instances for local agents.
- * Each cc-manager panel gets its own Chrome on a unique debug port.
+ * Each qapanda panel gets its own Chrome on a unique debug port.
  * Provides CDP-based Page.startScreencast streaming.
  */
 const { spawn } = require('node:child_process');
@@ -121,7 +121,10 @@ async function ensureChrome(panelId) {
     '--disable-sync',
     '--no-proxy-server',
     '--disable-blink-features=AutomationControlled',
-    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    '--disable-features=AutomationControlled',
+    '--disable-infobars',
+    '--lang=en-US,en',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
     '--window-size=1280,720',
     `--user-data-dir=${userDataDir}`,
     'https://www.google.com',
@@ -178,6 +181,24 @@ function _connectToTarget(instance, target) {
   ws.onopen = () => {
     _dbg('_connectToTarget: WebSocket OPEN');
     ws.send(JSON.stringify({ id: instance.nextId++, method: 'Page.enable', params: {} }));
+    // Stealth: hide navigator.webdriver and other automation signals
+    ws.send(JSON.stringify({
+      id: instance.nextId++,
+      method: 'Page.addScriptToEvaluateOnNewDocument',
+      params: {
+        source: `
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+          window.chrome = { runtime: {} };
+          const originalQuery = window.navigator.permissions.query;
+          window.navigator.permissions.query = (parameters) =>
+            parameters.name === 'notifications'
+              ? Promise.resolve({ state: Notification.permission })
+              : originalQuery(parameters);
+        `,
+      },
+    }));
     ws.send(JSON.stringify({
       id: instance.nextId++,
       method: 'Page.startScreencast',

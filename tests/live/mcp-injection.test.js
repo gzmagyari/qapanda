@@ -40,13 +40,13 @@ describe('MCP injection and merging', () => {
       result['detached-command'] = {
         command: 'node',
         args: ['/opt/detached-command-mcp/dist/index.js'],
-        env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.cc-manager/.detached-jobs' },
+        env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.qpanda/.detached-jobs' },
       };
     } else if (extensionPath) {
       result['detached-command'] = {
         command: 'node',
         args: [path.join(extensionPath, 'detached-command-mcp', 'dist', 'index.js')],
-        env: { DETACHED_BASH_MCP_DATA_DIR: path.join('/test/repo', '.cc-manager', '.detached-jobs') },
+        env: { DETACHED_BASH_MCP_DATA_DIR: path.join('/test/repo', '.qpanda', '.detached-jobs') },
       };
     }
 

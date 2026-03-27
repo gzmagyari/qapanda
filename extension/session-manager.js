@@ -166,7 +166,7 @@ class SessionManager {
       result['cc-tasks'] = {
         command: 'node',
         args: [path.join(this._extensionPath, 'tasks-mcp-server.js')],
-        env: { TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json') },
+        env: { TASKS_FILE: path.join(this._repoRoot, '.qpanda', 'tasks.json') },
       };
     }
     if (this._testsMcpPort) {
@@ -176,8 +176,8 @@ class SessionManager {
         command: 'node',
         args: [path.join(this._extensionPath, 'tests-mcp-server.js')],
         env: {
-          TESTS_FILE: path.join(this._repoRoot, '.cc-manager', 'tests.json'),
-          TASKS_FILE: path.join(this._repoRoot, '.cc-manager', 'tasks.json'),
+          TESTS_FILE: path.join(this._repoRoot, '.qpanda', 'tests.json'),
+          TASKS_FILE: path.join(this._repoRoot, '.qpanda', 'tasks.json'),
         },
       };
     }
@@ -194,14 +194,14 @@ class SessionManager {
       result['detached-command'] = {
         command: 'node',
         args: ['/opt/detached-command-mcp/dist/index.js'],
-        env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.cc-manager/.detached-jobs' },
+        env: { DETACHED_BASH_MCP_DATA_DIR: '/workspace/.qpanda/.detached-jobs' },
       };
     } else if (this._extensionPath) {
       // Local agents: use extension path
       result['detached-command'] = {
         command: 'node',
         args: [path.join(this._extensionPath, 'detached-command-mcp', 'dist', 'index.js')],
-        env: { DETACHED_BASH_MCP_DATA_DIR: path.join(this._repoRoot, '.cc-manager', '.detached-jobs') },
+        env: { DETACHED_BASH_MCP_DATA_DIR: path.join(this._repoRoot, '.qpanda', '.detached-jobs') },
       };
     }
     return result;
@@ -219,7 +219,7 @@ class SessionManager {
         onListAgents: () => this._handleListAgents(),
       });
     } catch (err) {
-      console.error('[cc-manager] Failed to start agent-delegate MCP:', err.message);
+      console.error('[qapanda] Failed to start agent-delegate MCP:', err.message);
     }
   }
 
@@ -1060,7 +1060,7 @@ class SessionManager {
       if (!rest) {
         // List available workflows
         if (workflows.length === 0) {
-          this._renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/\nEach must contain a WORKFLOW.md with YAML frontmatter (name, description).');
+          this._renderer.banner('No workflows found.\nPlace workflow directories in .qpanda/workflows/ or ~/.qpanda/workflows/\nEach must contain a WORKFLOW.md with YAML frontmatter (name, description).');
         } else {
           const lines = ['Available workflows:'];
           for (const wf of workflows) {
@@ -1123,7 +1123,7 @@ class SessionManager {
     };
     // Read useSnapshot from per-workspace config so remote agents respect the checkbox
     try {
-      const cfg = JSON.parse(fs.readFileSync(path.join(this._repoRoot, '.cc-manager', 'config.json'), 'utf8'));
+      const cfg = JSON.parse(fs.readFileSync(path.join(this._repoRoot, '.qpanda', 'config.json'), 'utf8'));
       opts.useSnapshot = cfg.useSnapshot !== false;
     } catch {
       opts.useSnapshot = true;

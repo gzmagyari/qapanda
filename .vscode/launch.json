@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run CC Manager Extension",
+      "name": "Run QA Panda Extension",
       "type": "extensionHost",
       "request": "launch",
       "args": [

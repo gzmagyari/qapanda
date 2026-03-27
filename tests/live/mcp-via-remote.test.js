@@ -50,7 +50,7 @@ describe('qa-remote-claude + MCPs inside container', { timeout: 300000 }, () => 
           command: 'node',
           args: ['/opt/detached-command-mcp/dist/index.js'],
           env: {
-            DETACHED_BASH_MCP_DATA_DIR: '/workspace/.cc-manager/.detached-jobs',
+            DETACHED_BASH_MCP_DATA_DIR: '/workspace/.qpanda/.detached-jobs',
             DETACHED_COMMAND_INSTANCE_ID: 'remote-test-' + Date.now(),
           },
         },

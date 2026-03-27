@@ -1,4 +1,4 @@
-# CC Manager
+# QA Panda
 
 Interactive manager CLI (and VSCode extension) that uses **Codex CLI** as a controller and **Claude Code CLI** as a worker in a supervised agentic loop.
 
@@ -24,7 +24,7 @@ The controller (Codex) receives user messages and outputs structured JSON decisi
 ## Project Structure
 
 ```
-bin/cc-manager.js          Entry point (CLI)
+bin/qapanda.js          Entry point (CLI)
 src/
   cli.js                   CLI argument parsing, subcommands (shell, run, resume, status, logs, list, doctor)
   shell.js                 Interactive readline shell (terminal UI)
@@ -100,7 +100,7 @@ Tool calls are accumulated (start -> input deltas -> stop) then formatted with h
 
 ### State management (`src/state.js`)
 
-Runs are stored in `.cc-manager/runs/<run-id>/`:
+Runs are stored in `.qpanda/runs/<run-id>/`:
 - `manifest.json` - Run metadata, config, counters, request history
 - `events.jsonl` - All events (user messages, controller decisions, worker results)
 - `transcript.jsonl` - Conversation transcript
@@ -112,13 +112,13 @@ Runs are stored in `.cc-manager/runs/<run-id>/`:
 - `npm test` - Run tests
 
 ### VSCode Extension
-- `npm run ext:build` - Copy `src/` into `extension/src/` and package as `extension/cc-manager.vsix`
+- `npm run ext:build` - Copy `src/` into `extension/src/` and package as `extension/qapanda.vsix`
 - `npm run ext:install` - Build + install the vsix into VSCode (requires `code` CLI)
-- `npm run ext:clean` - Remove copied `extension/src/` and `extension/cc-manager.vsix`
+- `npm run ext:clean` - Remove copied `extension/src/` and `extension/qapanda.vsix`
 - `npm run ext:copy-src` - Just copy `src/` into `extension/src/` (used by ext:build)
 
 After running `ext:install`, reload VSCode (Ctrl+Shift+P -> "Reload Window"). The extension adds:
-- Command palette: "CC Manager: Open"
+- Command palette: "QA Panda: Open"
 - Orange CC icon in the editor title bar
 - Opens as a full-width editor tab with input box at bottom
 - Multiple tabs supported simultaneously
@@ -129,13 +129,13 @@ When you modify files in `src/`, run `npm run ext:install` again to update the e
 ## CLI Usage
 
 ```
-cc-manager                         Start interactive shell
-cc-manager run <message>           One-shot run
-cc-manager resume <run-id>         Resume existing run
-cc-manager status <run-id>         Show run status
-cc-manager logs <run-id>           Show recent events
-cc-manager list                    List saved runs
-cc-manager doctor                  Verify codex and claude binaries
+qapanda                         Start interactive shell
+qapanda run <message>           One-shot run
+qapanda resume <run-id>         Resume existing run
+qapanda status <run-id>         Show run status
+qapanda logs <run-id>           Show recent events
+qapanda list                    List saved runs
+qapanda doctor                  Verify codex and claude binaries
 ```
 
 ### Interactive shell commands
@@ -155,7 +155,7 @@ Plain text starts a new run (if none attached) or sends a message to the current
 
 ## Workflows
 
-Place workflow directories in `.cc-manager/workflows/` (project-level) or `~/.cc-manager/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter (`name`, `description`). Use `/workflow` to list available workflows or `/workflow <name>` to run one.
+Place workflow directories in `.qpanda/workflows/` (project-level) or `~/.qpanda/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter (`name`, `description`). Use `/workflow` to list available workflows or `/workflow <name>` to run one.
 
 ## Project-level customization (CCMANAGER.md)
 

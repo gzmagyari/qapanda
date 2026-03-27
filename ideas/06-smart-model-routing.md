@@ -16,7 +16,7 @@ Not every worker turn needs the most expensive model. A turn that runs `npm test
 - The controller's system prompt includes routing guidelines: fast for single-purpose turns (tests, reads, small patches), standard for typical multi-step coding, powerful for large-scope refactors or complex reasoning.
 - If the controller omits `model_hint`, the strategy's default tier is used (balanced defaults to standard, economy defaults to fast).
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The worker CLI is already re-launched on each loop iteration by `src/orchestrator.js`, passing `--worker-model` to `src/claude.js`. Auto routing makes that flag dynamic per-launch based on the controller's judgment. This does not try to switch models mid-turn — it respects that each CLI launch runs many internal steps. The routing decision happens at the natural boundary where the orchestrator already configures the next spawn. The controller is the only entity that can make this call, which is why it only works for the worker model.
 

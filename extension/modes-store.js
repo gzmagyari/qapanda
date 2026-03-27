@@ -3,15 +3,15 @@ const path = require('node:path');
 const os = require('node:os');
 
 function globalModesPath() {
-  return path.join(os.homedir(), '.cc-manager', 'modes.json');
+  return path.join(os.homedir(), '.qpanda', 'modes.json');
 }
 
 function projectModesPath(repoRoot) {
-  return path.join(repoRoot, '.cc-manager', 'modes.json');
+  return path.join(repoRoot, '.qpanda', 'modes.json');
 }
 
 function systemModesOverridePath() {
-  return path.join(os.homedir(), '.cc-manager', 'system-modes.json');
+  return path.join(os.homedir(), '.qpanda', 'system-modes.json');
 }
 
 function loadModesFile(filePath) {
@@ -30,7 +30,7 @@ function saveModesFile(filePath, data) {
 
 /**
  * Load bundled system modes from the extension's resources directory,
- * merged with user overrides from ~/.cc-manager/system-modes.json.
+ * merged with user overrides from ~/.qpanda/system-modes.json.
  */
 function loadSystemModes(extensionDir) {
   const bundledPath = path.join(extensionDir, 'resources', 'system-modes.json');

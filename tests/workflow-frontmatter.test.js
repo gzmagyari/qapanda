@@ -11,7 +11,7 @@ const { loadWorkflows: loadWorkflowsExt } = require('../extension/src/prompts');
 async function setupRepo(workflows) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'cc-wf-fm-'));
   for (const { dirName, content } of workflows) {
-    const wfDir = path.join(root, '.cc-manager', 'workflows', dirName);
+    const wfDir = path.join(root, '.qpanda', 'workflows', dirName);
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(path.join(wfDir, 'WORKFLOW.md'), content);
   }

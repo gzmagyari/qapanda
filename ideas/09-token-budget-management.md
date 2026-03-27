@@ -16,7 +16,7 @@ Uncapped autonomous runs are a cost anxiety nightmare. Users either hover over t
 - **Budget checks** happen at loop boundaries — before the next worker launch — since a single worker turn may run many internal steps and overshoot the budget before the system can react. This is an inherent limitation: the budget is best-effort, not a hard kill switch.
 - **Reset**: The reset button under the chat input zeroes the current run's budget counter without changing the budget limit or the overall usage metric. Useful when the user wants to restart tracking mid-session.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The orchestrator in `src/orchestrator.js` already controls what the controller receives each turn and decides when to launch the next worker. Both `src/codex.js` and `src/claude.js` already process output that includes usage metadata. Budget management adds a cost aggregation layer and a conditional prompt injection at two thresholds, checked at loop boundaries. The budget is best-effort — a long worker turn can overshoot — but it prevents runaway multi-loop spend, which is the primary risk.
 
@@ -24,6 +24,6 @@ The orchestrator in `src/orchestrator.js` already controls what the controller r
 
 - Add `src/budget.js` with `create(limit)`, `update(source, usageEvent)` (where source is `"controller"` or `"worker"`), `reset()`, `status()` returning `{ used, limit, percentage, overallUsed, warning }`.
 - `src/orchestrator.js` calls `budget.update("controller", ...)` after each controller turn and `budget.update("worker", ...)` after each worker turn. At loop boundaries it consults `budget.status()` and injects warnings into the controller's system prompt via `src/prompts.js`.
-- Overall usage is persisted in `.cc-manager/usage.json` and accumulates across all runs. Budget-per-run is stored in `manifest.json`: `{ budgetLimit, budgetUsed }`.
+- Overall usage is persisted in `.qpanda/usage.json` and accumulates across all runs. Budget-per-run is stored in `manifest.json`: `{ budgetLimit, budgetUsed }`.
 - The VS Code webview renders the budget bar beneath the input in `webview/main.js`: budget display, overall usage metric, budget input field, and reset button. Updates arrive via `budget-update` postMessages from `extension/session-manager.js`.
 - `src/cli.js` accepts `--budget <amount>`. Budget config can also be set in `CCMANAGER.md` as a default for all runs.

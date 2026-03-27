@@ -2,7 +2,7 @@
 
 ## Context
 
-The CLI (`cc-manager`) is severely behind the extension. This updated plan covers ALL gaps including onboarding, Docker auto-pull, system agents/modes, MCP auto-injection, task management, Chrome integration, and the new qa-desktop Node.js rewrite.
+The CLI (`qapanda`) is severely behind the extension. This updated plan covers ALL gaps including onboarding, Docker auto-pull, system agents/modes, MCP auto-injection, task management, Chrome integration, and the new qa-desktop Node.js rewrite.
 
 **Principle:** Everything the extension can do, the CLI can do (except visual Chrome/VNC output).
 
@@ -22,7 +22,7 @@ Extract merge logic from `extension/agents-store.js` and `extension/modes-store.
 - `loadMergedAgents(repoRoot, resourcesDir)` — system + global + project agents
 - `loadMergedModes(repoRoot, resourcesDir)` — system + global + project modes
 - `loadMergedMcpServers(repoRoot)` — global + project MCP servers
-- `loadOnboarding()` — read `~/.cc-manager/onboarding.json`
+- `loadOnboarding()` — read `~/.qpanda/onboarding.json`
 - `enabledAgents(data)` / `enabledModes(data)` — filter disabled entries
 
 Extension stores import from this shared module.
@@ -99,7 +99,7 @@ In `cli.js` before `prepareNewRun()`:
 /agent [id]             List agents or switch to direct agent
 /agents                 List all agents with details
 /modes                  List all modes with details
-/tasks                  List tasks from .cc-manager/tasks.json
+/tasks                  List tasks from .qpanda/tasks.json
 /task add <title>       Create task
 /task done <id>         Mark task done
 /task <id>              Show task details
@@ -126,11 +126,11 @@ All `/controller-*` and `/worker-*` commands modify the active manifest and take
 
 ## Phase 4: Onboarding & Doctor
 
-### 4a. `cc-manager doctor` (enhanced)
+### 4a. `qapanda doctor` (enhanced)
 
 Expand current doctor to check everything:
 ```
-cc-manager doctor
+qapanda doctor
 
 Claude Code CLI:    ✓ v4.6.0
 Codex CLI:          ✓ v1.0.0
@@ -144,11 +144,11 @@ Onboarding:         ✓ Complete (preference: both)
 
 Uses same detection functions from `extension/onboarding.js` (shared via config-loader).
 
-### 4b. `cc-manager setup` (CLI onboarding)
+### 4b. `qapanda setup` (CLI onboarding)
 
 Interactive onboarding equivalent:
 ```
-cc-manager setup
+qapanda setup
 
 Detecting environment...
   ✓ Claude Code CLI v4.6.0
@@ -162,14 +162,14 @@ CLI preference? [both/claude-only/codex-only] (both): both
 Pulling Docker image gzmagyari/qa-agent-desktop:latest...
   Downloading... 45% [===========         ]
 
-Setup complete! Saved to ~/.cc-manager/onboarding.json
+Setup complete! Saved to ~/.qpanda/onboarding.json
 ```
 
 Writes same `onboarding.json` and `system-agents.json` overrides as extension.
 
 ### 4c. `--setup` flag
 
-`cc-manager run --setup "test the app"` — runs setup if not done, then executes.
+`qapanda run --setup "test the app"` — runs setup if not done, then executes.
 Or: auto-detect on first run if `onboarding.json` missing, prompt user.
 
 ---
@@ -235,7 +235,7 @@ Start `tasks-mcp-server.js` as stdio MCP (injected into manifest):
 {
   "command": "node",
   "args": ["<path>/tasks-mcp-server.js"],
-  "env": { "TASKS_FILE": "<repoRoot>/.cc-manager/tasks.json" }
+  "env": { "TASKS_FILE": "<repoRoot>/.qpanda/tasks.json" }
 }
 ```
 
@@ -251,7 +251,7 @@ Auto-injected by `mcp-injector.js` for all runs.
 /task status <id> <s>   Change task status
 ```
 
-Read/write directly to `.cc-manager/tasks.json` (same format as extension).
+Read/write directly to `.qpanda/tasks.json` (same format as extension).
 
 ---
 
@@ -260,11 +260,11 @@ Read/write directly to `.cc-manager/tasks.json` (same format as extension).
 ### 8a. Agent management commands
 
 ```
-cc-manager agents                          List all agents
-cc-manager agents add <id> --name "..." --cli claude --system-prompt "..."
-cc-manager agents edit <id> --cli codex
-cc-manager agents delete <id>
-cc-manager agents restore <id>             Restore system agent to default
+qapanda agents                          List all agents
+qapanda agents add <id> --name "..." --cli claude --system-prompt "..."
+qapanda agents edit <id> --cli codex
+qapanda agents delete <id>
+qapanda agents restore <id>             Restore system agent to default
 ```
 
 Or shell equivalents:
@@ -284,10 +284,10 @@ Same pattern for modes.
 ## Phase 9: MCP Server Management (CLI CRUD)
 
 ```
-cc-manager mcp list                        List all MCP servers
-cc-manager mcp add <name> --command node --args server.js --scope global
-cc-manager mcp edit <name> --target worker
-cc-manager mcp delete <name> --scope project
+qapanda mcp list                        List all MCP servers
+qapanda mcp add <name> --command node --args server.js --scope global
+qapanda mcp edit <name> --target worker
+qapanda mcp delete <name> --scope project
 ```
 
 Or shell: `/mcp add ...`, `/mcp edit ...`, `/mcp delete ...`
@@ -296,7 +296,7 @@ Or shell: `/mcp add ...`, `/mcp edit ...`, `/mcp delete ...`
 
 ## Phase 10: Print Mode
 
-### 10a. `cc-manager run --print --agent dev "fix the bug"`
+### 10a. `qapanda run --print --agent dev "fix the bug"`
 
 One-shot execution:
 1. Load config, apply mode/agent
@@ -305,7 +305,7 @@ One-shot execution:
 4. Print final result to stdout
 5. Exit with code 0/1
 
-### 10b. `cc-manager run --print --mode quick-test --test-env browser "test login"`
+### 10b. `qapanda run --print --mode quick-test --test-env browser "test login"`
 
 Same but with mode:
 1. Apply mode config
@@ -322,12 +322,12 @@ Same but with mode:
 - Phase 1 (shared config loader, MCP injector, move resources)
 - Phase 2a (new CLI flags)
 - Phase 7a (tasks MCP injection)
-- **Result:** `cc-manager run --mode quick-dev "say hello"` works with system agents + MCPs
+- **Result:** `qapanda run --mode quick-dev "say hello"` works with system agents + MCPs
 
 ### Milestone 2: Direct Agent & Print Mode
 - Phase 2b-2d (mode application, direct agent, config loading)
 - Phase 10 (print mode)
-- **Result:** `cc-manager run --print --agent dev "fix this"` works
+- **Result:** `qapanda run --print --agent dev "fix this"` works
 
 ### Milestone 3: Interactive Shell
 - Phase 3 (all new shell commands)
@@ -335,15 +335,15 @@ Same but with mode:
 
 ### Milestone 4: Onboarding & Doctor
 - Phase 4 (enhanced doctor, CLI setup wizard)
-- **Result:** `cc-manager doctor` and `cc-manager setup` work
+- **Result:** `qapanda doctor` and `qapanda setup` work
 
 ### Milestone 5: Browser Testing
 - Phase 5 (Chrome management from CLI)
-- **Result:** `cc-manager run --mode quick-test --test-env browser "test login"` works
+- **Result:** `qapanda run --mode quick-test --test-env browser "test login"` works
 
 ### Milestone 6: Desktop Testing
 - Phase 6 (container lifecycle from CLI)
-- **Result:** `cc-manager run --mode quick-test --test-env computer "test app"` works
+- **Result:** `qapanda run --mode quick-test --test-env computer "test app"` works
 
 ### Milestone 7: CRUD Commands
 - Phase 8 (agent/mode management)
@@ -390,14 +390,14 @@ Every phase gets full test coverage before moving to the next milestone.
 - `tests/crud/cli-tasks-crud.test.js` — task CRUD via shell commands
 
 ### Live Tests
-- `tests/live/cli-mode-run.test.js` — `cc-manager run --mode quick-dev "hello"` with real claude
+- `tests/live/cli-mode-run.test.js` — `qapanda run --mode quick-dev "hello"` with real claude
 - `tests/live/cli-print-mode.test.js` — `--print --agent dev` one-shot execution
 - `tests/live/cli-direct-agent.test.js` — agent delegation without controller
 - `tests/live/cli-browser-test.test.js` — `--mode quick-test --test-env browser` with real Chrome
 - `tests/live/cli-desktop-test.test.js` — `--mode quick-test --test-env computer` with real Docker
 - `tests/live/cli-mcp-inject.test.js` — verify detached-command + cc-tasks auto-injected and callable
-- `tests/live/cli-setup.test.js` — `cc-manager setup` interactive onboarding
-- `tests/live/cli-doctor.test.js` — `cc-manager doctor` full health check
+- `tests/live/cli-setup.test.js` — `qapanda setup` interactive onboarding
+- `tests/live/cli-doctor.test.js` — `qapanda doctor` full health check
 - `tests/live/cli-shell-commands.test.js` — all new shell commands (/mode, /agent, /config, /tasks, etc.)
 - `tests/live/cli-config-switching.test.js` — mid-session model/thinking/CLI changes in shell
 
@@ -409,13 +409,13 @@ Every phase gets full test coverage before moving to the next milestone.
 
 ```bash
 # Milestone 1
-cc-manager run --mode quick-dev "say hello"
+qapanda run --mode quick-dev "say hello"
 
 # Milestone 2
-cc-manager run --print --agent dev "what files are here"
+qapanda run --print --agent dev "what files are here"
 
 # Milestone 3
-cc-manager shell
+qapanda shell
 > /modes
 > /mode quick-dev
 > /config
@@ -423,18 +423,18 @@ cc-manager shell
 > /worker-thinking high
 
 # Milestone 4
-cc-manager doctor
-cc-manager setup
+qapanda doctor
+qapanda setup
 
 # Milestone 5
-cc-manager run --mode quick-test --test-env browser "test homepage"
+qapanda run --mode quick-test --test-env browser "test homepage"
 
 # Milestone 6
-cc-manager run --mode quick-test --test-env computer "test desktop app"
+qapanda run --mode quick-test --test-env computer "test desktop app"
 
 # Milestone 7
-cc-manager agents
-cc-manager mcp list
+qapanda agents
+qapanda mcp list
 
 # Full test suite
 npm run test:all

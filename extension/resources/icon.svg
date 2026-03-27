@@ -1,4 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="3" width="20" height="18" rx="3" ry="3" fill="#e8800a" stroke="#c06a00" stroke-width="0.5"/>
-  <text x="12" y="15.5" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="9" fill="white">CC</text>
+  <!-- Background -->
+  <rect width="24" height="24" rx="4" fill="#1a1a1a"/>
+  <!-- Ears -->
+  <circle cx="6.5" cy="5.5" r="3" fill="#444"/>
+  <circle cx="17.5" cy="5.5" r="3" fill="#444"/>
+  <!-- Face -->
+  <ellipse cx="12" cy="13" rx="8" ry="7.5" fill="#e8e8e8"/>
+  <!-- Eye patches -->
+  <ellipse cx="8.5" cy="11" rx="2.5" ry="2" fill="#444" transform="rotate(-10 8.5 11)"/>
+  <ellipse cx="15.5" cy="11" rx="2.5" ry="2" fill="#444" transform="rotate(10 15.5 11)"/>
+  <!-- Eyes -->
+  <circle cx="8.5" cy="11" r="1" fill="white"/>
+  <circle cx="15.5" cy="11" r="1" fill="white"/>
+  <circle cx="8.8" cy="10.8" r="0.5" fill="#1a1a1a"/>
+  <circle cx="15.8" cy="10.8" r="0.5" fill="#1a1a1a"/>
+  <!-- Nose -->
+  <ellipse cx="12" cy="14.5" rx="1.5" ry="1" fill="#444"/>
+  <!-- Mouth -->
+  <path d="M10.5 15.5 Q12 17 13.5 15.5" stroke="#444" stroke-width="0.6" fill="none"/>
 </svg>

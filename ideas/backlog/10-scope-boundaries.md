@@ -12,7 +12,7 @@ Full autonomy is powerful, but not every part of a repo should be fair game for 
 
 ## MVP Shape
 
-- A `.cc-manager/scope.json` file defines boundaries:
+- A `.qpanda/scope.json` file defines boundaries:
   ```json
   {
     "writable": ["src/", "tests/"],
@@ -25,13 +25,13 @@ Full autonomy is powerful, but not every part of a repo should be fair game for 
 - Scope can also be set per-run via `--scope <path>` or inline: `--writable "src/,tests/"`.
 - The controller's system prompt includes the scope rules so it avoids delegating out-of-scope work in the first place.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The worker already supports `--allowedTools`, `--disallowedTools`, and `--worker-tools` flags configured in `src/claude.js`. Scope boundaries translate a user-friendly directory/file specification into those existing tool restriction flags. The controller prompt in `src/prompts.js` already accepts dynamic content — scope rules are one more injected block. No new enforcement mechanism, just a better interface to existing controls.
 
 ## Implementation Notes
 
-- Add `src/scope.js` with `load(stateDir, overrides)` that reads `.cc-manager/scope.json` and CLI flags, and `toWorkerFlags()` that converts the scope into `--allowedTools` and `--disallowedTools` arguments.
+- Add `src/scope.js` with `load(stateDir, overrides)` that reads `.qpanda/scope.json` and CLI flags, and `toWorkerFlags()` that converts the scope into `--allowedTools` and `--disallowedTools` arguments.
 - `src/orchestrator.js` calls `scope.load()` at run start and passes `scope.toWorkerFlags()` to `src/claude.js` when spawning the worker.
 - `src/prompts.js` includes scope rules in the controller's system prompt: "You may only modify files in: src/, tests/. The following are off-limits: migrations/, .env."
 - `src/cli.js` accepts `--scope`, `--writable`, and `--blocked` flags. Per-workflow scope can be defined in workflow frontmatter.

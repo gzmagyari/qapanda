@@ -56,7 +56,7 @@ describe('loadMergedAgents', () => {
   afterEach(() => { tmp.cleanup(); });
 
   it('merges system + project agents', () => {
-    writeJson(path.join(tmp.root, '.cc-manager', 'agents.json'), {
+    writeJson(path.join(tmp.root, '.qpanda', 'agents.json'), {
       'custom-agent': { name: 'Custom', cli: 'claude', enabled: true },
     });
     const data = loadMergedAgents(tmp.root, RESOURCES_DIR);
@@ -71,7 +71,7 @@ describe('loadMergedModes', () => {
   afterEach(() => { tmp.cleanup(); });
 
   it('merges system + project modes', () => {
-    writeJson(path.join(tmp.root, '.cc-manager', 'modes.json'), {
+    writeJson(path.join(tmp.root, '.qpanda', 'modes.json'), {
       'custom-mode': { name: 'Custom', category: 'custom', useController: false, requiresTestEnv: false, enabled: true },
     });
     const data = loadMergedModes(tmp.root, RESOURCES_DIR);
@@ -86,7 +86,7 @@ describe('loadMergedMcpServers', () => {
   afterEach(() => { tmp.cleanup(); });
 
   it('loads global + project MCP servers', () => {
-    writeJson(path.join(tmp.root, '.cc-manager', 'mcp.json'), {
+    writeJson(path.join(tmp.root, '.qpanda', 'mcp.json'), {
       'my-mcp': { command: 'node', args: ['server.js'], target: 'both' },
     });
     const data = loadMergedMcpServers(tmp.root);

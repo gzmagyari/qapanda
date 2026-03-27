@@ -7,7 +7,7 @@ const { findChromeBinary } = require('./chrome-manager');
 const ONBOARDING_VERSION = 1;
 
 function onboardingPath() {
-  return path.join(os.homedir(), '.cc-manager', 'onboarding.json');
+  return path.join(os.homedir(), '.qpanda', 'onboarding.json');
 }
 
 function loadOnboarding() {
@@ -114,7 +114,7 @@ const { loadAgentsFile, saveAgentsFile, systemAgentsOverridePath } = require('./
 
 /**
  * Write system-agents.json overrides based on CLI preference.
- * This modifies ~/.cc-manager/system-agents.json (same file the Agents tab uses).
+ * This modifies ~/.qpanda/system-agents.json (same file the Agents tab uses).
  *
  * @param {'both'|'claude-only'|'codex-only'} preference
  * @param {Object} bundledAgents - The original bundled system agents

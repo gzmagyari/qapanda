@@ -77,7 +77,7 @@ Config:
   /worker-thinking [l] Show or set worker thinking level
 
 Tasks:
-  /tasks               List tasks from .cc-manager/tasks.json
+  /tasks               List tasks from .qpanda/tasks.json
   /task add <title>    Create a new task
   /task done <id>      Mark task as done
   /task <id>           Show task details
@@ -276,13 +276,13 @@ async function runInteractiveShell(options = {}) {
 
   // ── Tasks helpers ──────────────────────────────────────────────
   function loadTasks() {
-    const tasksFile = path.join(cwd, '.cc-manager', 'tasks.json');
+    const tasksFile = path.join(cwd, '.qpanda', 'tasks.json');
     try { return JSON.parse(fs.readFileSync(tasksFile, 'utf8')); }
     catch { return { nextId: 1, tasks: [] }; }
   }
 
   function saveTasks(data) {
-    const tasksFile = path.join(cwd, '.cc-manager', 'tasks.json');
+    const tasksFile = path.join(cwd, '.qpanda', 'tasks.json');
     fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
     fs.writeFileSync(tasksFile, JSON.stringify(data, null, 2), 'utf8');
   }
@@ -634,7 +634,7 @@ async function runInteractiveShell(options = {}) {
         // ── Tests commands ────────────────────────────────────────
 
         if (command === '/tests') {
-          const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+          const testsFile = path.join(cwd, '.qpanda', 'tests.json');
           let testsData;
           try { testsData = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { testsData = { tests: [] }; }
           if (!testsData.tests || testsData.tests.length === 0) { renderer.banner('No tests.'); continue; }
@@ -659,7 +659,7 @@ async function runInteractiveShell(options = {}) {
           if (parts[0] === 'create') {
             const title = parts.slice(1).join(' ');
             if (!title) { renderer.banner('Usage: /test create <title>'); continue; }
-            const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+            const testsFile = path.join(cwd, '.qpanda', 'tests.json');
             let data;
             try { data = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { data = { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
             const id = 'test-' + data.nextId++;
@@ -670,7 +670,7 @@ async function runInteractiveShell(options = {}) {
             continue;
           }
           // Show test detail
-          const testsFile = path.join(cwd, '.cc-manager', 'tests.json');
+          const testsFile = path.join(cwd, '.qpanda', 'tests.json');
           let data;
           try { data = JSON.parse(fs.readFileSync(testsFile, 'utf8')); } catch { data = { tests: [] }; }
           const test = data.tests.find(t => t.id === parts[0]);
@@ -748,7 +748,7 @@ async function runInteractiveShell(options = {}) {
           const workflows = loadWorkflows(cwd);
           if (!rest) {
             if (workflows.length === 0) {
-              renderer.banner('No workflows found.\nPlace workflow directories in .cc-manager/workflows/ or ~/.cc-manager/workflows/');
+              renderer.banner('No workflows found.\nPlace workflow directories in .qpanda/workflows/ or ~/.qpanda/workflows/');
             } else {
               const lines = ['Available workflows:'];
               for (const wf of workflows) lines.push(`  ${wf.name} — ${wf.description}`);

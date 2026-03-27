@@ -4,12 +4,12 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 
 /**
- * Create a temporary directory with a .cc-manager structure for testing.
+ * Create a temporary directory with a .qpanda structure for testing.
  * @returns {{ root: string, ccDir: string, cleanup: () => void }}
  */
 function createTempDir() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-test-'));
-  const ccDir = path.join(root, '.cc-manager');
+  const ccDir = path.join(root, '.qpanda');
   fs.mkdirSync(ccDir, { recursive: true });
   return {
     root,

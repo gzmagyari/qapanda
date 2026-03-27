@@ -17,7 +17,7 @@ Plus self-healing: auto-start Chrome/Docker when needed, prompt user if that fai
 ## Onboarding Flow (New Step 0, before mode selection)
 
 ```
-Extension opens → Check ~/.cc-manager/onboarding.json
+Extension opens → Check ~/.qpanda/onboarding.json
   → If exists and complete: skip to mode selection (existing wizard)
   → If missing/incomplete: show onboarding wizard
 
@@ -56,13 +56,13 @@ Onboarding Wizard Steps:
       "✅ Chrome — browser testing available"
       "⚠️ Docker — not running, desktop testing unavailable"
     - "Complete Setup" button
-    - Writes ~/.cc-manager/onboarding.json
+    - Writes ~/.qpanda/onboarding.json
     - Proceeds to existing mode selection wizard (step 1)
 ```
 
 ---
 
-## Persistence: `~/.cc-manager/onboarding.json`
+## Persistence: `~/.qpanda/onboarding.json`
 
 ```json
 {
@@ -124,7 +124,7 @@ When onboarding completes, it **writes actual config changes** to the same files
 
 **What gets written:**
 
-1. **`~/.cc-manager/system-agents.json`** — System agent CLI overrides (same file the "Edit" button on Agents tab writes to). For each system agent whose CLI doesn't match the preference:
+1. **`~/.qpanda/system-agents.json`** — System agent CLI overrides (same file the "Edit" button on Agents tab writes to). For each system agent whose CLI doesn't match the preference:
 
    ```
    If "claude-only": write overrides for agents that use codex/qa-remote-codex
@@ -141,7 +141,7 @@ When onboarding completes, it **writes actual config changes** to the same files
    If "both": no overrides needed (system-agents.json defaults are already optimal)
    ```
 
-2. **`~/.cc-manager/onboarding.json`** — Stores preference + detected tools + controller/worker defaults:
+2. **`~/.qpanda/onboarding.json`** — Stores preference + detected tools + controller/worker defaults:
    ```json
    {
      "version": 1,
@@ -158,7 +158,7 @@ When onboarding completes, it **writes actual config changes** to the same files
 3. **Controller/Worker CLI defaults** — The `onboarding.json` `defaults` are read by `extension.js` and used as `initialConfig` for new panels (only if the panel has no saved config yet). Per-panel config bar overrides still take precedence.
 
 **Why this works without conflicts:**
-- Onboarding writes to `~/.cc-manager/system-agents.json` — the same file the Agents tab "Edit" button writes to
+- Onboarding writes to `~/.qpanda/system-agents.json` — the same file the Agents tab "Edit" button writes to
 - If the user later edits an agent in the Agents tab and picks a different CLI, it overwrites what onboarding set — no conflict
 - Re-running onboarding rewrites the overrides again (user is explicitly choosing)
 - `system-agents.json` bundled in `extension/resources/` is never modified — it stays as the "ideal both-CLIs" reference
@@ -176,7 +176,7 @@ When onboarding completes, it **writes actual config changes** to the same files
 ### Files to Create
 
 1. **`extension/onboarding.js`** — Onboarding logic module
-   - `loadOnboarding()` — read `~/.cc-manager/onboarding.json`
+   - `loadOnboarding()` — read `~/.qpanda/onboarding.json`
    - `saveOnboarding(data)` — write onboarding file
    - `isOnboardingComplete()` — check if wizard was completed
    - `detectCli(name)` — run `<name> --version`, return `{ available, version, path }`
@@ -219,7 +219,7 @@ Add onboarding wizard steps inside `#init-wizard`, before existing step 1:
 
 ```html
 <div id="wizard-step-onboard-welcome" class="wizard-step wizard-hidden">
-  <h2>Welcome to CC Manager</h2>
+  <h2>Welcome to QA Panda</h2>
   <p>Let's check your setup...</p>
   <div id="onboard-detection-status">Detecting...</div>
   <button id="onboard-next">Continue</button>

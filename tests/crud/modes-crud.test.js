@@ -50,7 +50,7 @@ describe('modes-store CRUD', () => {
       'test': { name: 'Quick Test', category: 'test', useController: false, requiresTestEnv: true, enabled: true },
     });
     const repoRoot = path.join(tmp.root, 'repo');
-    writeJson(path.join(repoRoot, '.cc-manager', 'modes.json'), {
+    writeJson(path.join(repoRoot, '.qpanda', 'modes.json'), {
       'custom-mode': { name: 'Custom', category: 'custom', useController: false, requiresTestEnv: false, enabled: true },
     });
     const result = loadMergedModes(repoRoot, extDir);

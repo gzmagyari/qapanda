@@ -16,9 +16,9 @@ Past runs contain valuable context — decisions, approaches, gotchas — but to
 - The controller presents matches to the user, who can then choose to resume a found run via the existing `/resume` flow or ask the controller to pull in specific context.
 - `/history <query>` in the shell lets the user trigger a search directly.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
-Runs already persist full transcripts with timestamps in `.cc-manager/runs/`. The controller already receives tools via its system prompt. This adds one more tool that reads existing artifacts on demand — no background indexing, no silent context injection, just a retrieval layer the controller uses when the user asks for it.
+Runs already persist full transcripts with timestamps in `.qpanda/runs/`. The controller already receives tools via its system prompt. This adds one more tool that reads existing artifacts on demand — no background indexing, no silent context injection, just a retrieval layer the controller uses when the user asks for it.
 
 ## Implementation Notes
 

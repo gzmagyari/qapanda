@@ -11,8 +11,8 @@ function baseManifest(overrides = {}) {
     repoRoot: '/my/repo',
     extensionDir: '/my/extension',
     chromeDebugPort: null,
-    files: { schema: '/my/repo/.cc-manager/schema.json' },
-    controller: { cli: 'codex', bin: 'codex', model: null, profile: null, sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, extraInstructions: null, sessionId: null, schemaFile: '/my/repo/.cc-manager/schema.json' },
+    files: { schema: '/my/repo/.qpanda/schema.json' },
+    controller: { cli: 'codex', bin: 'codex', model: null, profile: null, sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, extraInstructions: null, sessionId: null, schemaFile: '/my/repo/.qpanda/schema.json' },
     worker: { cli: 'claude', bin: 'claude', model: null, sessionId: 'sess', allowedTools: null, tools: null, disallowedTools: null, permissionPromptTool: null, maxTurns: null, maxBudgetUsd: null, addDirs: [], appendSystemPrompt: null, runMode: 'print', hasStarted: false, agentSessions: {} },
     mcpServers: {},
     workerMcpServers: null,
@@ -122,7 +122,7 @@ describe('MCP placeholder replacement in buildClaudeArgs', () => {
   it('handles backslash paths (Windows) by converting to forward slashes', () => {
     const manifest = baseManifest({
       repoRoot: 'C:\\Users\\Test\\repo',
-      extensionDir: 'C:\\Users\\Test\\.vscode\\extensions\\cc-manager',
+      extensionDir: 'C:\\Users\\Test\\.vscode\\extensions\\qapanda',
       workerMcpServers: {
         'test': { command: 'node', args: ['{EXTENSION_DIR}/mcp.js', '{REPO_ROOT}/data'] },
       },
@@ -131,6 +131,6 @@ describe('MCP placeholder replacement in buildClaudeArgs', () => {
     const configStr = args[args.indexOf('--mcp-config') + 1];
     // Backslashes should be converted to forward slashes in replacements
     assert.ok(configStr.includes('C:/Users/Test/repo'), 'repo root backslashes converted');
-    assert.ok(configStr.includes('C:/Users/Test/.vscode/extensions/cc-manager'), 'extension dir backslashes converted');
+    assert.ok(configStr.includes('C:/Users/Test/.vscode/extensions/qapanda'), 'extension dir backslashes converted');
   });
 });

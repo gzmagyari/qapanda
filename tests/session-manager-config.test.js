@@ -237,7 +237,7 @@ test('setting worker thinking after default sets CLAUDE_CODE_EFFORT_LEVEL', asyn
 });
 
 test('/workflow includes name, path, summary, and full file body in message', async () => {
-  const wfPath = '/tmp/fake-repo/.cc-manager/workflows/autonomous-dev/WORKFLOW.md';
+  const wfPath = '/tmp/fake-repo/.qpanda/workflows/autonomous-dev/WORKFLOW.md';
   const wfBody = '---\nname: autonomous-dev\ndescription: Run autonomous dev loop\n---\n\nStep 1: clone repo\nStep 2: run tests';
   const workflows = [
     { name: 'autonomous-dev', description: 'Run autonomous dev loop', path: wfPath },

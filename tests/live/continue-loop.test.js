@@ -16,7 +16,7 @@ const allAgents = enabledAgents(agentsData);
 function buildTestManifest(tmp, overrides = {}) {
   return {
     repoRoot: tmp.root,
-    stateRoot: path.join(tmp.root, '.cc-manager'),
+    stateRoot: path.join(tmp.root, '.qpanda'),
     controllerCli: 'codex',
     workerCli: 'claude',
     agents: allAgents,

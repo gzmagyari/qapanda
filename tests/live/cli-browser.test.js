@@ -6,7 +6,7 @@ const { skipIfMissing } = require('../helpers/live-test-utils');
 let chromeManager;
 try { chromeManager = require('../../extension/chrome-manager'); } catch {}
 
-describe('cc-manager browser testing (e2e)', { timeout: 180000 }, () => {
+describe('qapanda browser testing (e2e)', { timeout: 180000 }, () => {
   it('--mode test --test-env browser auto-starts Chrome', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     if (!chromeManager) { t.skip('chrome-manager not available'); return; }

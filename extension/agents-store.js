@@ -3,15 +3,15 @@ const path = require('node:path');
 const os = require('node:os');
 
 function globalAgentsPath() {
-  return path.join(os.homedir(), '.cc-manager', 'agents.json');
+  return path.join(os.homedir(), '.qpanda', 'agents.json');
 }
 
 function projectAgentsPath(repoRoot) {
-  return path.join(repoRoot, '.cc-manager', 'agents.json');
+  return path.join(repoRoot, '.qpanda', 'agents.json');
 }
 
 function systemAgentsOverridePath() {
-  return path.join(os.homedir(), '.cc-manager', 'system-agents.json');
+  return path.join(os.homedir(), '.qpanda', 'system-agents.json');
 }
 
 function loadAgentsFile(filePath) {
@@ -30,7 +30,7 @@ function saveAgentsFile(filePath, data) {
 
 /**
  * Load bundled system agents from the extension's resources directory,
- * merged with user overrides from ~/.cc-manager/system-agents.json.
+ * merged with user overrides from ~/.qpanda/system-agents.json.
  *
  * Returns:
  *   agents: { [id]: agentObj }  — removed agents excluded

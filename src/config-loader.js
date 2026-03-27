@@ -3,9 +3,9 @@
  *
  * Loads and merges agents, modes, MCP servers from:
  *   - Bundled system resources (resources/system-agents.json, system-modes.json)
- *   - Global user config (~/.cc-manager/)
- *   - Project config (.cc-manager/)
- *   - Onboarding preferences (~/.cc-manager/onboarding.json)
+ *   - Global user config (~/.qpanda/)
+ *   - Project config (.qpanda/)
+ *   - Onboarding preferences (~/.qpanda/onboarding.json)
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -26,7 +26,7 @@ function writeJsonFile(filePath, data) {
 
 // ── Path helpers ─────────────────────────────────────────────────
 
-function globalDir() { return path.join(os.homedir(), '.cc-manager'); }
+function globalDir() { return path.join(os.homedir(), '.qpanda'); }
 function globalAgentsPath() { return path.join(globalDir(), 'agents.json'); }
 function globalModesPath() { return path.join(globalDir(), 'modes.json'); }
 function globalMcpPath() { return path.join(globalDir(), 'mcp.json'); }
@@ -34,9 +34,9 @@ function systemAgentsOverridePath() { return path.join(globalDir(), 'system-agen
 function systemModesOverridePath() { return path.join(globalDir(), 'system-modes.json'); }
 function onboardingPath() { return path.join(globalDir(), 'onboarding.json'); }
 
-function projectAgentsPath(repoRoot) { return path.join(repoRoot, '.cc-manager', 'agents.json'); }
-function projectModesPath(repoRoot) { return path.join(repoRoot, '.cc-manager', 'modes.json'); }
-function projectMcpPath(repoRoot) { return path.join(repoRoot, '.cc-manager', 'mcp.json'); }
+function projectAgentsPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'agents.json'); }
+function projectModesPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'modes.json'); }
+function projectMcpPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'mcp.json'); }
 
 /**
  * Find the resources directory containing system-agents.json and system-modes.json.

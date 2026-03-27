@@ -9,12 +9,12 @@ const { buildCodexWorkerArgs } = require('../../src/codex-worker');
 function baseManifest(overrides = {}) {
   return {
     repoRoot: '/test/repo',
-    files: { schema: '/test/repo/.cc-manager/schema.json' },
+    files: { schema: '/test/repo/.qpanda/schema.json' },
     controller: {
       cli: 'codex', bin: 'codex', model: null, profile: null,
       sandbox: 'workspace-write', config: [], skipGitRepoCheck: false,
       extraInstructions: null, sessionId: null,
-      schemaFile: '/test/repo/.cc-manager/schema.json',
+      schemaFile: '/test/repo/.qpanda/schema.json',
     },
     worker: {
       cli: 'claude', bin: 'claude', model: null, sessionId: 'sess-001',
@@ -39,10 +39,10 @@ function baseLoop() {
     id: 'loop-0001',
     index: 1,
     controller: {
-      finalFile: '/test/repo/.cc-manager/runs/test/requests/req-0001/loop-0001/controller.final.json',
+      finalFile: '/test/repo/.qpanda/runs/test/requests/req-0001/loop-0001/controller.final.json',
     },
     worker: {
-      finalFile: '/test/repo/.cc-manager/runs/test/requests/req-0001/loop-0001/worker.final.json',
+      finalFile: '/test/repo/.qpanda/runs/test/requests/req-0001/loop-0001/worker.final.json',
     },
   };
 }

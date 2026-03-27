@@ -19,11 +19,11 @@ let _qaDesktopMcpPort = null;
 
 // ── MCP config file helpers ─────────────────────────────────────────
 function globalMcpPath() {
-  return path.join(os.homedir(), '.cc-manager', 'mcp.json');
+  return path.join(os.homedir(), '.qpanda', 'mcp.json');
 }
 
 function projectMcpPath(repoRoot) {
-  return path.join(repoRoot, '.cc-manager', 'mcp.json');
+  return path.join(repoRoot, '.qpanda', 'mcp.json');
 }
 
 function loadMcpFile(filePath) {
@@ -43,14 +43,14 @@ function saveMcpFile(filePath, data) {
 // ── Instance config helpers ──────────────────────────────────────────
 function loadInstanceConfig(repoRoot) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(repoRoot, '.cc-manager', 'config.json'), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(repoRoot, '.qpanda', 'config.json'), 'utf8'));
   } catch {
     return {};
   }
 }
 
 function saveInstanceConfig(repoRoot, data) {
-  const dir = path.join(repoRoot, '.cc-manager');
+  const dir = path.join(repoRoot, '.qpanda');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const existing = loadInstanceConfig(repoRoot);
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ ...existing, ...data }, null, 2), 'utf8');
@@ -65,7 +65,7 @@ function loadMergedMcpServers(repoRoot) {
 
 // ── Tasks file helpers ───────────────────────────────────────────────
 function tasksFilePath(repoRoot) {
-  return path.join(repoRoot, '.cc-manager', 'tasks.json');
+  return path.join(repoRoot, '.qpanda', 'tasks.json');
 }
 
 function loadTasksFile(filePath) {
@@ -188,7 +188,7 @@ function handleTaskMessage(msg, repoRoot) {
 
 // ── Test CRUD ────────────────────────────────────────────────────
 
-function testsFilePath(repoRoot) { return path.join(repoRoot, '.cc-manager', 'tests.json'); }
+function testsFilePath(repoRoot) { return path.join(repoRoot, '.qpanda', 'tests.json'); }
 function loadTestsFile(fp) { try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; } }
 function saveTestsFile(fp, data) { const dir = path.dirname(fp); if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf8'); }
 
@@ -625,7 +625,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Global Agents</h3>
-            <span class="mcp-section-path">~/.cc-manager/agents.json</span>
+            <span class="mcp-section-path">~/.qpanda/agents.json</span>
             <button class="agent-add-btn" data-scope="global">+ Add</button>
           </div>
           <div id="agent-list-global" class="mcp-list"></div>
@@ -633,7 +633,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Project Agents</h3>
-            <span class="mcp-section-path">.cc-manager/agents.json</span>
+            <span class="mcp-section-path">.qpanda/agents.json</span>
             <button class="agent-add-btn" data-scope="project">+ Add</button>
           </div>
           <div id="agent-list-project" class="mcp-list"></div>
@@ -646,7 +646,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Global Servers</h3>
-            <span class="mcp-section-path">~/.cc-manager/mcp.json</span>
+            <span class="mcp-section-path">~/.qpanda/mcp.json</span>
             <button class="mcp-add-btn" data-scope="global">+ Add</button>
           </div>
           <div id="mcp-list-global" class="mcp-list"></div>
@@ -654,7 +654,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Project Servers</h3>
-            <span class="mcp-section-path">.cc-manager/mcp.json</span>
+            <span class="mcp-section-path">.qpanda/mcp.json</span>
             <button class="mcp-add-btn" data-scope="project">+ Add</button>
           </div>
           <div id="mcp-list-project" class="mcp-list"></div>
@@ -714,7 +714,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Global Modes</h3>
-            <span class="mcp-section-path">~/.cc-manager/modes.json</span>
+            <span class="mcp-section-path">~/.qpanda/modes.json</span>
             <button class="mode-add-btn" data-scope="global">+ Add</button>
           </div>
           <div id="mode-list-global" class="mcp-list"></div>
@@ -722,7 +722,7 @@ function getWebviewHtml(panel, extensionUri) {
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Project Modes</h3>
-            <span class="mcp-section-path">.cc-manager/modes.json</span>
+            <span class="mcp-section-path">.qpanda/modes.json</span>
             <button class="mode-add-btn" data-scope="project">+ Add</button>
           </div>
           <div id="mode-list-project" class="mcp-list"></div>
@@ -755,17 +755,17 @@ function getRepoRoot(extensionUri) {
 
 function activate(context) {
   // Start HTTP MCP servers (singletons shared across all panels)
-  const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.cc-manager', 'tasks.json');
+  const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tasks.json');
   startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
-  const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.cc-manager', 'tests.json');
+  const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
   startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
   startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
 
-  const openCommand = vscode.commands.registerCommand('ccManager.open', () => {
+  const openCommand = vscode.commands.registerCommand('qapanda.open', () => {
     const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
     const panel = vscode.window.createWebviewPanel(
-      'ccManagerPanel',
+      'qapandaPanel',
       title,
       vscode.ViewColumn.One,
       {
@@ -821,7 +821,7 @@ function activate(context) {
           return;
         }
         if (msg.type === '_debugLog') {
-          const logPath = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+          const logPath = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
           try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
           try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
           return;
@@ -854,7 +854,7 @@ function activate(context) {
         }
         if (msg.type === 'ready') {
           // Debug: log that we got ready message
-          const _dlog = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+          const _dlog = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
           try { fs.mkdirSync(path.dirname(_dlog), { recursive: true }); } catch {}
           try { fs.appendFileSync(_dlog, `[${new Date().toISOString()}] EXT-HOST: ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, msg.panelId=${msg.panelId}\n`); } catch {}
           // Restore panelId from webview persisted state if available
@@ -948,7 +948,7 @@ function activate(context) {
   context.subscriptions.push(openCommand);
 
   // Register serializer for panel restoration
-  vscode.window.registerWebviewPanelSerializer('ccManagerPanel', {
+  vscode.window.registerWebviewPanelSerializer('qapandaPanel', {
     async deserializeWebviewPanel(panel, state) {
       panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
@@ -982,7 +982,7 @@ function activate(context) {
       panel.webview.onDidReceiveMessage(
         async (msg) => {
           if (msg.type === '_debugLog') {
-            const logPath = path.join(repoRoot, '.cc-manager', 'wizard-debug.log');
+            const logPath = path.join(repoRoot, '.qpanda', 'wizard-debug.log');
             try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
             try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
             return;
@@ -1062,7 +1062,7 @@ function activate(context) {
           }
           if (msg.type === 'ready') {
             // Debug: log that we got ready message (deserialized)
-            const _dlog2 = path.join(os.homedir(), '.cc-manager', 'wizard-debug.log');
+            const _dlog2 = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
             try { fs.mkdirSync(path.dirname(_dlog2), { recursive: true }); } catch {}
             try { fs.appendFileSync(_dlog2, `[${new Date().toISOString()}] EXT-HOST(deserialized): ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, savedRunId=${savedRunId}, msg.panelId=${msg.panelId}\n`); } catch {}
             // Restore panelId from webview persisted state if available

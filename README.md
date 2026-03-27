@@ -1,6 +1,6 @@
-# cc-manager
+# qapanda
 
-`cc-manager` is an interactive terminal app that puts a **controller agent** (Codex CLI) in front of **Claude Code**.
+`qapanda` is an interactive terminal app that puts a **controller agent** (Codex CLI) in front of **Claude Code**.
 
 The visible loop is:
 
@@ -22,7 +22,7 @@ That makes the controller behave like a developer using Claude Code on behalf of
 - Claude output is streamed in real time.
 - After Claude exits, the controller gets another turn and can inspect the repository before deciding the next step.
 - The same Claude session is reused across worker turns in the same run.
-- Runs are persisted under `.cc-manager/runs/<run-id>` and can be resumed later.
+- Runs are persisted under `.qpanda/runs/<run-id>` and can be resumed later.
 
 ## Install
 
@@ -39,13 +39,13 @@ Start the shell in the repository you want to manage:
 
 ```bash
 cd /path/to/repo
-cc-manager
+qapanda
 ```
 
 You can also point it at another repo/state directory:
 
 ```bash
-cc-manager --repo /path/to/repo --state-dir /path/to/state
+qapanda --repo /path/to/repo --state-dir /path/to/state
 ```
 
 ### Shell behavior
@@ -75,37 +75,37 @@ cc-manager --repo /path/to/repo --state-dir /path/to/state
 Start a new run, process until `STOP`, then exit:
 
 ```bash
-cc-manager run "Please do fixes in this repository until all unit tests pass"
+qapanda run "Please do fixes in this repository until all unit tests pass"
 ```
 
 Resume an existing run with another user message:
 
 ```bash
-cc-manager resume <run-id> "Good job. Thank you"
+qapanda resume <run-id> "Good job. Thank you"
 ```
 
 Show run status:
 
 ```bash
-cc-manager status <run-id>
+qapanda status <run-id>
 ```
 
 Show recent events:
 
 ```bash
-cc-manager logs <run-id> --tail 80
+qapanda logs <run-id> --tail 80
 ```
 
 List runs:
 
 ```bash
-cc-manager list
+qapanda list
 ```
 
 Verify binaries:
 
 ```bash
-cc-manager doctor
+qapanda doctor
 ```
 
 ## Important defaults
@@ -169,7 +169,7 @@ By default the worker uses:
 Each run is stored under:
 
 ```text
-.cc-manager/
+.qpanda/
   runs/
     <run-id>/
       manifest.json
@@ -191,7 +191,7 @@ Each run is stored under:
 
 ## Workflows
 
-Place workflow directories in `.cc-manager/workflows/` (project-level) or `~/.cc-manager/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter:
+Place workflow directories in `.qpanda/workflows/` (project-level) or `~/.qpanda/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter:
 
 ```yaml
 ---

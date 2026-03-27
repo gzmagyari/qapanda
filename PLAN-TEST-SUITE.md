@@ -128,7 +128,7 @@ Test CLI argument construction:
 ## Part 2: CRUD Tests (Real Filesystem, Temp Directories)
 
 ### 2a. `tests/crud/tasks-crud.test.js`
-Using temp directory for `.cc-manager/tasks.json`:
+Using temp directory for `.qpanda/tasks.json`:
 - Create task → verify in file
 - List tasks → returns all
 - Update task status (backlog → in-progress → done)
@@ -141,8 +141,8 @@ Using temp directory for `.cc-manager/tasks.json`:
 ### 2b. `tests/crud/agents-crud.test.js`
 Using temp directory structure:
 - Load system agents from `resources/system-agents.json`
-- Save global agent → appears in `~/.cc-manager/agents.json`
-- Save project agent → appears in `.cc-manager/agents.json`
+- Save global agent → appears in `~/.qpanda/agents.json`
+- Save project agent → appears in `.qpanda/agents.json`
 - Project overrides global (same ID)
 - Disable system agent via override
 - Remove system agent via override
@@ -381,7 +381,7 @@ Using fake backends for fast iteration, real CLIs for validation:
 ## Helpers
 
 ### `tests/helpers/test-utils.js`
-- `createTempDir()` → tmp directory with .cc-manager structure
+- `createTempDir()` → tmp directory with .qpanda structure
 - `cleanupTempDir(dir)` → remove
 - `waitFor(conditionFn, timeoutMs)` → poll until condition true
 - `mockRenderer()` → stub renderer with captured calls

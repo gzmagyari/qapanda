@@ -8,7 +8,7 @@ Add a repeatable test case management system with its own MCP, tab UI, and bi-di
 
 ## Data Model
 
-### `tests.json` (stored at `.cc-manager/tests.json`)
+### `tests.json` (stored at `.qpanda/tests.json`)
 
 ```json
 {
@@ -239,7 +239,7 @@ const testsMcpPath = findTestsMcpPath(hints);
 if (testsMcpPath) {
   result['cc-tests'] = {
     command: 'node', args: [testsMcpPath],
-    env: { TESTS_FILE: path.join(repoRoot, '.cc-manager', 'tests.json') },
+    env: { TESTS_FILE: path.join(repoRoot, '.qpanda', 'tests.json') },
   };
 }
 ```
@@ -354,7 +354,7 @@ npm run test:live:mcp
 npm run test:ui
 
 # Agent can use it
-cc-manager run --agent QA-Browser --mode quick-test --test-env browser \
+qapanda run --agent QA-Browser --mode quick-test --test-env browser \
   "Generate 3 test cases for a login page. Use the cc-tests MCP to create them with steps."
 
 # Full suite

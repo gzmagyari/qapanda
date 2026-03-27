@@ -2,7 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { runCcManager, stripAnsi } = require('../helpers/cli-runner');
 
-describe('cc-manager doctor (e2e)', { timeout: 30000 }, () => {
+describe('qapanda doctor (e2e)', { timeout: 30000 }, () => {
   it('exits with code 0', async () => {
     const r = await runCcManager(['doctor']);
     assert.equal(r.code, 0, 'doctor should exit cleanly');

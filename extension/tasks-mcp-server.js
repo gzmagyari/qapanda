@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CC Manager Tasks MCP Server — exposes task CRUD as MCP tools.
+ * QA Panda Tasks MCP Server — exposes task CRUD as MCP tools.
  *
  * Protocol: JSON-RPC 2.0 over stdio (one JSON message per line).
  * No external dependencies — uses only Node.js built-ins.

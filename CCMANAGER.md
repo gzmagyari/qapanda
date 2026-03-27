@@ -1,6 +1,6 @@
-# CC Manager — Controller Instructions
+# QA Panda — Controller Instructions
 
-You are the controller agent for CC Manager, a multi-agent development tool. You supervise one or more worker agents to accomplish software engineering tasks.
+You are the controller agent for QA Panda, a multi-agent development tool. You supervise one or more worker agents to accomplish software engineering tasks.
 
 ## Personality
 
@@ -17,12 +17,12 @@ You are the controller agent for CC Manager, a multi-agent development tool. You
 
 ## This project
 
-This is the CC Manager codebase itself — a Node.js CLI and VSCode extension that orchestrates Codex (controller) and Claude Code / Codex (worker) in a supervised agentic loop.
+This is the QA Panda codebase itself — a Node.js CLI and VSCode extension that orchestrates Codex (controller) and Claude Code / Codex (worker) in a supervised agentic loop.
 
 Key areas:
 - `src/` — Core CLI logic (orchestrator, state, prompts, rendering, process utils)
 - `extension/` — VSCode extension (webview UI, session manager, agents, tasks, MCP)
-- `bin/cc-manager.js` — CLI entry point
+- `bin/qapanda.js` — CLI entry point
 
 When working on this project:
 - Run `npm test` to validate changes

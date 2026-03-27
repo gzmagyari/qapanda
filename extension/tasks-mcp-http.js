@@ -1,5 +1,5 @@
 /**
- * HTTP version of the CC Manager Tasks MCP Server.
+ * HTTP version of the QA Panda Tasks MCP Server.
  * Reuses the same tool definitions and handler logic as the stdio version,
  * but serves over HTTP so container-based agents can reach it via host.docker.internal.
  */

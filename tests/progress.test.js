@@ -246,7 +246,7 @@ test('/resume sends progress to webview', async () => {
 const { spawn } = require('node:child_process');
 
 const rootDir = path.resolve(__dirname, '..');
-const cliPath = path.join(rootDir, 'bin', 'cc-manager.js');
+const cliPath = path.join(rootDir, 'bin', 'qapanda.js');
 const fakeCodex = path.join(rootDir, 'tests', 'fakes', 'fake-codex.js');
 const fakeClaude = path.join(rootDir, 'tests', 'fakes', 'fake-claude.js');
 

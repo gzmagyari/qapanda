@@ -10,7 +10,7 @@ test('extension manifest includes onWebviewPanel activation event for panel rest
     'activationEvents should be an array'
   );
   assert.ok(
-    manifest.activationEvents.includes('onWebviewPanel:ccManagerPanel'),
-    'activationEvents must include onWebviewPanel:ccManagerPanel for reload-restore'
+    manifest.activationEvents.includes('onWebviewPanel:qapandaPanel'),
+    'activationEvents must include onWebviewPanel:qapandaPanel for reload-restore'
   );
 });

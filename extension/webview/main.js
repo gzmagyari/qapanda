@@ -2,7 +2,7 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
 
-  // Debug logging — sends to extension host which writes to .cc-manager/wizard-debug.log
+  // Debug logging — sends to extension host which writes to .qpanda/wizard-debug.log
   function _dbg(text) { try { vscode.postMessage({ type: '_debugLog', text: String(text) }); } catch {} }
 
   const messagesEl = document.getElementById('messages');
@@ -2721,7 +2721,7 @@
   }
 
   function labelForTarget(target) {
-    if (!target || target === 'controller') return 'CC Manager';
+    if (!target || target === 'controller') return 'QA Panda';
     if (target === 'claude') return 'Worker (Default)';
     if (target.startsWith('agent-')) {
       const agentId = target.slice('agent-'.length);
@@ -2729,7 +2729,7 @@
       const agent = allAgents[agentId];
       return agent ? agent.name : agentId;
     }
-    return 'CC Manager';
+    return 'QA Panda';
   }
 
   function updateConfigBarForTarget(target) {

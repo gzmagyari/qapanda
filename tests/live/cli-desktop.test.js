@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { runCcManager, stripAnsi } = require('../helpers/cli-runner');
 const { skipIfMissing } = require('../helpers/live-test-utils');
 
-describe('cc-manager desktop testing (e2e)', { timeout: 300000 }, () => {
+describe('qapanda desktop testing (e2e)', { timeout: 300000 }, () => {
   it('--mode test --test-env computer starts container and runs agent', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     if (await skipIfMissing(t, 'docker')) return;

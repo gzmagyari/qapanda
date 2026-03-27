@@ -10,12 +10,12 @@ Starting a fresh run in a repo you worked on yesterday means re-explaining the s
 
 ## MVP Shape
 
-- A `.cc-manager/handoff.md` file stores the current notes in plain markdown — readable and editable by the user at any time.
+- A `.qpanda/handoff.md` file stores the current notes in plain markdown — readable and editable by the user at any time.
 - At the end of each run, the controller suggests a handoff update: "Here is what I think the next session should know." The suggestion is shown to the user, who can accept it as-is, edit it, or dismiss it. Nothing is written without the user's sign-off.
 - At the start of each run, `src/prompts.js` includes the handoff contents in the controller's system prompt under a "Project Handoff Notes" section. The controller uses them as background context.
 - Shell commands: `/handoff` shows the current notes, `/handoff edit` opens them in `$EDITOR`, `/handoff clear` resets the file.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The controller already receives a system prompt assembled in `src/prompts.js` with project-level instructions from `CCMANAGER.md`. Handoff notes extend that same injection path with run-learned context. No new infrastructure — just a file and a post-run suggestion step that keeps the user in control of what gets persisted.
 

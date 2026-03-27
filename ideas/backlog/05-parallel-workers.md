@@ -17,7 +17,7 @@ Large tasks often contain independent pieces: "update the API handler, add tests
 - When all workers complete, their results are concatenated into a single summary and fed back to the controller for the next decision. The controller merges, resolves conflicts, or delegates follow-up work.
 - A `--max-parallel <n>` flag (default 3) caps concurrent workers to manage resource usage.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The worker spawning logic in `src/claude.js` already handles session IDs and streaming. Parallel workers reuse that same spawn function multiple times with `Promise.allSettled`. The controller already receives worker results and decides next steps — it just receives a combined result instead of a single one.
 

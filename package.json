@@ -1,9 +1,9 @@
 {
-  "name": "cc-manager",
+  "name": "qapanda",
   "version": "0.2.3",
   "description": "Interactive manager CLI that uses Codex to control Claude Code",
   "bin": {
-    "cc-manager": "./bin/cc-manager.js"
+    "qapanda": "./bin/qapanda.js"
   },
   "type": "commonjs",
   "scripts": {
@@ -21,9 +21,9 @@
     "test:all": "node tests/run-all.js",
     "test:cleanup": "node tests/cleanup.js",
     "ext:copy-src": "node -e \"const fs=require('fs');const p=require('path');function cp(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=p.join(s,e.name),dp=p.join(d,e.name);e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}}cp('src','extension/src');const cd='extension/claude-parser';fs.mkdirSync(cd,{recursive:true});for(const f of['index.js','parse-stream.js','package.json'])fs.copyFileSync(p.join('claude-parser',f),p.join(cd,f));cp('qa-desktop','extension/qa-desktop');cp('resources','extension/resources')\"",
-    "ext:build": "npm run ext:copy-src && cd extension && npx @vscode/vsce package --allow-missing-repository -o cc-manager.vsix",
-    "ext:install": "npm run ext:build && code --install-extension extension/cc-manager.vsix",
-    "ext:clean": "node -e \"fs.rmSync('extension/src',{recursive:true,force:true});fs.rmSync('extension/claude-parser',{recursive:true,force:true});fs.rmSync('extension/cc-manager.vsix',{force:true})\" --input-type=commonjs"
+    "ext:build": "npm run ext:copy-src && cd extension && npx @vscode/vsce package --allow-missing-repository -o qapanda.vsix",
+    "ext:install": "npm run ext:build && code --install-extension extension/qapanda.vsix",
+    "ext:clean": "node -e \"fs.rmSync('extension/src',{recursive:true,force:true});fs.rmSync('extension/claude-parser',{recursive:true,force:true});fs.rmSync('extension/qapanda.vsix',{force:true})\" --input-type=commonjs"
   },
   "engines": {
     "node": ">=18.17"

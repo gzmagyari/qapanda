@@ -12,8 +12,8 @@ function baseManifest(overrides = {}) {
     repoRoot: PROJECT_ROOT,
     extensionDir: EXTENSION_DIR,
     chromeDebugPort: null,
-    files: { schema: path.join(PROJECT_ROOT, '.cc-manager', 'schema.json') },
-    controller: { cli: 'codex', bin: 'codex', model: null, profile: null, sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, extraInstructions: null, sessionId: null, schemaFile: path.join(PROJECT_ROOT, '.cc-manager', 'schema.json') },
+    files: { schema: path.join(PROJECT_ROOT, '.qpanda', 'schema.json') },
+    controller: { cli: 'codex', bin: 'codex', model: null, profile: null, sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, extraInstructions: null, sessionId: null, schemaFile: path.join(PROJECT_ROOT, '.qpanda', 'schema.json') },
     worker: { cli: 'claude', bin: 'claude', model: null, sessionId: 'test-sess', allowedTools: null, tools: null, disallowedTools: null, permissionPromptTool: null, maxTurns: null, maxBudgetUsd: null, addDirs: [], appendSystemPrompt: null, runMode: 'print', hasStarted: false, agentSessions: {} },
     mcpServers: {},
     workerMcpServers: null,
@@ -38,7 +38,7 @@ describe('Claude --mcp-config JSON format', () => {
         'detached-command': {
           command: 'node',
           args: [path.join(EXTENSION_DIR, 'detached-command-mcp', 'dist', 'index.js')],
-          env: { DETACHED_BASH_MCP_DATA_DIR: path.join(PROJECT_ROOT, '.cc-manager', '.detached-jobs') },
+          env: { DETACHED_BASH_MCP_DATA_DIR: path.join(PROJECT_ROOT, '.qpanda', '.detached-jobs') },
         },
       },
     });

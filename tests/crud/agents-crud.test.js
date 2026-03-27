@@ -49,7 +49,7 @@ describe('agents-store CRUD', () => {
     writeJson(path.join(resDir, 'system-agents.json'), {
       dev: { name: 'Developer', cli: 'claude', enabled: true },
     });
-    // Note: user overrides go to ~/.cc-manager/system-agents.json
+    // Note: user overrides go to ~/.qpanda/system-agents.json
     // If the user has onboarding overrides, hasUserOverride will be true
     const { agents, meta } = loadSystemAgents(extDir);
     assert.ok(agents.dev, 'should have dev agent');
@@ -63,7 +63,7 @@ describe('agents-store CRUD', () => {
       dev: { name: 'Dev (system)', cli: 'claude', enabled: true },
     });
     const repoRoot = path.join(tmp.root, 'repo');
-    writeJson(path.join(repoRoot, '.cc-manager', 'agents.json'), {
+    writeJson(path.join(repoRoot, '.qpanda', 'agents.json'), {
       'custom-agent': { name: 'Custom', cli: 'claude', enabled: true },
     });
     const result = loadMergedAgents(repoRoot, extDir);

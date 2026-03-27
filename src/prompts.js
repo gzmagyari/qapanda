@@ -150,7 +150,7 @@ function loadWorkflows(repoRoot) {
 
   // Project-level workflows first (higher priority)
   if (repoRoot) {
-    const projectDir = path.join(repoRoot, '.cc-manager', 'workflows');
+    const projectDir = path.join(repoRoot, '.qpanda', 'workflows');
     for (const wf of scanWorkflowDir(projectDir)) {
       seen.add(wf.name);
       all.push(wf);
@@ -158,7 +158,7 @@ function loadWorkflows(repoRoot) {
   }
 
   // Global workflows from user home
-  const globalDir = path.join(os.homedir(), '.cc-manager', 'workflows');
+  const globalDir = path.join(os.homedir(), '.qpanda', 'workflows');
   for (const wf of scanWorkflowDir(globalDir)) {
     if (!seen.has(wf.name)) {
       all.push(wf);
@@ -330,7 +330,7 @@ function buildControllerPrompt(manifest, request) {
     '- You CAN and SHOULD use your tools to read files, run commands, inspect code, run tests.',
     '- Never edit SOURCE CODE files yourself. Never commit or push.',
     '- You MAY stage changes with `git add` when you have reviewed and approved the worker\'s work. Staging = your approval stamp.',
-    '- You MAY create or edit .md files (e.g. .cc-manager/tasks/task-001.md) to write detailed instructions for the worker. For complex tasks, write a task .md file with full details, then tell the worker to read it.',
+    '- You MAY create or edit .md files (e.g. .qpanda/tasks/task-001.md) to write detailed instructions for the worker. For complex tasks, write a task .md file with full details, then tell the worker to read it.',
     '- Keep controller_messages short, plain-text, user-visible. No markdown bullets, no JSON, no code fences. Prefer 1-6 messages.',
     '- If the task is complete, stop. If the worker needs more work, delegate again with specific instructions.',
     '- The app automatically reuses the existing worker session.',

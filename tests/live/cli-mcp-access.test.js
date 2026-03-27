@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { runCcManager, stripAnsi } = require('../helpers/cli-runner');
 const { skipIfMissing } = require('../helpers/live-test-utils');
 
-describe('cc-manager MCP access (e2e)', { timeout: 180000 }, () => {
+describe('qapanda MCP access (e2e)', { timeout: 180000 }, () => {
   it('agent sees auto-injected MCPs (detached-command, cc-tasks)', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     const r = await runCcManager(['run', '--agent', 'dev', '--worker-max-turns', '3', 'List all your available MCP tools. Just list the tool names.'], { timeout: 120000 });

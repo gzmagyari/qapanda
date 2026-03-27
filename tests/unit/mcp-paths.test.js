@@ -51,10 +51,10 @@ describe('MCP path existence validation', () => {
     assert.ok(fs.existsSync(fsPath), `Resolved path missing: ${fsPath}`);
   });
 
-  it('{REPO_ROOT}/.cc-manager parent dir is creatable', () => {
-    const template = '{REPO_ROOT}/.cc-manager/.detached-jobs';
+  it('{REPO_ROOT}/.qpanda parent dir is creatable', () => {
+    const template = '{REPO_ROOT}/.qpanda/.detached-jobs';
     const resolved = template.replace('{REPO_ROOT}', PROJECT_ROOT.replace(/\\/g, '/'));
-    // The .cc-manager dir should either exist or its parent should
+    // The .qpanda dir should either exist or its parent should
     const parent = path.dirname(resolved.replace(/\//g, path.sep));
     const grandparent = path.dirname(parent);
     assert.ok(fs.existsSync(grandparent), `Grandparent dir missing: ${grandparent}`);

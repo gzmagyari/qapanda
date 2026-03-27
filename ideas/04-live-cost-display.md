@@ -15,7 +15,7 @@ Cost is the number one concern for regular AI tool users, but today there is zer
 - Token counts are extracted from Claude's `usage` fields in streaming output and from Codex's response metadata. Controller and worker tokens are summed separately and shown as a combined total.
 - The display resets on each new run and accumulates across loops within a run.
 
-## Why It Fits cc-manager
+## Why It Fits qapanda
 
 The worker streaming in `src/claude.js` already processes events that include token usage. The renderer interface already separates terminal and webview output. The cost display is a thin aggregation layer that taps into data flowing through the existing event pipeline — no new API calls or data collection.
 

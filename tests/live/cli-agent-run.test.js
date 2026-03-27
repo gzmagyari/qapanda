@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { runCcManager, stripAnsi } = require('../helpers/cli-runner');
 const { skipIfMissing } = require('../helpers/live-test-utils');
 
-describe('cc-manager run --agent (e2e)', { timeout: 120000 }, () => {
+describe('qapanda run --agent (e2e)', { timeout: 120000 }, () => {
   it('--agent dev runs dev agent directly', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     const r = await runCcManager(['run', '--agent', 'dev', '--worker-max-turns', '1', 'Say exactly: AGENT_DEV_OK'], { timeout: 90000 });

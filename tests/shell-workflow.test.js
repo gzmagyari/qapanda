@@ -6,7 +6,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const rootDir = path.resolve(__dirname, '..');
-const cliPath = path.join(rootDir, 'bin', 'cc-manager.js');
+const cliPath = path.join(rootDir, 'bin', 'qapanda.js');
 const fakeCodex = path.join(rootDir, 'tests', 'fakes', 'fake-codex.js');
 const fakeClaude = path.join(rootDir, 'tests', 'fakes', 'fake-claude.js');
 
@@ -43,7 +43,7 @@ test('/workflow command runs a workflow and records the full message', async () 
   const stateRoot = path.join(tempRoot, 'state');
 
   // Create a workflow directory with WORKFLOW.md
-  const wfDir = path.join(repoRoot, '.cc-manager', 'workflows', 'autonomous-dev');
+  const wfDir = path.join(repoRoot, '.qpanda', 'workflows', 'autonomous-dev');
   await fs.mkdir(wfDir, { recursive: true });
   await fs.mkdir(stateRoot, { recursive: true });
 

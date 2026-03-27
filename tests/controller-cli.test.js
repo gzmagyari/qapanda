@@ -12,7 +12,7 @@ const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
 
 const rootDir = path.resolve(__dirname, '..');
-const cliPath = path.join(rootDir, 'bin', 'cc-manager.js');
+const cliPath = path.join(rootDir, 'bin', 'qapanda.js');
 const fakeClaude = path.join(rootDir, 'tests', 'fakes', 'fake-claude.js');
 const fakeCodex = path.join(rootDir, 'tests', 'fakes', 'fake-codex.js');
 
@@ -290,7 +290,7 @@ async function runCli(args, options = {}) {
 }
 
 async function setupWorkspace() {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-manager-ctrl-cli-'));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'qapanda-ctrl-cli-'));
   const repoRoot = path.join(tempRoot, 'repo');
   const stateRoot = path.join(tempRoot, 'state');
   await fs.mkdir(repoRoot, { recursive: true });
@@ -344,7 +344,7 @@ test('prepareNewRun with no controllerCli defaults to codex', async () => {
   try {
     const manifest = await prepareNewRun('test', {
       repoRoot: tmpDir,
-      stateRoot: path.join(tmpDir, '.cc-manager'),
+      stateRoot: path.join(tmpDir, '.qpanda'),
     });
     assert.equal(manifest.controller.cli, 'codex', 'default cli should be codex');
   } finally {
@@ -358,7 +358,7 @@ test('prepareNewRun with controllerCli=claude sets cli and uses claude bin', asy
   try {
     const manifest = await prepareNewRun('test', {
       repoRoot: tmpDir,
-      stateRoot: path.join(tmpDir, '.cc-manager'),
+      stateRoot: path.join(tmpDir, '.qpanda'),
       controllerCli: 'claude',
     });
     assert.equal(manifest.controller.cli, 'claude');
@@ -584,7 +584,7 @@ test('printRunSummary includes controller CLI', async () => {
   try {
     const manifest = await prepareNewRun('test', {
       repoRoot: tmpDir,
-      stateRoot: path.join(tmpDir, '.cc-manager'),
+      stateRoot: path.join(tmpDir, '.qpanda'),
       controllerCli: 'claude',
     });
     const lines = [];

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { runCcManager } = require('../helpers/cli-runner');
 const { skipIfMissing } = require('../helpers/live-test-utils');
 
-describe('cc-manager thinking and model flags (e2e)', { timeout: 120000 }, () => {
+describe('qapanda thinking and model flags (e2e)', { timeout: 120000 }, () => {
   it('--worker-thinking high runs without error', async (t) => {
     if (await skipIfMissing(t, 'claude')) return;
     const r = await runCcManager(['run', '--agent', 'dev', '--worker-thinking', 'high', '--worker-max-turns', '1', 'Say hi'], { timeout: 90000 });

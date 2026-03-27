@@ -10,7 +10,7 @@ function baseManifest() {
     repoRoot: PROJECT_ROOT,
     extensionDir: path.join(PROJECT_ROOT, 'extension'),
     chromeDebugPort: null,
-    files: { schema: path.join(PROJECT_ROOT, '.cc-manager', 'schema.json') },
+    files: { schema: path.join(PROJECT_ROOT, '.qpanda', 'schema.json') },
     controller: { cli: 'codex', bin: 'codex', model: null, profile: null, sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, extraInstructions: null, sessionId: null, schemaFile: '' },
     worker: { cli: 'claude', bin: 'claude', model: null, sessionId: require('node:crypto').randomUUID(), allowedTools: null, tools: null, disallowedTools: null, permissionPromptTool: null, maxTurns: 1, maxBudgetUsd: null, addDirs: [], appendSystemPrompt: null, runMode: 'print', hasStarted: false, agentSessions: {} },
     mcpServers: {}, workerMcpServers: null, controllerMcpServers: null,

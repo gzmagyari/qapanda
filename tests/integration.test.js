@@ -6,7 +6,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const rootDir = path.resolve(__dirname, '..');
-const cliPath = path.join(rootDir, 'bin', 'cc-manager.js');
+const cliPath = path.join(rootDir, 'bin', 'qapanda.js');
 const fakeCodex = path.join(rootDir, 'tests', 'fakes', 'fake-codex.js');
 const fakeClaude = path.join(rootDir, 'tests', 'fakes', 'fake-claude.js');
 
@@ -35,7 +35,7 @@ async function runCli(args, options = {}) {
 }
 
 async function setupWorkspace() {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-manager-test-'));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'qapanda-test-'));
   const repoRoot = path.join(tempRoot, 'repo');
   const stateRoot = path.join(tempRoot, 'state');
   await fs.mkdir(repoRoot, { recursive: true });

@@ -1,22 +1,22 @@
 {
-  "name": "cc-manager-vscode",
+  "name": "qapanda-vscode",
   "displayName": "QA Panda",
   "description": "AI-powered QA agents for your codebase — test, fix, and ship with confidence",
   "version": "0.2.0",
-  "publisher": "cc-manager",
+  "publisher": "qapanda",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": ["Other"],
   "activationEvents": [
     "onStartupFinished",
-    "onWebviewPanel:ccManagerPanel"
+    "onWebviewPanel:qapandaPanel"
   ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "ccManager.open",
+        "command": "qapanda.open",
         "title": "QA Panda: Open",
         "icon": {
           "light": "./resources/icon.svg",
@@ -27,7 +27,7 @@
     "menus": {
       "editor/title": [
         {
-          "command": "ccManager.open",
+          "command": "qapanda.open",
           "group": "navigation"
         }
       ]

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { runShell, stripAnsi } = require('../helpers/cli-runner');
 const { createTempDir } = require('../helpers/test-utils');
 
-describe('cc-manager shell commands (e2e)', { timeout: 30000 }, () => {
+describe('qapanda shell commands (e2e)', { timeout: 30000 }, () => {
   it('/config shows all configuration fields', async () => {
     const r = await runShell(['/config']);
     const out = stripAnsi(r.stdout);

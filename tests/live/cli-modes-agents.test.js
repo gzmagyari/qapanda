@@ -2,7 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { runCcManager } = require('../helpers/cli-runner');
 
-describe('cc-manager modes (e2e)', { timeout: 10000 }, () => {
+describe('qapanda modes (e2e)', { timeout: 10000 }, () => {
   it('lists all system modes', async () => {
     const r = await runCcManager(['modes']);
     assert.equal(r.code, 0);
@@ -19,7 +19,7 @@ describe('cc-manager modes (e2e)', { timeout: 10000 }, () => {
   });
 });
 
-describe('cc-manager agents (e2e)', { timeout: 10000 }, () => {
+describe('qapanda agents (e2e)', { timeout: 10000 }, () => {
   it('lists all system agents', async () => {
     const r = await runCcManager(['agents']);
     assert.equal(r.code, 0);
@@ -38,7 +38,7 @@ describe('cc-manager agents (e2e)', { timeout: 10000 }, () => {
   });
 });
 
-describe('cc-manager mcp (e2e)', { timeout: 10000 }, () => {
+describe('qapanda mcp (e2e)', { timeout: 10000 }, () => {
   it('lists MCP info', async () => {
     const r = await runCcManager(['mcp']);
     assert.equal(r.code, 0);

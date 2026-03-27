@@ -52,7 +52,7 @@ describe('Wait delay scheduling', () => {
     const manifest = await prepareNewRun({
       message: 'test',
       repoRoot: tmp.root,
-      stateRoot: path.join(tmp.root, '.cc-manager'),
+      stateRoot: path.join(tmp.root, '.qpanda'),
       controllerBin: 'codex',
       workerBin: 'claude',
     });

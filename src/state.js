@@ -13,7 +13,7 @@ const {
 const { defaultSchemaPath, writeControllerSchema } = require('./schema');
 
 function defaultStateRoot(cwd) {
-  return path.join(cwd, '.cc-manager');
+  return path.join(cwd, '.qpanda');
 }
 
 function runDirFromId(stateRoot, runId) {

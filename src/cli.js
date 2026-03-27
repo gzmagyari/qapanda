@@ -29,21 +29,21 @@ const {
 const { mcpServersForRole } = require('./mcp-injector');
 
 function usage() {
-  return `cc-manager
+  return `qapanda
 
 Commands:
-  cc-manager                         Start the interactive shell
-  cc-manager shell                   Start the interactive shell
-  cc-manager run <message...>        Start a new run, process until STOP, then exit
-  cc-manager run --print --agent dev <message>   One-shot: agent runs once, exits
-  cc-manager resume <run-id> [message...]  Resume or continue an existing run
-  cc-manager status <run-id>         Show run status
-  cc-manager logs <run-id> [--tail n]       Show recent events
-  cc-manager list                    List saved runs
-  cc-manager doctor                  Check health of all dependencies
-  cc-manager setup                   Run first-time setup wizard
-  cc-manager agents                  List all available agents
-  cc-manager modes                   List all available modes
+  qapanda                         Start the interactive shell
+  qapanda shell                   Start the interactive shell
+  qapanda run <message...>        Start a new run, process until STOP, then exit
+  qapanda run --print --agent dev <message>   One-shot: agent runs once, exits
+  qapanda resume <run-id> [message...]  Resume or continue an existing run
+  qapanda status <run-id>         Show run status
+  qapanda logs <run-id> [--tail n]       Show recent events
+  qapanda list                    List saved runs
+  qapanda doctor                  Check health of all dependencies
+  qapanda setup                   Run first-time setup wizard
+  qapanda agents                  List all available agents
+  qapanda modes                   List all available modes
 
 Common options:
   --repo <path>                      Project root directory
@@ -271,7 +271,7 @@ async function runDoctor(argv) {
 
   const { detectCli, detectChrome, detectDocker, detectQaDesktop } = require('../extension/onboarding');
 
-  console.log('CC Manager Doctor\n');
+  console.log('QA Panda Doctor\n');
 
   // CLIs
   const claude = await detectCli('claude');
@@ -297,7 +297,7 @@ async function runDoctor(argv) {
   if (onboarding && onboarding.completedAt) {
     console.log(`Onboarding:         ✓ Complete (preference: ${onboarding.cliPreference || 'both'})`);
   } else {
-    console.log(`Onboarding:         ✗ Not complete — run: cc-manager setup`);
+    console.log(`Onboarding:         ✗ Not complete — run: qapanda setup`);
   }
 }
 
@@ -306,7 +306,7 @@ async function runSetup() {
   const { detectCli, detectChrome, detectDocker, detectQaDesktop, completeOnboarding, getCliDefaults: getDefaults } = require('../extension/onboarding');
   const { readJsonFile } = require('./config-loader');
 
-  console.log('CC Manager Setup\n');
+  console.log('QA Panda Setup\n');
   console.log('Detecting environment...');
 
   const [claude, codex, chrome, docker, qaDesktop] = await Promise.all([
@@ -368,7 +368,7 @@ async function runSetup() {
   console.log(`\nSetup complete!`);
   console.log(`  Controller CLI: ${defaults.controllerCli}`);
   console.log(`  Worker CLI: ${defaults.workerCli}`);
-  console.log(`  Saved to ~/.cc-manager/onboarding.json`);
+  console.log(`  Saved to ~/.qpanda/onboarding.json`);
 }
 
 async function listAgentsCmd(argv) {
@@ -503,13 +503,13 @@ async function mcpCmd(argv) {
 
   if (!sub || sub === 'list') {
     console.log('MCP Servers:\n');
-    console.log('  Global (~/.cc-manager/mcp.json):');
+    console.log('  Global (~/.qpanda/mcp.json):');
     const globalEntries = Object.entries(mcpData.global);
     if (globalEntries.length === 0) console.log('    (none)');
     for (const [name, s] of globalEntries) {
       console.log(`    ${name.padEnd(25)} ${s.url ? 'http' : 'stdio'}  target: ${s.target || 'both'}`);
     }
-    console.log('\n  Project (.cc-manager/mcp.json):');
+    console.log('\n  Project (.qpanda/mcp.json):');
     const projectEntries = Object.entries(mcpData.project);
     if (projectEntries.length === 0) console.log('    (none)');
     for (const [name, s] of projectEntries) {
@@ -521,7 +521,7 @@ async function mcpCmd(argv) {
 
   if (sub === 'add') {
     const name = argv[1];
-    if (!name) { console.error('Usage: cc-manager mcp add <name> --command <cmd> [--args <a>] [--scope global|project] [--target both|controller|worker]'); return; }
+    if (!name) { console.error('Usage: qapanda mcp add <name> --command <cmd> [--args <a>] [--scope global|project] [--target both|controller|worker]'); return; }
     const opts = {};
     for (let i = 2; i < argv.length; i++) {
       if (argv[i] === '--command') opts.command = argv[++i];
@@ -531,7 +531,7 @@ async function mcpCmd(argv) {
       else if (argv[i] === '--target') opts.target = argv[++i];
     }
     const scope = opts.scope || 'project';
-    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.cc-manager', 'mcp.json') : require('path').join(repoRoot, '.cc-manager', 'mcp.json');
+    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.qpanda', 'mcp.json') : require('path').join(repoRoot, '.qpanda', 'mcp.json');
     const data = readJsonFile(filePath);
     data[name] = {};
     if (opts.url) { data[name].type = 'http'; data[name].url = opts.url; }
@@ -545,7 +545,7 @@ async function mcpCmd(argv) {
   if (sub === 'delete' || sub === 'remove') {
     const name = argv[1];
     const scope = argv.includes('--scope') ? argv[argv.indexOf('--scope') + 1] : 'project';
-    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.cc-manager', 'mcp.json') : require('path').join(repoRoot, '.cc-manager', 'mcp.json');
+    const filePath = scope === 'global' ? require('path').join(require('os').homedir(), '.qpanda', 'mcp.json') : require('path').join(repoRoot, '.qpanda', 'mcp.json');
     const data = readJsonFile(filePath);
     if (!data[name]) { console.error(`MCP server '${name}' not found in ${scope} config.`); return; }
     delete data[name];
@@ -554,7 +554,7 @@ async function mcpCmd(argv) {
     return;
   }
 
-  console.log('Usage: cc-manager mcp [list|add|delete]');
+  console.log('Usage: qapanda mcp [list|add|delete]');
 }
 
 // ── Main ─────────────────────────────────────────────────────────

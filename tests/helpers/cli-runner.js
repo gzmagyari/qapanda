@@ -1,14 +1,14 @@
 /**
- * Helper to spawn cc-manager CLI as a child process for end-to-end testing.
+ * Helper to spawn qapanda CLI as a child process for end-to-end testing.
  */
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 
-const BIN = path.resolve(__dirname, '../../bin/cc-manager.js');
+const BIN = path.resolve(__dirname, '../../bin/qapanda.js');
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 /**
- * Run cc-manager with arguments and return { code, stdout, stderr }.
+ * Run qapanda with arguments and return { code, stdout, stderr }.
  *
  * @param {string[]} args - CLI arguments (e.g., ['doctor'] or ['run', '--mode', 'dev', 'hello'])
  * @param {object} [options]
@@ -42,7 +42,7 @@ function runCcManager(args, options = {}) {
 }
 
 /**
- * Run cc-manager shell with piped commands.
+ * Run qapanda shell with piped commands.
  * Automatically appends /quit if not present.
  */
 function runShell(commands, options = {}) {
