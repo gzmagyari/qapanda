@@ -157,6 +157,23 @@ html, body {
   padding-bottom: 8px;
 }
 
+/* Welcome splash */
+.welcome-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  opacity: 0.6;
+}
+.welcome-icon { font-size: 64px; margin-bottom: 12px; }
+.welcome-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: var(--vscode-editor-foreground); }
+.welcome-subtitle { font-size: 13px; color: var(--vscode-descriptionForeground); margin-bottom: 28px; }
+.welcome-hints { text-align: left; }
+.welcome-hint { padding: 4px 0; font-size: 13px; color: var(--vscode-descriptionForeground); }
+.welcome-hint strong { color: var(--vscode-editor-foreground); }
+
 /* Section: one per actor */
 .section {
   margin-bottom: 16px;
@@ -259,15 +276,9 @@ html, body {
 
 .thinking-content {
   color: var(--vscode-descriptionForeground, #888);
-  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
-  letter-spacing: 2px;
-  font-size: 14px;
-  animation: thinking-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes thinking-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0;
 }
 
 /* Content inside entries */
@@ -1363,6 +1374,51 @@ html, body {
   opacity: 0.85;
 }
 
+/* ── Card styles (test results, bugs, tasks) ──────────── */
+.test-result-card {
+  border-left: 3px solid #4caf50;
+  padding: 8px 12px;
+  margin: 4px 0;
+  background: rgba(76, 175, 80, 0.06);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+.test-card-title { font-weight: 700; margin-bottom: 6px; }
+.test-step { padding: 2px 0; }
+.test-step.pass { color: #81c784; }
+.test-step.fail { color: #e57373; }
+.test-step.skip { color: #888; }
+.test-card-summary { margin-top: 8px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.test-card-summary .pass { color: #81c784; margin-right: 8px; }
+.test-card-summary .fail { color: #e57373; margin-right: 8px; }
+.test-card-summary .skip { color: #888; }
+
+.bug-card {
+  border-left: 3px solid #f44336;
+  padding: 8px 12px;
+  margin: 4px 0;
+  background: rgba(244, 67, 54, 0.06);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+.bug-card-header { font-weight: 700; color: #e57373; margin-bottom: 4px; }
+.bug-card-id { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.bug-card-body { margin-top: 4px; }
+.bug-card-severity { font-size: 11px; font-weight: 600; margin-top: 4px; }
+
+.task-card {
+  border-left: 3px solid #569cd6;
+  padding: 8px 12px;
+  margin: 4px 0;
+  background: rgba(86, 156, 214, 0.06);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+.task-card-header { font-weight: 700; margin-bottom: 4px; }
+.task-card-id { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.task-card-status { font-size: 11px; font-weight: 600; margin-top: 2px; }
+.task-card-body { margin-top: 4px; color: var(--vscode-descriptionForeground); }
+
 /* Reused for "Show Desktop" expanded popup */
 .inline-vnc-wrapper {
   margin: 8px 0;
@@ -1554,6 +1610,27 @@ html, body {
 .wizard-back:hover {
   background: var(--vscode-editorWidget-background, #252526);
 }
+/* ── Panda branding ───────────────────────────────── */
+.wizard-brand {
+  text-align: center;
+  margin-bottom: 12px;
+}
+.wizard-panda-icon {
+  font-size: 80px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+.wizard-panda-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  margin-bottom: 4px;
+  color: var(--vscode-editor-foreground, #e0e0e0);
+}
+.wizard-subtitle-action {
+  margin-top: 16px;
+}
+
 /* ── Onboarding wizard ─────────────────────────────── */
 .wizard-subtitle {
   color: var(--vscode-descriptionForeground, #999);
@@ -1672,12 +1749,19 @@ html, body {
   padding: 3px 10px;
   margin-left: 8px;
   font-size: 11px;
-  color: var(--vscode-descriptionForeground, #999);
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  font-weight: 600;
+  color: var(--vscode-editor-foreground, #ccc);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
   border-radius: 12px;
   cursor: pointer;
   white-space: nowrap;
+}
+.env-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
 }
 .mode-indicator:hover {
   border-color: var(--vscode-focusBorder, #007acc);

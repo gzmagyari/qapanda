@@ -1,7 +1,7 @@
 {
   "name": "cc-manager-vscode",
-  "displayName": "CC Manager",
-  "description": "Interactive manager that uses Codex to control Claude Code — as a VSCode tab",
+  "displayName": "QA Panda",
+  "description": "AI-powered QA agents for your codebase — test, fix, and ship with confidence",
   "version": "0.2.0",
   "publisher": "cc-manager",
   "engines": {
@@ -17,7 +17,7 @@
     "commands": [
       {
         "command": "ccManager.open",
-        "title": "CC Manager: Open",
+        "title": "QA Panda: Open",
         "icon": {
           "light": "./resources/icon.svg",
           "dark": "./resources/icon.svg"

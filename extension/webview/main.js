@@ -1236,6 +1236,29 @@
     wizardEl.classList.add('wizard-hidden');
     tabPanels.agent.classList.remove('wizard-hidden');
     updateModeIndicator();
+    // Show welcome splash if no real chat entries exist (just banners)
+    if (messagesEl && !messagesEl.querySelector('.section')) {
+      showWelcome();
+    }
+  }
+
+  function showWelcome() {
+    if (!messagesEl) return;
+    messagesEl.innerHTML = '<div class="welcome-splash">' +
+      '<div class="welcome-icon">\uD83D\uDC3C</div>' +
+      '<div class="welcome-title">QA Panda</div>' +
+      '<div class="welcome-subtitle">AI-powered QA for your codebase</div>' +
+      '<div class="welcome-hints">' +
+        '<div class="welcome-hint">\uD83D\uDCAC <strong>Send</strong> \u2014 talk to an agent directly</div>' +
+        '<div class="welcome-hint">\u25B6 <strong>Continue</strong> \u2014 nudge the agent forward</div>' +
+        '<div class="welcome-hint">\u26A1 <strong>Orchestrate</strong> \u2014 let the controller drive</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function clearWelcome() {
+    const splash = messagesEl && messagesEl.querySelector('.welcome-splash');
+    if (splash) splash.remove();
   }
 
   /**
@@ -1568,7 +1591,8 @@
       if (inputBox) inputBox.appendChild(indicator);
     }
     const envLabel = currentTestEnv ? ' (' + (currentTestEnv === 'browser' ? 'Browser' : 'Desktop') + ')' : '';
-    indicator.textContent = (mode.icon || '') + ' ' + mode.name + envLabel;
+    const envColor = currentTestEnv === 'computer' ? '#569cd6' : '#4caf50';
+    indicator.innerHTML = '<span class="env-dot" style="background:' + envColor + '"></span> ' + escapeHtml((mode.icon || '') + ' ' + mode.name + envLabel);
     indicator.style.display = '';
     indicator.onclick = () => {
       // Don't show confirm if wizard is already visible
@@ -2796,14 +2820,29 @@
   let isRunning = false;
 
   // ── Thinking indicator ────────────────────────────────────────────
-  const thinkingChars = '\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588\u2587\u2586\u2585\u2584\u2583\u2582';
+  const pandaMessages = [
+    'Munching bamboo',
+    'Climbing a tree',
+    'Rolling around',
+    'Inspecting the code',
+    'Checking for bugs',
+    'Sniffing out issues',
+    'Thinking deeply',
+    'Reviewing changes',
+    'Taking notes',
+    'Stretching paws',
+    'Sharpening claws',
+    'Scanning the forest',
+  ];
+  const spinnerChars = ['\u280B', '\u2819', '\u2839', '\u2838', '\u283C', '\u2834', '\u2826', '\u2827', '\u2807', '\u280F'];
   let thinkingEl = null;
   let thinkingInterval = null;
   let thinkingTick = 0;
+  let thinkingMsgIndex = 0;
+  let thinkingDots = 0;
 
   function showThinking() {
     hideThinking();
-    // Create a standalone thinking element at the bottom of messages
     thinkingEl = document.createElement('div');
     thinkingEl.className = 'thinking-standalone';
     const content = document.createElement('div');
@@ -2812,19 +2851,23 @@
     const target = splitVncLeft || splitChromeLeft || messagesEl;
     target.appendChild(thinkingEl);
     thinkingTick = 0;
+    thinkingMsgIndex = Math.floor(Math.random() * pandaMessages.length);
+    thinkingDots = 0;
     updateThinkingText(content);
-    thinkingInterval = setInterval(() => updateThinkingText(content), 120);
+    thinkingInterval = setInterval(() => updateThinkingText(content), 200);
     autoScroll();
   }
 
   function updateThinkingText(el) {
-    const len = thinkingChars.length;
-    let s = '';
-    for (let i = 0; i < 5; i++) {
-      s += thinkingChars[(thinkingTick + i) % len];
-    }
+    const spinner = spinnerChars[thinkingTick % spinnerChars.length];
+    const dots = '.'.repeat((thinkingDots % 3) + 1);
+    const msg = pandaMessages[thinkingMsgIndex % pandaMessages.length];
+    el.textContent = spinner + ' ' + msg + dots;
     thinkingTick++;
-    el.textContent = s;
+    thinkingDots++;
+    if (thinkingTick % 8 === 0) {
+      thinkingMsgIndex++;
+    }
   }
 
   function hideThinking() {
@@ -2861,6 +2904,19 @@
     if (l.includes('shell')) return 'role-shell';
     if (l.includes('error')) return 'role-error';
     return 'role-default';
+  }
+
+  function agentAvatar(label) {
+    if (!label) return '';
+    const l = label.toLowerCase();
+    if (l.includes('developer')) return '\uD83D\uDEE0\uFE0F';
+    if (l.includes('qa') && l.includes('browser')) return '\uD83D\uDD0D';
+    if (l.includes('qa')) return '\uD83D\uDDA5\uFE0F';
+    if (l.includes('setup')) return '\u2699\uFE0F';
+    if (l.includes('orchestrator')) return '\uD83C\uDFAF';
+    if (l === 'continue') return '\u25B6\uFE0F';
+    if (l.includes('delegation')) return '\uD83D\uDD00';
+    return '';
   }
 
   function shouldAutoScroll() {
@@ -3020,7 +3076,8 @@
 
     const header = document.createElement('div');
     header.className = `section-header ${roleClass(label)}`;
-    header.textContent = label;
+    const avatar = agentAvatar(label);
+    header.textContent = avatar ? `${avatar} ${label}` : label;
     section.appendChild(header);
 
     // During split-view, new sections go into the left column
@@ -3038,6 +3095,7 @@
   }
 
   function addEntry(role, html, extraClass) {
+    clearWelcome();
     hideThinking();
     ensureSection(role);
     if (hasContent) {
@@ -3173,6 +3231,54 @@
         }
       }
       maybeShowThinking();
+    },
+
+    testCard(msg) {
+      streamingEntry = null;
+      const d = msg.data || {};
+      let html = '<div class="test-result-card">';
+      html += '<div class="test-card-title">\uD83E\uDDEA ' + escapeHtml(d.title || 'Test Results') + '</div>';
+      if (d.steps && d.steps.length) {
+        for (const s of d.steps) {
+          const icon = s.status === 'pass' ? '\u2705' : s.status === 'fail' ? '\u274C' : '\u2B1C';
+          const cls = s.status === 'pass' ? 'pass' : s.status === 'fail' ? 'fail' : 'skip';
+          html += '<div class="test-step ' + cls + '">' + icon + ' ' + escapeHtml(s.name || '') + '</div>';
+        }
+      }
+      html += '<div class="test-card-summary">';
+      if (d.passed != null) html += '<span class="pass">' + d.passed + ' passed</span> ';
+      if (d.failed != null) html += '<span class="fail">' + d.failed + ' failed</span> ';
+      if (d.skipped != null) html += '<span class="skip">' + d.skipped + ' skipped</span>';
+      html += '</div></div>';
+      addEntry(msg.label || 'QA', html, 'test-card-entry');
+    },
+
+    bugCard(msg) {
+      streamingEntry = null;
+      const d = msg.data || {};
+      const severityColors = { critical: '#f44336', high: '#ff5722', medium: '#ff9800', low: '#ffc107' };
+      const color = severityColors[d.severity] || '#f44336';
+      let html = '<div class="bug-card" style="border-left-color:' + color + '">';
+      html += '<div class="bug-card-header">\uD83D\uDC1B ' + escapeHtml(d.title || 'Bug Report') + '</div>';
+      if (d.task_id) html += '<div class="bug-card-id">' + escapeHtml(d.task_id) + '</div>';
+      if (d.description) html += '<div class="bug-card-body">' + escapeHtml(d.description) + '</div>';
+      if (d.severity) html += '<div class="bug-card-severity" style="color:' + color + '">' + escapeHtml(d.severity.toUpperCase()) + '</div>';
+      html += '</div>';
+      addEntry(msg.label || 'QA', html, 'bug-card-entry');
+    },
+
+    taskCard(msg) {
+      streamingEntry = null;
+      const d = msg.data || {};
+      const statusColors = { todo: '#569cd6', in_progress: '#e5a04b', review: '#c586c0', testing: '#d9a0d4', done: '#4caf50', backlog: '#888' };
+      const color = statusColors[d.status] || '#569cd6';
+      let html = '<div class="task-card" style="border-left-color:' + color + '">';
+      html += '<div class="task-card-header">\uD83D\uDCCB ' + escapeHtml(d.title || 'Task') + '</div>';
+      if (d.task_id) html += '<div class="task-card-id">' + escapeHtml(d.task_id) + '</div>';
+      if (d.status) html += '<div class="task-card-status" style="color:' + color + '">' + escapeHtml(d.status.toUpperCase().replace(/_/g, ' ')) + '</div>';
+      if (d.description) html += '<div class="task-card-body">' + escapeHtml(d.description) + '</div>';
+      html += '</div>';
+      addEntry(msg.label || 'Worker', html, 'task-card-entry');
     },
 
     stop(msg) {

@@ -82,6 +82,9 @@ const TOOLS = [
   // Queries
   { name: 'get_test_history', description: 'Get all run history for a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
   { name: 'get_test_summary', description: 'Get overall test suite statistics', inputSchema: { type: 'object', properties: {} } },
+  // Display cards (rendered as styled cards in the chat UI)
+  { name: 'display_test_summary', description: 'Display a styled test summary card in the chat. Call this after completing a test run to show results visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Test name' }, passed: { type: 'number' }, failed: { type: 'number' }, skipped: { type: 'number' }, steps: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, status: { type: 'string', description: 'pass, fail, or skip' } } } } }, required: ['title'] } },
+  { name: 'display_bug_report', description: 'Display a styled bug report card in the chat. Call this when filing a bug to show it visually.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, task_id: { type: 'string' }, description: { type: 'string' }, severity: { type: 'string', description: 'critical, high, medium, or low' } }, required: ['title'] } },
 ];
 
 // ─── Tool handlers ───────────────────────────────────────────────
@@ -290,6 +293,12 @@ function handleToolCall(name, args) {
       const untested = data.tests.filter(t => t.status === 'untested').length;
       return JSON.stringify({ total, passing, failing, partial, untested }, null, 2);
     }
+
+    // Display cards — these are rendered visually in the chat UI via tool call interception
+    case 'display_test_summary':
+      return 'Displayed test summary card.';
+    case 'display_bug_report':
+      return 'Displayed bug report card.';
 
     default:
       throw new Error(`Unknown tool: ${name}`);

@@ -423,7 +423,7 @@ function getWebviewHtml(panel, extensionUri) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; frame-src http://localhost:*; img-src data:;">
   <link rel="stylesheet" href="${styleUri}">
-  <title>CC Manager</title>
+  <title>QA Panda</title>
 </head>
 <body>
   <div id="app">
@@ -453,7 +453,7 @@ function getWebviewHtml(panel, extensionUri) {
     <div id="init-wizard" class="wizard-hidden">
       <!-- Onboarding steps (shown on first run only) -->
       <div id="wizard-step-onboard" class="wizard-step wizard-hidden">
-        <h2>Welcome to CC Manager</h2>
+        <h2>&#x1F43C; QA Panda</h2>
         <p class="wizard-subtitle">Let's check your environment and preferences.</p>
         <div id="onboard-status" class="onboard-status"></div>
         <div id="onboard-cli-preference" class="wizard-cards wizard-hidden"></div>
@@ -474,7 +474,12 @@ function getWebviewHtml(panel, extensionUri) {
 
       <!-- Existing mode selection steps -->
       <div id="wizard-step-1" class="wizard-step">
-        <h2>What would you like to do?</h2>
+        <div class="wizard-brand">
+          <div class="wizard-panda-icon">&#x1F43C;</div>
+          <div class="wizard-panda-title">QA Panda</div>
+          <p class="wizard-subtitle">AI-powered QA for your codebase</p>
+        </div>
+        <p class="wizard-subtitle wizard-subtitle-action">What would you like to do?</p>
         <div id="wizard-rerun-setup" class="wizard-rerun-setup"></div>
         <div class="wizard-cards" id="wizard-mode-cards"></div>
       </div>
@@ -758,7 +763,7 @@ function activate(context) {
   startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
 
   const openCommand = vscode.commands.registerCommand('ccManager.open', () => {
-    const title = activePanels.size === 0 ? 'CC Manager' : `CC Manager (${activePanels.size + 1})`;
+    const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
     const panel = vscode.window.createWebviewPanel(
       'ccManagerPanel',
       title,
@@ -935,7 +940,7 @@ function activate(context) {
       context.subscriptions
     );
 
-    renderer.banner('cc-manager interactive session');
+    renderer.banner('\uD83D\uDC3C QA Panda interactive session');
     renderer.banner(`Repo root: ${repoRoot}`);
     renderer.banner('Type /help for commands, or type a message to start.');
   });

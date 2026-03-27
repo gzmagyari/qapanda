@@ -251,6 +251,22 @@ class WebviewRenderer {
       if (tc) {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
+        // Intercept display card tools — render as styled cards instead of generic tool calls
+        if (tc.name === 'mcp__cc_tests__display_test_summary') {
+          this._post({ type: 'testCard', label: this.workerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
+        if (tc.name === 'mcp__cc_tests__display_bug_report') {
+          this._post({ type: 'bugCard', label: this.workerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
+        if (tc.name === 'mcp__cc_tasks__display_task') {
+          this._post({ type: 'taskCard', label: this.workerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
         const desc = this._formatToolCall(tc.name, input);
         const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
         const isChromeDevtools = tc.name.startsWith('mcp__chrome-devtools__');

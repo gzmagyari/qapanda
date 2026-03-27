@@ -31,6 +31,7 @@ function buildTranscriptExcerpt(manifest, sinceLine) {
             if (e.type === 'shell') return `Shell: ${e.text}`;
             if (e.type === 'line') return `${e.label || ''}: ${e.text}`;
             if (e.type === 'chatScreenshot') return null; // skip images in controller context
+            if (e.type === 'testCard' || e.type === 'bugCard' || e.type === 'taskCard') return null; // skip card data
             return null;
           } catch { return null; }
         }).filter(Boolean);

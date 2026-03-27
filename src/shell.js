@@ -288,7 +288,7 @@ async function runInteractiveShell(options = {}) {
   }
 
   // ── Main loop ──────────────────────────────────────────────────
-  renderer.banner('cc-manager interactive session');
+  renderer.banner('\uD83D\uDC3C QA Panda interactive session');
   renderer.banner(`Repo root: ${cwd}`);
   renderer.banner('Type /help for commands, or type a message to start.');
 

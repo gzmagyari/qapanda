@@ -188,6 +188,21 @@ const TOOLS = [
       required: ['task_id', 'progress_id'],
     },
   },
+  // Display card (rendered as a styled card in the chat UI)
+  {
+    name: 'display_task',
+    description: 'Display a styled task card in the chat. Call this to show a task visually.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID' },
+        title: { type: 'string', description: 'Task title' },
+        status: { type: 'string', description: 'Task status (backlog, todo, in_progress, review, testing, done)' },
+        description: { type: 'string', description: 'Brief description' },
+      },
+      required: ['title'],
+    },
+  },
 ];
 
 // ─── Tool handlers ──────────────────────────────────────────────────────────
@@ -341,6 +356,9 @@ function handleToolCall(name, args) {
       saveData(data);
       return JSON.stringify({ deleted: args.progress_id });
     }
+
+    case 'display_task':
+      return 'Displayed task card.';
 
     default:
       throw new Error(`Unknown tool: ${name}`);
