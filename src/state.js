@@ -16,6 +16,23 @@ function defaultStateRoot(cwd) {
   return path.join(cwd, '.qpanda');
 }
 
+/** Ensure .qpanda/ is in the repo's .gitignore. Called once per run. */
+function ensureGitignore(repoRoot) {
+  if (!repoRoot) return;
+  try {
+    const gitignorePath = path.join(repoRoot, '.gitignore');
+    const fs = require('node:fs');
+    let content = '';
+    try { content = fs.readFileSync(gitignorePath, 'utf8'); } catch {}
+    if (!content.includes('.qpanda')) {
+      const line = content.endsWith('\n') || content === '' ? '.qpanda/\n' : '\n.qpanda/\n';
+      fs.appendFileSync(gitignorePath, line);
+    }
+  } catch {
+    // Non-critical — don't break the run
+  }
+}
+
 function runDirFromId(stateRoot, runId) {
   return path.join(stateRoot, 'runs', runId);
 }
@@ -157,6 +174,7 @@ async function prepareNewRun(initialMessage, options = {}) {
   };
 
   await ensureDir(files.requestsDir);
+  ensureGitignore(normalized.repoRoot);
   await writeControllerSchema(files.schema);
 
   const manifest = {

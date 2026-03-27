@@ -754,6 +754,20 @@ function getRepoRoot(extensionUri) {
 }
 
 function activate(context) {
+  // Ensure .qpanda/ is gitignored in the workspace
+  try {
+    const repoRoot = getRepoRoot(context.extensionUri);
+    if (repoRoot) {
+      const gitignorePath = path.join(repoRoot, '.gitignore');
+      let content = '';
+      try { content = fs.readFileSync(gitignorePath, 'utf8'); } catch {}
+      if (!content.includes('.qpanda')) {
+        const line = content.endsWith('\n') || content === '' ? '.qpanda/\n' : '\n.qpanda/\n';
+        fs.appendFileSync(gitignorePath, line);
+      }
+    }
+  } catch {}
+
   // Start HTTP MCP servers (singletons shared across all panels)
   const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tasks.json');
   startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
