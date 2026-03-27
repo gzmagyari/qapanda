@@ -168,12 +168,14 @@ html, body {
 }
 
 .entry::before {
-  content: '\25cf';
+  content: '';
   position: absolute;
-  left: 2px;
-  top: 2px;
-  font-size: 14px;
-  line-height: 1;
+  left: 3px;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 /* Role colors — timeline circles */
@@ -194,16 +196,17 @@ html, body {
 .pipe {
   padding-left: 25px;
   position: relative;
-  height: 8px;
+  height: 12px;
 }
 
 .pipe::before {
-  content: '\2502';
+  content: '';
   position: absolute;
   left: 6px;
   top: -4px;
-  font-size: 14px;
-  line-height: 1;
+  width: 2px;
+  height: calc(100% + 8px);
+  background: #333;
 }
 
 /* Role colors — pipe connectors */
