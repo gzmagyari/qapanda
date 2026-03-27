@@ -166,6 +166,25 @@ class WebviewRenderer {
         this.computerUseDetected();
       }
     }
+    // Detect display card tools from Codex-based agents (item.completed has the args)
+    if (raw && raw.type === 'item.completed' && raw.item && raw.item.type === 'mcp_tool_call') {
+      const server = raw.item.server || '';
+      const tool = raw.item.tool || '';
+      let input = raw.item.arguments || raw.item.args || {};
+      if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = {}; } }
+      if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_test_summary') {
+        this._post({ type: 'testCard', label: this.workerLabel, data: input });
+        return;
+      }
+      if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_bug_report') {
+        this._post({ type: 'bugCard', label: this.workerLabel, data: input });
+        return;
+      }
+      if ((server.includes('cc_tasks') || server.includes('cc-tasks')) && tool === 'display_task') {
+        this._post({ type: 'taskCard', label: this.workerLabel, data: input });
+        return;
+      }
+    }
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
     if (summary.kind === 'reasoning') {
@@ -205,6 +224,22 @@ class WebviewRenderer {
       if (tc) {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
+        // Card interception for Claude-as-controller
+        if (tc.name === 'mcp__cc_tests__display_test_summary') {
+          this._post({ type: 'testCard', label: this.controllerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
+        if (tc.name === 'mcp__cc_tests__display_bug_report') {
+          this._post({ type: 'bugCard', label: this.controllerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
+        if (tc.name === 'mcp__cc_tasks__display_task') {
+          this._post({ type: 'taskCard', label: this.controllerLabel, data: input });
+          this._toolCalls.delete(summary.index);
+          return;
+        }
         const desc = this._formatToolCall(tc.name, input);
         const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
         const isChromeDevtools = tc.name.startsWith('mcp__chrome-devtools__');

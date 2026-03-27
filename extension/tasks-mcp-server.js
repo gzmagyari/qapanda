@@ -197,7 +197,7 @@ const TOOLS = [
       properties: {
         task_id: { type: 'string', description: 'Task ID' },
         title: { type: 'string', description: 'Task title' },
-        status: { type: 'string', description: 'Task status (backlog, todo, in_progress, review, testing, done)' },
+        status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'], description: 'Task status' },
         description: { type: 'string', description: 'Brief description' },
       },
       required: ['title'],

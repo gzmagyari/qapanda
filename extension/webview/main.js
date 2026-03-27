@@ -2944,6 +2944,20 @@
 
   // ── Lightweight Markdown → HTML ─────────────────────────────────────
 
+  function _formatRelativeTime(iso) {
+    if (!iso) return '';
+    var diff = Date.now() - new Date(iso).getTime();
+    var mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    var days = Math.floor(hrs / 24);
+    if (days === 1) return 'yesterday';
+    if (days < 7) return days + 'd ago';
+    return new Date(iso).toLocaleDateString();
+  }
+
   function escapeHtml(str) {
     if (typeof str !== 'string') str = JSON.stringify(str) || '';
     return str
@@ -3237,11 +3251,14 @@
       streamingEntry = null;
       const d = msg.data || {};
       let html = '<div class="test-result-card">';
-      html += '<div class="test-card-title">\uD83E\uDDEA ' + escapeHtml(d.title || 'Test Results') + '</div>';
+      html += '<div class="test-card-title"><span class="test-card-panda">\uD83D\uDC3C</span> ' + escapeHtml(d.title || 'Test Results') + '</div>';
       if (d.steps && d.steps.length) {
         for (const s of d.steps) {
-          const icon = s.status === 'pass' ? '\u2705' : s.status === 'fail' ? '\u274C' : '\u2B1C';
-          const cls = s.status === 'pass' ? 'pass' : s.status === 'fail' ? 'fail' : 'skip';
+          const st = (s.status || '').toLowerCase();
+          const isPassed = st === 'pass' || st === 'passed' || st === 'passing';
+          const isFailed = st === 'fail' || st === 'failed' || st === 'failing';
+          const icon = isPassed ? '\u2705' : isFailed ? '\u274C' : '\u2B1C';
+          const cls = isPassed ? 'pass' : isFailed ? 'fail' : 'skip';
           html += '<div class="test-step ' + cls + '">' + icon + ' ' + escapeHtml(s.name || '') + '</div>';
         }
       }
@@ -3595,6 +3612,90 @@
 
     waitStatus() {
       // Handled via banners; no additional UI needed
+    },
+
+    runHistory(msg) {
+      clearWelcome();
+      var old = messagesEl.querySelector('.run-history');
+      if (old) old.remove();
+
+      var runs = msg.runs || [];
+      var pageSize = 5;
+      var shown = 0;
+
+      var container = document.createElement('div');
+      container.className = 'run-history';
+
+      // Header with close button
+      var header = document.createElement('div');
+      header.className = 'run-history-header';
+      var headerText = document.createElement('span');
+      headerText.textContent = 'Recent Sessions';
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'run-history-close';
+      closeBtn.textContent = '\u2715';
+      closeBtn.addEventListener('click', function() { container.remove(); });
+      header.appendChild(headerText);
+      header.appendChild(closeBtn);
+      container.appendChild(header);
+
+      if (runs.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'run-history-empty';
+        empty.textContent = 'No previous sessions found.';
+        container.appendChild(empty);
+      } else {
+        var list = document.createElement('div');
+        list.className = 'run-history-list';
+        container.appendChild(list);
+
+        var moreBtn = null;
+
+        function createCard(run) {
+          var card = document.createElement('div');
+          card.className = 'run-history-card';
+          var titleEl = document.createElement('div');
+          titleEl.className = 'run-history-title';
+          titleEl.textContent = run.title || run.runId;
+          var metaEl = document.createElement('div');
+          metaEl.className = 'run-history-meta';
+          metaEl.textContent = _formatRelativeTime(run.updatedAt) + (run.status !== 'idle' ? ' \u2022 ' + run.status : '');
+          card.appendChild(titleEl);
+          card.appendChild(metaEl);
+          card.setAttribute('data-run-id', run.runId);
+          card.addEventListener('click', function() {
+            var rid = this.getAttribute('data-run-id');
+            container.remove();
+            vscode.postMessage({ type: 'userInput', text: '/resume ' + rid });
+          });
+          return card;
+        }
+
+        function showMore() {
+          var end = Math.min(shown + pageSize, runs.length);
+          for (var i = shown; i < end; i++) {
+            list.appendChild(createCard(runs[i]));
+          }
+          shown = end;
+          if (shown < runs.length) {
+            if (!moreBtn) {
+              moreBtn = document.createElement('button');
+              moreBtn.className = 'run-history-more';
+              moreBtn.addEventListener('click', showMore);
+              container.appendChild(moreBtn);
+            }
+            moreBtn.textContent = 'Show more (' + (runs.length - shown) + ' remaining)';
+          } else if (moreBtn) {
+            moreBtn.remove();
+            moreBtn = null;
+          }
+        }
+
+        showMore();
+      }
+
+      messagesEl.appendChild(container);
+      autoScroll();
     },
 
     rawEvent() {

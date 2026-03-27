@@ -174,6 +174,77 @@ html, body {
 .welcome-hint { padding: 4px 0; font-size: 13px; color: var(--vscode-descriptionForeground); }
 .welcome-hint strong { color: var(--vscode-editor-foreground); }
 
+/* Run history picker */
+.run-history { padding: 8px 0; }
+.run-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+.run-history-close {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.run-history-close:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--vscode-editor-foreground);
+}
+.run-history-more {
+  width: 100%;
+  padding: 8px;
+  margin-top: 4px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.run-history-more:hover {
+  background: rgba(255,255,255,0.08);
+}
+.run-history-card {
+  padding: 10px 14px;
+  margin: 4px 0;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.run-history-card:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.15);
+}
+.run-history-title {
+  font-size: 13px;
+  color: var(--vscode-editor-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-history-meta {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+}
+.run-history-empty {
+  color: var(--vscode-descriptionForeground);
+  font-size: 13px;
+  padding: 12px 4px;
+}
+
 /* Section: one per actor */
 .section {
   margin-bottom: 16px;
@@ -1377,21 +1448,42 @@ html, body {
 /* ── Card styles (test results, bugs, tasks) ──────────── */
 .test-result-card {
   border-left: 3px solid #4caf50;
-  padding: 8px 12px;
+  padding: 12px 16px;
   margin: 4px 0;
-  background: rgba(76, 175, 80, 0.06);
-  border-radius: 0 6px 6px 0;
+  background: rgba(86, 156, 214, 0.08);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  position: relative;
+  overflow: hidden;
+}
+.test-result-card::after {
+  content: '\1F43C';
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  font-size: 28px;
+  opacity: 0.07;
+  pointer-events: none;
+}
+.test-card-panda { margin-right: 4px; }
+.test-card-title { font-weight: 700; margin-bottom: 10px; font-size: 14px; }
+.test-step {
+  padding: 4px 0;
   font-size: 13px;
 }
-.test-card-title { font-weight: 700; margin-bottom: 6px; }
-.test-step { padding: 2px 0; }
 .test-step.pass { color: #81c784; }
 .test-step.fail { color: #e57373; }
 .test-step.skip { color: #888; }
-.test-card-summary { margin-top: 8px; font-size: 12px; color: var(--vscode-descriptionForeground); }
-.test-card-summary .pass { color: #81c784; margin-right: 8px; }
-.test-card-summary .fail { color: #e57373; margin-right: 8px; }
-.test-card-summary .skip { color: #888; }
+.test-card-summary {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.test-card-summary .pass { color: #81c784; margin-right: 10px; font-weight: 600; }
+.test-card-summary .fail { color: #e57373; margin-right: 10px; font-weight: 600; }
+.test-card-summary .skip { color: #888; font-weight: 600; }
 
 .bug-card {
   border-left: 3px solid #f44336;

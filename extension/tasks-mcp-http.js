@@ -38,6 +38,7 @@ const TOOLS = [
   { name: 'delete_comment', description: 'Delete a comment from a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, comment_id: { type: 'number' } }, required: ['task_id', 'comment_id'] } },
   { name: 'edit_progress_update', description: 'Edit an existing progress update on a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, progress_id: { type: 'number' }, text: { type: 'string' } }, required: ['task_id', 'progress_id', 'text'] } },
   { name: 'delete_progress_update', description: 'Delete a progress update from a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, progress_id: { type: 'number' } }, required: ['task_id', 'progress_id'] } },
+  { name: 'display_task', description: 'Display a styled task card in the chat. Call this to show a task visually.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Task ID' }, title: { type: 'string', description: 'Task title' }, status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'], description: 'Task status' }, description: { type: 'string', description: 'Brief description' } }, required: ['title'] } },
 ];
 
 function handleToolCall(tasksFile, name, args) {
@@ -154,6 +155,7 @@ function handleToolCall(tasksFile, name, args) {
       saveData(tasksFile, data);
       return JSON.stringify({ deleted: args.progress_id });
     }
+    case 'display_task': return 'Displayed task card.';
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -841,7 +841,19 @@ class SessionManager {
 
     if (command === '/resume' || command === '/use') {
       if (!rest) {
-        this._renderer.banner('Usage: /resume <run-id>');
+        // No run ID — show history picker
+        try {
+          const manifests = await listRunManifests(this._stateRoot);
+          const runs = manifests.map(m => ({
+            runId: m.runId,
+            title: m.transcriptSummary || m.runId,
+            status: m.status || 'idle',
+            updatedAt: m.updatedAt || m.createdAt,
+          }));
+          this._postMessage({ type: 'runHistory', runs });
+        } catch {
+          this._renderer.banner('No previous sessions found.');
+        }
         return;
       }
       this._clearWaitTimer();

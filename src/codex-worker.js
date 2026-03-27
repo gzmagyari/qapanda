@@ -245,6 +245,26 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
         }
       }
 
+      // Intercept display card tools (render styled cards instead of generic text)
+      if (raw.type === 'item.completed' && raw.item && raw.item.type === 'mcp_tool_call') {
+        const server = raw.item.server || '';
+        const tool = raw.item.tool || '';
+        let cardInput = raw.item.arguments || raw.item.args || {};
+        if (typeof cardInput === 'string') { try { cardInput = JSON.parse(cardInput); } catch { cardInput = {}; } }
+        if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_test_summary') {
+          if (renderer._post) renderer._post({ type: 'testCard', label: workerLabel, data: cardInput });
+          return;
+        }
+        if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_bug_report') {
+          if (renderer._post) renderer._post({ type: 'bugCard', label: workerLabel, data: cardInput });
+          return;
+        }
+        if ((server.includes('cc_tasks') || server.includes('cc-tasks')) && tool === 'display_task') {
+          if (renderer._post) renderer._post({ type: 'taskCard', label: workerLabel, data: cardInput });
+          return;
+        }
+      }
+
       // Render using worker-specific summarizer (omits controller lifecycle noise)
       const summary = summarizeCodexWorkerEvent(raw);
       if (summary && !manifest.settings.quiet) {

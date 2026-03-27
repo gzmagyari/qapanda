@@ -76,6 +76,8 @@ const HTTP_TOOLS = [
   { name: 'create_bug_from_test', description: 'Create bug ticket from failing test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['test_id', 'title'] } },
   { name: 'get_test_history', description: 'Get test run history', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
   { name: 'get_test_summary', description: 'Get test suite statistics', inputSchema: { type: 'object', properties: {} } },
+  { name: 'display_test_summary', description: 'Display a styled test summary card in the chat. Call this after completing a test run to show results visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Test name' }, passed: { type: 'number', description: 'Number of passed steps' }, failed: { type: 'number', description: 'Number of failed steps' }, skipped: { type: 'number', description: 'Number of skipped steps' }, steps: { type: 'array', description: 'Individual step results', items: { type: 'object', properties: { name: { type: 'string', description: 'Step name' }, status: { type: 'string', enum: ['pass', 'fail', 'skip'], description: 'Step result: pass, fail, or skip' } }, required: ['name', 'status'] } } }, required: ['title'] } },
+  { name: 'display_bug_report', description: 'Display a styled bug report card in the chat. Call this when filing a bug to show it visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Bug title' }, task_id: { type: 'string', description: 'Task ID if already created' }, description: { type: 'string', description: 'Bug description' }, severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'], description: 'Bug severity' } }, required: ['title'] } },
 ];
 
 // Handler — mirrors tests-mcp-server.js handleToolCall
@@ -98,6 +100,8 @@ function handleToolCall(name, args) {
     case 'create_bug_from_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const td=loadTasksData(); const taskId='task-'+td.nextId++; const failingSteps=t.steps.filter(s=>s.status==='fail'); const desc=args.description||`Bug from test: ${t.title}\n\nFailing steps:\n${failingSteps.map(s=>`- ${s.description}: expected "${s.expectedResult}", got "${s.actualResult||'N/A'}"`).join('\n')}`; td.tasks.push({id:taskId,title:args.title,description:desc,detail_text:'',status:'todo',created_at:nowIso(),updated_at:nowIso(),comments:[],progress_updates:[],linkedTestIds:[t.id]}); saveTasksData(td); if(!t.linkedTaskIds)t.linkedTaskIds=[]; t.linkedTaskIds.push(taskId); t.updated_at=nowIso(); saveData(data); return JSON.stringify({task_id:taskId,test_id:t.id,title:args.title},null,2); }
     case 'get_test_history': { const t=data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t.runs||[],null,2) : JSON.stringify({error:'Not found'}); }
     case 'get_test_summary': { const total=data.tests.length; return JSON.stringify({total,passing:data.tests.filter(t=>t.status==='passing').length,failing:data.tests.filter(t=>t.status==='failing').length,partial:data.tests.filter(t=>t.status==='partial').length,untested:data.tests.filter(t=>t.status==='untested').length},null,2); }
+    case 'display_test_summary': return 'Displayed test summary card.';
+    case 'display_bug_report': return 'Displayed bug report card.';
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
