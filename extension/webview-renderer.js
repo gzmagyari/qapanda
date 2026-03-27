@@ -166,24 +166,16 @@ class WebviewRenderer {
         this.computerUseDetected();
       }
     }
-    // Detect display card tools from Codex-based agents (item.completed has the args)
+    // Detect display card tools from Codex-based controller (item.completed)
     if (raw && raw.type === 'item.completed' && raw.item && raw.item.type === 'mcp_tool_call') {
-      const server = raw.item.server || '';
-      const tool = raw.item.tool || '';
-      let input = raw.item.arguments || raw.item.args || {};
-      if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = {}; } }
-      if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_test_summary') {
-        this._post({ type: 'testCard', label: this.workerLabel, data: input });
-        return;
-      }
-      if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_bug_report') {
-        this._post({ type: 'bugCard', label: this.workerLabel, data: input });
-        return;
-      }
-      if ((server.includes('cc_tasks') || server.includes('cc-tasks')) && tool === 'display_task') {
-        this._post({ type: 'taskCard', label: this.workerLabel, data: input });
-        return;
-      }
+      const ctrlTool = raw.item.tool || '';
+      let ctrlInp = raw.item.arguments || raw.item.args || {};
+      if (typeof ctrlInp === 'string') { try { ctrlInp = JSON.parse(ctrlInp); } catch { ctrlInp = {}; } }
+      let ctrlOut = raw.item.output || raw.item.result || '';
+      if (typeof ctrlOut === 'string') { try { ctrlOut = JSON.parse(ctrlOut); } catch { ctrlOut = {}; } }
+      const { tryRenderMcpCard: tryCtrlEvtCard } = require('./src/mcp-cards');
+      const ctrlEvtSuppress = tryCtrlEvtCard(ctrlTool, ctrlInp, ctrlOut, this, this.controllerLabel);
+      if (ctrlEvtSuppress) return;
     }
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
@@ -224,19 +216,12 @@ class WebviewRenderer {
       if (tc) {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
-        // Card interception for Claude-as-controller
-        if (tc.name === 'mcp__cc_tests__display_test_summary') {
-          this._post({ type: 'testCard', label: this.controllerLabel, data: input });
-          this._toolCalls.delete(summary.index);
-          return;
-        }
-        if (tc.name === 'mcp__cc_tests__display_bug_report') {
-          this._post({ type: 'bugCard', label: this.controllerLabel, data: input });
-          this._toolCalls.delete(summary.index);
-          return;
-        }
-        if (tc.name === 'mcp__cc_tasks__display_task') {
-          this._post({ type: 'taskCard', label: this.controllerLabel, data: input });
+        // Extract tool name and try card rendering
+        const ctrlToolParts = tc.name.split('__');
+        const ctrlToolName = ctrlToolParts.length >= 3 ? ctrlToolParts[ctrlToolParts.length - 1] : tc.name;
+        const { tryRenderMcpCard: tryCtrlCard } = require('./src/mcp-cards');
+        const ctrlSuppress = tryCtrlCard(ctrlToolName, input, {}, this, this.controllerLabel);
+        if (ctrlSuppress) {
           this._toolCalls.delete(summary.index);
           return;
         }
@@ -286,19 +271,13 @@ class WebviewRenderer {
       if (tc) {
         let input = {};
         try { input = JSON.parse(tc.inputJson); } catch {}
-        // Intercept display card tools — render as styled cards instead of generic tool calls
-        if (tc.name === 'mcp__cc_tests__display_test_summary') {
-          this._post({ type: 'testCard', label: this.workerLabel, data: input });
-          this._toolCalls.delete(summary.index);
-          return;
-        }
-        if (tc.name === 'mcp__cc_tests__display_bug_report') {
-          this._post({ type: 'bugCard', label: this.workerLabel, data: input });
-          this._toolCalls.delete(summary.index);
-          return;
-        }
-        if (tc.name === 'mcp__cc_tasks__display_task') {
-          this._post({ type: 'taskCard', label: this.workerLabel, data: input });
+        // Extract tool name from Claude format: mcp__server__tool → tool
+        const toolParts = tc.name.split('__');
+        const toolName = toolParts.length >= 3 ? toolParts[toolParts.length - 1] : tc.name;
+        // Try rendering a visual card via shared CARD_MAP
+        const { tryRenderMcpCard } = require('./src/mcp-cards');
+        const suppress = tryRenderMcpCard(toolName, input, {}, this, this.workerLabel);
+        if (suppress) {
           this._toolCalls.delete(summary.index);
           return;
         }

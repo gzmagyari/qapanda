@@ -2944,6 +2944,51 @@
 
   // ── Lightweight Markdown → HTML ─────────────────────────────────────
 
+  function triggerConfetti() {
+    var canvas = document.createElement('canvas');
+    canvas.className = 'confetti-canvas';
+    document.body.appendChild(canvas);
+    var ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    var particles = [];
+    var colors = ['#4caf50', '#81c784', '#ffeb3b', '#ff9800', '#e91e63', '#2196f3', '#9c27b0'];
+    for (var i = 0; i < 60; i++) {
+      particles.push({
+        x: canvas.width / 2 + (Math.random() - 0.5) * 200,
+        y: canvas.height / 2,
+        vx: (Math.random() - 0.5) * 12,
+        vy: Math.random() * -14 - 4,
+        size: Math.random() * 6 + 3,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        rotation: Math.random() * 360,
+        rotSpeed: (Math.random() - 0.5) * 10,
+      });
+    }
+    var frame = 0;
+    function animate() {
+      if (frame > 80) { canvas.remove(); return; }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (var i = 0; i < particles.length; i++) {
+        var p = particles[i];
+        p.x += p.vx;
+        p.vy += 0.3;
+        p.y += p.vy;
+        p.rotation += p.rotSpeed;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rotation * Math.PI / 180);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.max(0, 1 - frame / 80);
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        ctx.restore();
+      }
+      frame++;
+      requestAnimationFrame(animate);
+    }
+    animate();
+  }
+
   function _formatRelativeTime(iso) {
     if (!iso) return '';
     var diff = Date.now() - new Date(iso).getTime();
@@ -3123,7 +3168,20 @@
     content.className = 'entry-content';
     content.innerHTML = html;
 
+    // Copy button (hidden, shows on hover)
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'entry-copy';
+    copyBtn.textContent = '\uD83D\uDCCB';
+    copyBtn.title = 'Copy';
+    copyBtn.addEventListener('click', function() {
+      navigator.clipboard.writeText(content.textContent).then(function() {
+        copyBtn.textContent = '\u2713';
+        setTimeout(function() { copyBtn.textContent = '\uD83D\uDCCB'; }, 1500);
+      });
+    });
+
     entry.appendChild(content);
+    entry.appendChild(copyBtn);
     currentSection.appendChild(entry);
     hasContent = true;
     autoScroll();
@@ -3250,8 +3308,31 @@
     testCard(msg) {
       streamingEntry = null;
       const d = msg.data || {};
+      var passed = d.passed || 0;
+      var failed = d.failed || 0;
+      var skipped = d.skipped || 0;
+      var total = passed + failed + skipped;
+
+      // Panda reaction based on results
+      var panda = (failed === 0 && total > 0) ? '\uD83D\uDC3C\u2728'
+        : (failed <= 1 && passed > 0) ? '\uD83D\uDC3C\uD83D\uDE0A'
+        : (passed > failed) ? '\uD83D\uDC3C\uD83E\uDD14'
+        : '\uD83D\uDC3C\uD83D\uDE1F';
+
+      // Encouraging message
+      var allPassMsgs = ['All tests passing! The panda is proud \uD83C\uDF8B', 'Perfect score! Time for bamboo \uD83C\uDF8D', 'Clean sweep! The panda approves \u2728', 'Flawless! Ship it! \uD83D\uDE80'];
+      var someFailMsgs = ['Almost there \u2014 just a few fixes to go!', 'Getting closer! Keep pushing \uD83D\uDCAA', 'Good progress \u2014 the panda believes in you!'];
+      var mostlyFailMsgs = ["Don't worry \u2014 every bug fixed is progress!", 'The panda is rooting for you \uD83D\uDC3C', "One step at a time \u2014 you've got this!"];
+      var encourageMsg = '';
+      if (total > 0) {
+        if (failed === 0) encourageMsg = allPassMsgs[Math.floor(Math.random() * allPassMsgs.length)];
+        else if (passed >= failed) encourageMsg = someFailMsgs[Math.floor(Math.random() * someFailMsgs.length)];
+        else encourageMsg = mostlyFailMsgs[Math.floor(Math.random() * mostlyFailMsgs.length)];
+      }
+
       let html = '<div class="test-result-card">';
-      html += '<div class="test-card-title"><span class="test-card-panda">\uD83D\uDC3C</span> ' + escapeHtml(d.title || 'Test Results') + '</div>';
+      html += '<div class="test-card-time">' + new Date().toLocaleTimeString() + '</div>';
+      html += '<div class="test-card-title">' + panda + ' ' + escapeHtml(d.title || 'Test Results') + '</div>';
       if (d.steps && d.steps.length) {
         for (const s of d.steps) {
           const st = (s.status || '').toLowerCase();
@@ -3266,8 +3347,13 @@
       if (d.passed != null) html += '<span class="pass">' + d.passed + ' passed</span> ';
       if (d.failed != null) html += '<span class="fail">' + d.failed + ' failed</span> ';
       if (d.skipped != null) html += '<span class="skip">' + d.skipped + ' skipped</span>';
-      html += '</div></div>';
+      html += '</div>';
+      if (encourageMsg) html += '<div class="test-card-encourage">' + encourageMsg + '</div>';
+      html += '</div>';
       addEntry(msg.label || 'QA', html, 'test-card-entry');
+
+      // Confetti on all-pass!
+      if (failed === 0 && passed > 0) triggerConfetti();
     },
 
     bugCard(msg) {
@@ -3296,6 +3382,79 @@
       if (d.description) html += '<div class="task-card-body">' + escapeHtml(d.description) + '</div>';
       html += '</div>';
       addEntry(msg.label || 'Worker', html, 'task-card-entry');
+    },
+
+    mcpCardStart(msg) {
+      // Pending card — pulsing, dimmed, with "..." text
+      var d = msg;
+      var html = '<div class="mcp-card mcp-card-pending" id="' + escapeHtml(d.id || '') + '">';
+      if (d.template === 'command') {
+        html += '<span class="mcp-card-icon">\u25B6\uFE0F</span> <code>' + escapeHtml(d.detail || '...') + '</code>';
+      } else {
+        html += '<span class="mcp-card-icon">' + (d.icon || '') + '</span> <span class="mcp-card-text">' + escapeHtml(d.text || '...') + (d.detail ? ' <span class="mcp-card-detail">' + escapeHtml(d.detail) + '</span>' : '') + '</span>';
+      }
+      html += '</div>';
+      addEntry(msg.label || 'Worker', html, 'mcp-card-entry');
+    },
+
+    mcpCardComplete(msg) {
+      // Find the pending card and update it
+      var pending = msg.id ? document.getElementById(msg.id) : null;
+      if (pending) {
+        if (msg.remove) {
+          // For cards that get replaced by a full card (testSuite, comment, etc.)
+          pending.closest('.entry').remove();
+          return;
+        }
+        pending.classList.remove('mcp-card-pending');
+        if (msg.template === 'command') {
+          pending.innerHTML = '<span class="mcp-card-icon">\u25B6\uFE0F</span> <code>' + escapeHtml(msg.detail || '') + '</code>';
+        } else {
+          pending.innerHTML = '<span class="mcp-card-icon">' + (msg.icon || '') + '</span> <span class="mcp-card-text"><strong>' + escapeHtml(msg.text || '') + '</strong>' + (msg.detail ? ' <span class="mcp-card-detail">' + escapeHtml(msg.detail) + '</span>' : '') + '</span>';
+        }
+        return;
+      }
+      // Fallback: no pending card found, create a completed card directly
+      var html = '<div class="mcp-card">';
+      if (msg.template === 'command') {
+        html += '<span class="mcp-card-icon">\u25B6\uFE0F</span> <code>' + escapeHtml(msg.detail || '') + '</code>';
+      } else {
+        html += '<span class="mcp-card-icon">' + (msg.icon || '') + '</span> <strong>' + escapeHtml(msg.text || '') + '</strong>';
+        if (msg.detail) html += ' <span class="mcp-card-detail">' + escapeHtml(msg.detail) + '</span>';
+      }
+      html += '</div>';
+      addEntry(msg.label || 'Worker', html, 'mcp-card-entry');
+    },
+
+    mcpCard(msg) {
+      var d = msg.data || {};
+      var c = msg.card;
+      var html = '';
+
+      // Generic action card (most tools use this)
+      if (c === 'action') {
+        html = '<div class="mcp-card"><span class="mcp-card-icon">' + (d.icon || '') + '</span> <strong>' + escapeHtml(d.text || '') + '</strong>';
+        if (d.detail) html += ' <span class="mcp-card-detail">' + escapeHtml(d.detail) + '</span>';
+        html += '</div>';
+      }
+      // Command execution
+      else if (c === 'command') {
+        html = '<div class="mcp-card command"><span class="mcp-card-icon">\u25B6\uFE0F</span> <code>' + escapeHtml(d.command || '') + '</code></div>';
+      }
+      // Test suite summary
+      else if (c === 'testSuite') {
+        html = '<div class="mcp-card test-suite"><span class="mcp-card-icon">\uD83D\uDC3C\uD83D\uDCCA</span> <strong>Test Suite:</strong> <span class="pass">' + (d.passing || 0) + ' passing</span> \u00B7 <span class="fail">' + (d.failing || 0) + ' failing</span> \u00B7 ' + (d.total || 0) + ' total</div>';
+      }
+      // Task status change
+      else if (c === 'taskStatus') {
+        html = '<div class="mcp-card task-status"><span class="mcp-card-icon">\uD83D\uDCCB</span> ' + escapeHtml(d.title || '') + ' \u2192 <span class="mcp-card-badge">' + escapeHtml(d.status || '') + '</span></div>';
+      }
+      // Task comment
+      else if (c === 'taskComment') {
+        html = '<div class="mcp-card task-comment"><span class="mcp-card-icon">\uD83D\uDCAC</span> <strong>' + escapeHtml(d.author || 'agent') + ':</strong> ' + escapeHtml(d.text || '') + '</div>';
+      }
+
+      if (html) addEntry(msg.label || 'QA', html, 'mcp-card-entry');
     },
 
     stop(msg) {

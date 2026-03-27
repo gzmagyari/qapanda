@@ -159,3 +159,22 @@
 - Chains exploits together: finds an info leak → uses it to enumerate users → attempts privilege escalation → tries to access admin
 - Thinks like a real attacker, not a checklist
 - "I chained 3 low-severity issues into a full admin account takeover"
+
+## Ghost Users — Permanent Synthetic Users in Production
+- AI-powered fake users that permanently live in your production app
+- They browse, buy, return items, contact support, update profiles — 24/7, forever
+- Indistinguishable from real users but constantly testing everything
+- When something breaks, they're the first to hit it — before any real user does
+- "Ghost user Sarah tried to renew her subscription at 4am and got a 500 error — real users would have seen this in 2 hours"
+
+## Supply Chain Testing
+- Tests your ENTIRE dependency chain — not your app, everything it depends on
+- Third-party APIs, CDNs, DNS providers, payment processors, email services, auth providers
+- "Stripe's webhook endpoint is 2x slower than last week — your checkout will time out if it gets worse"
+- Catches failures in things you don't control before they cascade into your app
+
+## Full Stack Trace Visualization
+- When a bug is found, agent traces data flow through your ENTIRE stack visually
+- From button click → API call → middleware → service → database → back
+- Interactive visual diagram showing exactly where and why it broke
+- Developers see the bug in 10 seconds instead of debugging for hours

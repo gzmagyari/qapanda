@@ -1484,6 +1484,92 @@ html, body {
 .test-card-summary .pass { color: #81c784; margin-right: 10px; font-weight: 600; }
 .test-card-summary .fail { color: #e57373; margin-right: 10px; font-weight: 600; }
 .test-card-summary .skip { color: #888; font-weight: 600; }
+.test-card-time {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #666);
+  position: absolute;
+  top: 8px;
+  right: 12px;
+}
+.test-card-encourage {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #999);
+  font-style: italic;
+}
+
+/* Mini MCP cards */
+.mcp-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(86, 156, 214, 0.06);
+  border-radius: 8px;
+  font-size: 13px;
+  border-left: 3px solid rgba(86, 156, 214, 0.3);
+}
+.mcp-card-icon { font-size: 15px; }
+.mcp-card-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.08);
+  color: var(--vscode-descriptionForeground);
+}
+.mcp-card-id {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+.mcp-card .pass { color: #81c784; }
+.mcp-card .fail { color: #e57373; }
+.mcp-card.bug-filed { border-left-color: #f44336; background: rgba(244, 67, 54, 0.06); }
+.mcp-card.test-run { border-left-color: #ff9800; background: rgba(255, 152, 0, 0.06); }
+.mcp-card.snapshot { border-left-color: #9c27b0; background: rgba(156, 39, 176, 0.06); }
+.mcp-card.task-comment { border-left-color: #607d8b; background: rgba(96, 125, 139, 0.06); }
+.mcp-card.command { border-left-color: #4caf50; background: rgba(76, 175, 80, 0.06); }
+.mcp-card.command code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; color: #81c784; }
+.mcp-card-detail { color: var(--vscode-descriptionForeground); font-weight: normal; }
+.mcp-card-pending {
+  opacity: 0.5;
+  animation: mcp-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mcp-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.6; }
+}
+.mcp-card-text { transition: opacity 0.2s; }
+
+/* Confetti canvas */
+.confetti-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Copy button on messages */
+.entry-copy {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.entry:hover .entry-copy { opacity: 0.5; }
+.entry-copy:hover { opacity: 1 !important; background: rgba(255,255,255,0.08); }
 
 .bug-card {
   border-left: 3px solid #f44336;

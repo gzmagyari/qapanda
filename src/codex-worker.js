@@ -234,34 +234,36 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
         setTimeout(() => { if (!localAbort.signal.aborted) localAbort.abort(); }, 500);
       }
 
-      // Detect computer-control / chrome-devtools MCP tool calls for inline widgets
-      if (raw.type === 'item.started' && raw.item && raw.item.type === 'mcp_tool_call') {
-        const server = raw.item.server || '';
-        if (server.includes('computer-control') || server.includes('computer_control')) {
-          renderer.computerUseDetected();
-        }
-        if (server.includes('chrome-devtools') || server.includes('chrome_devtools')) {
-          renderer.chromeDevtoolsDetected();
-        }
-      }
-
-      // Intercept display card tools (render styled cards instead of generic text)
-      if (raw.type === 'item.completed' && raw.item && raw.item.type === 'mcp_tool_call') {
+      // MCP tool calls — render animated cards (pending → completed)
+      if (raw.item && raw.item.type === 'mcp_tool_call' && renderer._post) {
         const server = raw.item.server || '';
         const tool = raw.item.tool || '';
-        let cardInput = raw.item.arguments || raw.item.args || {};
-        if (typeof cardInput === 'string') { try { cardInput = JSON.parse(cardInput); } catch { cardInput = {}; } }
-        if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_test_summary') {
-          if (renderer._post) renderer._post({ type: 'testCard', label: workerLabel, data: cardInput });
-          return;
+        const cardId = 'mcp-' + (raw.item.id || tool + '-' + Date.now());
+
+        // Detect computer-use/chrome-devtools for inline widgets (keep this)
+        if (raw.type === 'item.started') {
+          if (server.includes('computer-control') || server.includes('computer_control')) renderer.computerUseDetected();
+          if (server.includes('chrome-devtools') || server.includes('chrome_devtools')) renderer.chromeDevtoolsDetected();
         }
-        if ((server.includes('cc_tests') || server.includes('cc-tests')) && tool === 'display_bug_report') {
-          if (renderer._post) renderer._post({ type: 'bugCard', label: workerLabel, data: cardInput });
-          return;
+
+        // item.started → show pending card
+        if (raw.type === 'item.started') {
+          let inp = raw.item.arguments || raw.item.args || {};
+          if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
+          const { renderStartCard } = require('./mcp-cards');
+          const suppress = renderStartCard(tool, inp, renderer, workerLabel, cardId);
+          if (suppress) return;
         }
-        if ((server.includes('cc_tasks') || server.includes('cc-tasks')) && tool === 'display_task') {
-          if (renderer._post) renderer._post({ type: 'taskCard', label: workerLabel, data: cardInput });
-          return;
+
+        // item.completed → update to completed card
+        if (raw.type === 'item.completed') {
+          let inp = raw.item.arguments || raw.item.args || {};
+          if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
+          let out = raw.item.output || raw.item.result || '';
+          if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
+          const { renderCompleteCard } = require('./mcp-cards');
+          const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
+          if (suppress) return;
         }
       }
 
