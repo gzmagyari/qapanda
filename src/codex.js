@@ -2,9 +2,10 @@ const { readText, writeText, parsePossiblyFencedJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
-const { parseJsonLine } = require('./events');
+const { parseJsonLine, mapAppServerNotification, summarizeCodexEvent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
-const { validateControllerDecision } = require('./schema');
+const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
+const { getOrCreateConnection } = require('./codex-app-server');
 
 function buildCodexArgs(manifest, loop) {
   const args = ['exec'];
@@ -185,7 +186,141 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   };
 }
 
+/**
+ * Run a controller turn using the Codex app-server protocol.
+ * Instead of spawning a new CLI process per turn, this uses a persistent
+ * app-server connection with thread/turn APIs.
+ */
+async function runControllerTurnAppServer({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
+  const prompt = buildControllerPrompt(manifest, request);
+  await writeText(loop.controller.promptFile, `${prompt}\n`);
+
+  const conn = getOrCreateConnection(manifest);
+  await conn.ensureConnected();
+
+  // Set up turn completion tracking
+  let turnResolve;
+  let turnReject;
+  const turnCompletePromise = new Promise((res, rej) => { turnResolve = res; turnReject = rej; });
+  let agentMessageText = '';
+  let turnCompleted = false;
+
+  // Route notifications to renderer and event log
+  conn.onNotification((notification) => {
+    const mapped = mapAppServerNotification(notification);
+    if (!mapped) return;
+
+    // Emit raw event for event log
+    Promise.resolve(emitEvent({
+      ts: new Date().toISOString(),
+      source: 'controller-json',
+      requestId: request.id,
+      loopIndex: loop.index,
+      rawLine: JSON.stringify(notification),
+      parsed: mapped,
+    })).catch(() => {});
+
+    // Accumulate agent message text from deltas
+    if (mapped.type === 'item.agentMessage.delta') {
+      agentMessageText += mapped.text || '';
+    }
+
+    // Also capture final agent message from item.completed
+    if (mapped.type === 'item.completed' && mapped.item && mapped.item.type === 'agent_message') {
+      if (mapped.item.text) {
+        agentMessageText = mapped.item.text;
+      }
+    }
+
+    // Capture thread ID
+    if (mapped.type === 'thread.started' && mapped.thread_id) {
+      manifest.controller.appServerThreadId = mapped.thread_id;
+    }
+
+    // Resolve on turn completion
+    if (mapped.type === 'turn.completed') {
+      turnCompleted = true;
+      turnResolve(mapped);
+      return;
+    }
+
+    // Render controller events
+    const summary = summarizeCodexEvent(mapped);
+    if (summary && !manifest.settings.quiet) {
+      renderer.controllerEvent(mapped);
+    }
+  });
+
+  // Handle abort
+  let abortHandler;
+  if (abortSignal) {
+    abortHandler = () => {
+      conn.interruptTurn().catch(() => {});
+      if (!turnCompleted) {
+        turnReject(new Error('Codex controller process was interrupted.'));
+      }
+    };
+    if (abortSignal.aborted) {
+      throw new Error('Codex controller process was interrupted.');
+    }
+    abortSignal.addEventListener('abort', abortHandler, { once: true });
+  }
+
+  try {
+    // Start or resume thread
+    if (!manifest.controller.appServerThreadId) {
+      await conn.startThread({
+        cwd: manifest.repoRoot,
+        model: manifest.controller.model,
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+      });
+      manifest.controller.appServerThreadId = conn.threadId;
+    } else {
+      await conn.resumeThread(manifest.controller.appServerThreadId);
+    }
+
+    // Start the turn with the controller prompt
+    await conn.startTurn(prompt, controllerDecisionSchema);
+
+    // Wait for turn to complete
+    await turnCompletePromise;
+  } finally {
+    if (abortSignal && abortHandler) {
+      abortSignal.removeEventListener('abort', abortHandler);
+    }
+    conn.onNotification(null);
+  }
+
+  // Parse the decision from the accumulated agent message
+  const decision = validateControllerDecision(parsePossiblyFencedJson(agentMessageText));
+  loop.controller.decision = decision;
+  request.latestControllerDecision = decision;
+  await writeText(loop.controller.finalFile, agentMessageText);
+
+  // Track session for transcript
+  const sessionId = manifest.controller.appServerThreadId;
+  loop.controller.sessionId = sessionId;
+  manifest.controller.sessionId = sessionId;
+
+  // Track chat log position for incremental transcript on resume
+  try {
+    const chatLogFile = manifest.files && manifest.files.chatLog;
+    if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {
+      const lineCount = require('node:fs').readFileSync(chatLogFile, 'utf8').trim().split('\n').length;
+      manifest.controller.lastSeenChatLine = lineCount;
+    }
+  } catch {}
+
+  return {
+    prompt,
+    decision,
+    sessionId,
+  };
+}
+
 module.exports = {
   buildCodexArgs,
   runControllerTurn,
+  runControllerTurnAppServer,
 };

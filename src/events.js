@@ -270,9 +270,81 @@ function formatToolCall(name, input) {
   return `Using ${name}`;
 }
 
+/**
+ * Map a Codex app-server notification to the existing event format used by
+ * summarizeCodexEvent() and summarizeCodexWorkerEvent().
+ *
+ * App-server notifications arrive as { method, params } with camelCase item
+ * types. This normalizes them to the snake_case format the CLI outputs.
+ */
+function mapAppServerNotification(notification) {
+  if (!notification || !notification.method) return null;
+
+  const method = notification.method;
+  const params = notification.params || {};
+
+  if (method === 'thread/started') {
+    const threadId = params.thread && params.thread.id;
+    return { type: 'thread.started', thread_id: threadId };
+  }
+
+  if (method === 'turn/started') {
+    return { type: 'turn.started', turn: params.turn || {} };
+  }
+
+  if (method === 'turn/completed') {
+    return { type: 'turn.completed', turn: params.turn || {} };
+  }
+
+  if (method === 'item/agentMessage/delta') {
+    return { type: 'item.agentMessage.delta', text: params.text || '' };
+  }
+
+  if (method === 'item/started' || method === 'item/completed') {
+    const item = params.item ? { ...params.item } : {};
+    // Normalize camelCase item types to snake_case
+    item.type = _normalizeItemType(item.type);
+    const type = method === 'item/started' ? 'item.started' : 'item.completed';
+    return { type, item };
+  }
+
+  if (method === 'thread/status/changed') {
+    return { type: 'thread.status.changed', threadId: params.threadId, status: params.status };
+  }
+
+  if (method === 'thread/closed') {
+    return { type: 'thread.closed', threadId: params.threadId };
+  }
+
+  // Pass through anything else with the method as type
+  return { type: method.replace(/\//g, '.'), ...params };
+}
+
+const _itemTypeMap = {
+  commandExecution: 'command_execution',
+  mcpToolCall: 'mcp_tool_call',
+  agentMessage: 'agent_message',
+  fileChange: 'file_change',
+  webSearch: 'web_search',
+  userMessage: 'user_message',
+  contextCompaction: 'context_compaction',
+  enteredReviewMode: 'entered_review_mode',
+  exitedReviewMode: 'exited_review_mode',
+  dynamicToolCall: 'dynamic_tool_call',
+  collabToolCall: 'collab_tool_call',
+  imageView: 'image_view',
+  // Already snake_case types pass through unchanged
+};
+
+function _normalizeItemType(type) {
+  if (!type) return type;
+  return _itemTypeMap[type] || type;
+}
+
 module.exports = {
   extractTextFromClaudeContent,
   formatToolCall,
+  mapAppServerNotification,
   parseJsonLine,
   summarizeClaudeEvent,
   summarizeCodexEvent,

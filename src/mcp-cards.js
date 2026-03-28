@@ -146,7 +146,7 @@ function renderCompleteCard(tool, input, output, renderer, label, cardId) {
       renderer._post({ type: 'testCard', label, data: output._testCard });
     }
     // Still update the pending card to completed
-    renderer._post({ type: 'mcpCardComplete', id: cardId, icon: cfg.icon || '', text: cfg.text || tool, detail: '' });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: '' });
     return true;
   }
   if (cfg.template === 'displayTestSummary') {
@@ -163,17 +163,17 @@ function renderCompleteCard(tool, input, output, renderer, label, cardId) {
   }
   if (cfg.template === 'testSuite') {
     renderer._post({ type: 'mcpCard', label, card: 'testSuite', data: output || {} });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, remove: true });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
     return true;
   }
   if (cfg.template === 'comment') {
     renderer._post({ type: 'mcpCard', label, card: 'taskComment', data: { author: (output && output.author) || 'agent', text: (input && input.text) || '' } });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, remove: true });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
     return true;
   }
   if (cfg.template === 'statusChange') {
     renderer._post({ type: 'mcpCard', label, card: 'taskStatus', data: { title: (input && input.task_id) || '', status: (input && input.status) || '' } });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, remove: true });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
     return true;
   }
 
@@ -181,9 +181,9 @@ function renderCompleteCard(tool, input, output, renderer, label, cardId) {
   const fieldVal = cfg.field && input ? input[cfg.field] : null;
   const detail = fieldVal ? String(fieldVal) : '';
   if (cfg.template === 'command') {
-    renderer._post({ type: 'mcpCardComplete', id: cardId, icon: cfg.icon || '', text: cfg.text || tool, detail: (input && input[cfg.field]) || '', template: 'command' });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: (input && input[cfg.field]) || '', template: 'command' });
   } else {
-    renderer._post({ type: 'mcpCardComplete', id: cardId, icon: cfg.icon || '', text: cfg.text || tool, detail: detail });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: detail });
   }
   return true;
 }

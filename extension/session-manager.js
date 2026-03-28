@@ -79,6 +79,7 @@ class SessionManager {
     this._waitDelay = init.waitDelay || '';
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
+    this._codexMode = init.codexMode || 'cli';
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
     this._workerCli = init.workerCli || 'claude';
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
@@ -324,6 +325,23 @@ class SessionManager {
           this._activeManifest.controller.config = [];
           saveManifest(this._activeManifest).catch(() => {});
           this._renderer.banner(`Controller CLI switched to ${newCli}. Controller session and model/thinking reset.`);
+        }
+        this._syncConfig();
+      }
+    }
+    if (config.codexMode !== undefined) {
+      const newMode = config.codexMode || 'cli';
+      if (newMode !== this._codexMode) {
+        this._codexMode = newMode;
+        if (this._activeManifest) {
+          // If switching away from app-server, close the persistent connection
+          if (newMode !== 'app-server' && this._activeManifest.controller.codexMode === 'app-server') {
+            try { require('./src/codex-app-server').closeConnection(this._activeManifest.runId); } catch {}
+          }
+          this._activeManifest.controller.codexMode = newMode;
+          this._activeManifest.controller.appServerThreadId = null;
+          saveManifest(this._activeManifest).catch(() => {});
+          this._renderer.banner(`Codex mode switched to ${newMode}.`);
         }
         this._syncConfig();
       }
@@ -1123,6 +1141,7 @@ class SessionManager {
       opts.useSnapshot = true;
     }
     if (this._controllerCli) opts.controllerCli = this._controllerCli;
+    if (this._codexMode) opts.controllerCodexMode = this._codexMode;
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
     if (this._workerCli) opts.workerCli = this._workerCli;
     if (this._workerModel) opts.workerModel = this._workerModel;
@@ -1164,6 +1183,7 @@ class SessionManager {
       waitDelay: this._waitDelay || '',
       chatTarget: this._chatTarget || 'controller',
       controllerCli: this._controllerCli || 'codex',
+      codexMode: this._codexMode || 'cli',
       workerCli: this._workerCli || 'claude',
     };
   }

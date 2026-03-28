@@ -184,6 +184,11 @@ class WebviewRenderer {
       this.flushStream();
       return;
     }
+    // Skip agent-message events — these contain the raw JSON decision
+    // (action, controller_messages, etc.) which the orchestrator parses
+    // and renders as proper controller_messages. Showing it here would
+    // duplicate the output and expose the raw JSON/stop action.
+    if (summary.kind === 'agent-message') return;
     this.controller(summary.text);
   }
 

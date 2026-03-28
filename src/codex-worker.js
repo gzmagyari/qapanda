@@ -1,11 +1,12 @@
 const crypto = require('node:crypto');
 const { readText, writeText, writeJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
-const { parseJsonLine, summarizeCodexWorkerEvent } = require('./events');
+const { parseJsonLine, summarizeCodexWorkerEvent, mapAppServerNotification } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
+const { getOrCreateConnection } = require('./codex-app-server');
 
 const MCP_STARTUP_TIMEOUT_SEC = 30;
 
@@ -347,7 +348,211 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   return workerResult;
 }
 
+/**
+ * Run a Codex worker turn using the app-server protocol.
+ * Uses a persistent connection instead of spawning a new CLI process per turn.
+ */
+async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+  // Resolve agent config
+  const isCustomAgent = agentId && agentId !== 'default';
+  let agentConfig = null;
+  if (isCustomAgent) {
+    agentConfig = lookupAgentConfig(manifest.agents, agentId);
+  }
+
+  // Display label
+  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
+  const agentName = agentConfig && agentConfig.name;
+  const workerLabel = workerLabelFor(workerBin, agentName);
+  const prevWorkerLabel = renderer.workerLabel;
+  renderer.workerLabel = workerLabel;
+
+  // Build stdin text with system prompt prepended
+  const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
+  await writeText(workerRecord.promptFile, `${stdinText}\n`);
+
+  // Get or create a connection keyed by a worker-specific key
+  // Use a separate manifest-like object so worker connections don't collide with controller
+  const workerConnKey = `${manifest.runId}-worker-${agentId || 'default'}`;
+  // Merge agent-specific MCPs on top of base worker MCPs (same as CLI worker)
+  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  const agentMcps = (agentConfig && agentConfig.mcps) || {};
+  const workerMcpServers = { ...baseMcpServers, ...agentMcps };
+  const connManifest = {
+    runId: workerConnKey,
+    repoRoot: manifest.repoRoot,
+    chromeDebugPort: manifest.chromeDebugPort,
+    extensionDir: manifest.extensionDir,
+    controllerMcpServers: workerMcpServers,
+    controller: {
+      bin: workerBin,
+      model: (agentConfig && agentConfig.model) || manifest.worker.model,
+    },
+  };
+  const conn = getOrCreateConnection(connManifest);
+  await conn.ensureConnected();
+
+  // Track thread ID per agent session
+  if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
+  const sessionKey = agentId || 'default';
+  if (!manifest.worker.agentSessions[sessionKey]) {
+    manifest.worker.agentSessions[sessionKey] = {
+      sessionId: null,
+      appServerThreadId: null,
+      hasStarted: false,
+    };
+  }
+  const agentSession = manifest.worker.agentSessions[sessionKey];
+
+  // Turn completion tracking
+  let turnResolve;
+  let turnReject;
+  const turnCompletePromise = new Promise((res, rej) => { turnResolve = res; turnReject = rej; });
+  let agentMessageText = '';
+  let turnCompleted = false;
+
+  conn.onNotification((notification) => {
+    const mapped = mapAppServerNotification(notification);
+    if (!mapped) return;
+
+    Promise.resolve(emitEvent({
+      ts: new Date().toISOString(),
+      source: 'worker-json',
+      requestId: request.id,
+      loopIndex: loop.index,
+      rawLine: JSON.stringify(notification),
+      parsed: mapped,
+    })).catch(() => {});
+
+    // Accumulate agent message text
+    if (mapped.type === 'item.agentMessage.delta') {
+      agentMessageText += mapped.text || '';
+    }
+    if (mapped.type === 'item.completed' && mapped.item && mapped.item.type === 'agent_message') {
+      if (mapped.item.text) agentMessageText = mapped.item.text;
+    }
+
+    // Capture thread ID
+    if (mapped.type === 'thread.started' && mapped.thread_id) {
+      agentSession.appServerThreadId = mapped.thread_id;
+    }
+
+    // Turn completed
+    if (mapped.type === 'turn.completed') {
+      turnCompleted = true;
+      turnResolve(mapped);
+      return;
+    }
+
+    // MCP tool calls — render animated cards (same as CLI worker)
+    if (mapped.item && mapped.item.type === 'mcp_tool_call' && renderer._post) {
+      const server = mapped.item.server || '';
+      const tool = mapped.item.tool || '';
+      const itemId = mapped.item.id || '';
+      const cardId = itemId ? ('mcp-' + itemId) : ('mcp-' + tool + '-' + Date.now());
+
+      if (mapped.type === 'item.started') {
+        if (server.includes('computer-control') || server.includes('computer_control')) renderer.computerUseDetected();
+        if (server.includes('chrome-devtools') || server.includes('chrome_devtools')) renderer.chromeDevtoolsDetected();
+      }
+
+      if (mapped.type === 'item.started') {
+        let inp = mapped.item.arguments || mapped.item.args || {};
+        if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
+        const { renderStartCard } = require('./mcp-cards');
+        const suppress = renderStartCard(tool, inp, renderer, workerLabel, cardId);
+        if (suppress) return;
+      }
+
+      if (mapped.type === 'item.completed') {
+        let inp = mapped.item.arguments || mapped.item.args || {};
+        if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
+        let out = mapped.item.output || mapped.item.result || '';
+        if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
+        const { renderCompleteCard } = require('./mcp-cards');
+        const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
+        if (suppress) return;
+      }
+    }
+
+    // Render using worker-specific summarizer
+    const summary = summarizeCodexWorkerEvent(mapped);
+    if (summary && !manifest.settings.quiet) {
+      if (summary.kind === 'reasoning') {
+        renderer.streamMarkdown(workerLabel, summary.text);
+        renderer.flushStream();
+      } else {
+        renderer.claude(summary.text);
+      }
+    }
+  });
+
+  // Handle abort
+  let abortHandler;
+  if (abortSignal) {
+    abortHandler = () => {
+      conn.interruptTurn().catch(() => {});
+      if (!turnCompleted) {
+        turnReject(new Error('Codex worker process was interrupted.'));
+      }
+    };
+    if (abortSignal.aborted) {
+      renderer.workerLabel = prevWorkerLabel;
+      throw new Error('Codex worker process was interrupted.');
+    }
+    abortSignal.addEventListener('abort', abortHandler, { once: true });
+  }
+
+  try {
+    // Start or resume thread
+    if (!agentSession.appServerThreadId) {
+      await conn.startThread({
+        cwd: manifest.repoRoot,
+        model: (agentConfig && agentConfig.model) || manifest.worker.model,
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+      });
+      agentSession.appServerThreadId = conn.threadId;
+    } else {
+      await conn.resumeThread(agentSession.appServerThreadId);
+    }
+
+    await conn.startTurn(stdinText);
+    await turnCompletePromise;
+  } finally {
+    if (abortSignal && abortHandler) {
+      abortSignal.removeEventListener('abort', abortHandler);
+    }
+    conn.onNotification(null);
+    renderer.workerLabel = prevWorkerLabel;
+  }
+
+  // Update session
+  agentSession.sessionId = agentSession.appServerThreadId;
+  agentSession.hasStarted = true;
+
+  const finalResultText = agentMessageText.trim();
+  workerRecord.exitCode = 0;
+  workerRecord.resultText = finalResultText;
+  workerRecord.sessionId = agentSession.appServerThreadId;
+
+  const workerResult = {
+    prompt,
+    exitCode: 0,
+    signal: null,
+    sessionId: agentSession.appServerThreadId,
+    hadTextDelta: false,
+    resultText: finalResultText,
+    finalEvent: null,
+  };
+
+  request.latestWorkerResult = workerResult;
+  await writeJson(workerRecord.finalFile, workerResult);
+  return workerResult;
+}
+
 module.exports = {
   buildCodexWorkerArgs,
   runCodexWorkerTurn,
+  runCodexWorkerTurnAppServer,
 };

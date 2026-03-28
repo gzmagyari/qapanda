@@ -190,5 +190,6 @@ function spawnStreamingProcess({
 module.exports = {
   execForText,
   killProcessTree,
+  spawnArgs,
   spawnStreamingProcess,
 };

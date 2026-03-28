@@ -130,6 +130,8 @@ function normalizeRunOptions(options = {}) {
       config: Array.isArray(options.controllerConfig) ? options.controllerConfig : [],
       skipGitRepoCheck: Boolean(options.controllerSkipGitRepoCheck),
       extraInstructions: options.controllerExtraInstructions || null,
+      codexMode: options.controllerCodexMode || 'cli',  // 'cli' or 'app-server'
+      appServerThreadId: null,
     },
     worker: {
       cli: options.workerCli || 'claude',

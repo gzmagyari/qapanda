@@ -1,11 +1,12 @@
 const { appendJsonl, appendText, nowIso, readText, summarizeError, truncate } = require('./utils');
 const { attachWorkerRecord, createLoopRecord, createRequest, getActiveRequest, lookupAgentConfig, saveManifest } = require('./state');
-const { runControllerTurn: runCodexControllerTurn } = require('./codex');
+const { runControllerTurn: runCodexControllerTurn, runControllerTurnAppServer } = require('./codex');
 const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn, runWorkerTurnInteractive, closeInteractiveSessions } = require('./claude');
-const { runCodexWorkerTurn } = require('./codex-worker');
+const { runCodexWorkerTurn, runCodexWorkerTurnAppServer } = require('./codex-worker');
 const { controllerLabelFor, workerLabelFor } = require('./render');
 const { formatToolCall, summarizeCodexWorkerEvent } = require('./events');
+const { closeConnection } = require('./codex-app-server');
 
 /**
  * Create an activity log accumulator that captures tool calls and text
@@ -80,12 +81,17 @@ function createActivityLog() {
 
 function getControllerRunner(manifest) {
   if (manifest.controller.cli === 'claude') return runClaudeControllerTurn;
+  if (manifest.controller.codexMode === 'app-server') return runControllerTurnAppServer;
   return runCodexControllerTurn;
 }
 
 function getWorkerRunner(manifest, agentConfig) {
   const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
-  if (cli === 'codex' || cli === 'qa-remote-codex') return runCodexWorkerTurn;
+  if (cli === 'codex' || cli === 'qa-remote-codex') {
+    const codexMode = (agentConfig && agentConfig.codexMode) || manifest.controller.codexMode || 'cli';
+    if (codexMode === 'app-server') return runCodexWorkerTurnAppServer;
+    return runCodexWorkerTurn;
+  }
   // Interactive mode: use persistent PTY session instead of spawning per turn
   const runMode = (agentConfig && agentConfig.runMode) || manifest.worker.runMode || 'print';
   if (runMode === 'interactive' && (cli === 'claude' || !cli)) return runWorkerTurnInteractive;
@@ -402,6 +408,10 @@ async function runManagerLoop(manifest, renderer, options = {}) {
   } finally {
     process.off('SIGINT', onSigInt);
     process.off('SIGTERM', onSigTerm);
+    // Clean up app-server connections when the run ends
+    if (manifest.controller.codexMode === 'app-server') {
+      closeConnection(manifest.runId).catch(() => {});
+    }
   }
 }
 
@@ -722,6 +732,10 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
   } finally {
     process.off('SIGINT', onSigInt);
     process.off('SIGTERM', onSigTerm);
+    // Clean up app-server connections when the run ends
+    if (manifest.controller.codexMode === 'app-server') {
+      closeConnection(manifest.runId).catch(() => {});
+    }
   }
 }
 

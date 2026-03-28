@@ -430,6 +430,7 @@
     const existingModel = existing ? (existing.model || '') : '';
     const existingThinking = existing ? (existing.thinking || '') : '';
     const existingRunMode = existing ? (existing.runMode || '') : '';
+    const existingCodexMode = existing ? (existing.codexMode || '') : '';
 
     const cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
     const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
@@ -447,6 +448,10 @@
       '<div class="agent-form-row" id="agent-f-runmode-row"><label>Run Mode</label><select class="mcp-input" id="agent-f-runmode">' +
       '<option value=""' + (existingRunMode === '' ? ' selected' : '') + '>Default (stream-json)</option>' +
       '<option value="interactive"' + (existingRunMode === 'interactive' ? ' selected' : '') + '>Interactive (terminal parser, experimental)</option>' +
+      '</select></div>' +
+      '<div class="agent-form-row" id="agent-f-codexmode-row"><label>Codex Mode</label><select class="mcp-input" id="agent-f-codexmode">' +
+      '<option value=""' + (existingCodexMode === '' ? ' selected' : '') + '>Default (CLI per turn)</option>' +
+      '<option value="app-server"' + (existingCodexMode === 'app-server' ? ' selected' : '') + '>App Server (persistent)</option>' +
       '</select></div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
@@ -475,6 +480,11 @@
           const isClaude = !cli || cli === 'claude';
           runModeRow.style.display = isClaude ? '' : 'none';
         }
+        // Codex Mode only applies to codex CLI
+        const codexModeRow = document.getElementById('agent-f-codexmode-row');
+        if (codexModeRow) {
+          codexModeRow.style.display = useCodex ? '' : 'none';
+        }
       }
 
       // Populate on load with saved values
@@ -500,6 +510,7 @@
     const model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
     const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
     const runMode = (document.getElementById('agent-f-runmode') ? document.getElementById('agent-f-runmode').value : '') || null;
+    const codexMode = (document.getElementById('agent-f-codexmode') ? document.getElementById('agent-f-codexmode').value : '') || null;
     const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
     const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
     const errorEl = document.getElementById('agent-f-error');
@@ -523,6 +534,7 @@
     if (model) agentData.model = model;
     if (thinking) agentData.thinking = thinking;
     if (runMode) agentData.runMode = runMode;
+    if (codexMode) agentData.codexMode = codexMode;
 
     agentEditingForm = null;
 
@@ -2224,6 +2236,7 @@
   const cfgWorkerThinking = document.getElementById('cfg-worker-thinking');
   const cfgChatTarget = document.getElementById('cfg-chat-target');
   const cfgControllerCli = document.getElementById('cfg-controller-cli');
+  const cfgCodexMode = document.getElementById('cfg-codex-mode');
   const cfgWorkerCli = document.getElementById('cfg-worker-cli');
   const cfgWaitDelay = document.getElementById('cfg-wait-delay');
 
@@ -2297,6 +2310,7 @@
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
       chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
+      codexMode: cfgCodexMode ? cfgCodexMode.value : 'cli',
       workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'claude',
     };
   }
@@ -2305,6 +2319,7 @@
     if (!config) return;
     // Set CLI selectors first so updateControllerDropdowns repopulates with the right option sets
     if (config.controllerCli !== undefined && cfgControllerCli) cfgControllerCli.value = config.controllerCli;
+    if (config.codexMode !== undefined && cfgCodexMode) cfgCodexMode.value = config.codexMode;
     if (config.workerCli !== undefined && cfgWorkerCli) cfgWorkerCli.value = config.workerCli;
     // Repopulate model/thinking options based on selected CLIs, preserving current values where possible
     updateControllerDropdowns();
@@ -2372,6 +2387,11 @@
     repopulateSelect(cfgControllerThinking, controllerThinking, cfgControllerThinking ? cfgControllerThinking.value : '');
     repopulateSelect(cfgWorkerModel, workerModels, cfgWorkerModel ? cfgWorkerModel.value : '');
     repopulateSelect(cfgWorkerThinking, workerThinking, cfgWorkerThinking ? cfgWorkerThinking.value : '');
+
+    // Show/hide Codex Mode dropdown based on controller CLI
+    document.querySelectorAll('.cfg-codex-only').forEach(el => {
+      el.classList.toggle('tab-hidden', controllerCli !== 'codex');
+    });
   }
 
   function labelForTarget(target) {
@@ -2465,6 +2485,7 @@
     });
   }
   if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
+  if (cfgCodexMode) cfgCodexMode.addEventListener('change', onConfigChange);
   if (cfgWorkerCli) cfgWorkerCli.addEventListener('change', onConfigChange);
 
   let currentActor = null;
@@ -2575,7 +2596,9 @@
   }
 
   function shouldAutoScroll() {
-    const threshold = 60;
+    // Use a generous threshold — when large chunks arrive the container
+    // can grow significantly between scroll checks.
+    const threshold = 200;
     const scrollEl = splitVncLeft || splitChromeLeft;
     if (scrollEl) {
       return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < threshold;
@@ -2593,7 +2616,13 @@
 
   function autoScroll() {
     if (shouldAutoScroll()) {
-      requestAnimationFrame(scrollToBottom);
+      // First pass: scroll after current DOM update
+      requestAnimationFrame(() => {
+        scrollToBottom();
+        // Second pass: catch any layout shifts from large multi-line chunks
+        // that may not have fully rendered in the first frame
+        requestAnimationFrame(scrollToBottom);
+      });
     }
   }
 

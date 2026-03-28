@@ -510,6 +510,13 @@ function getWebviewHtml(panel, extensionUri) {
           <option value="claude">Claude</option>
         </select>
       </div>
+      <div class="config-group cfg-controller-only cfg-codex-only">
+        <label>Codex Mode</label>
+        <select id="cfg-codex-mode">
+          <option value="cli">CLI (per turn)</option>
+          <option value="app-server">App Server (persistent)</option>
+        </select>
+      </div>
       <div class="config-group cfg-controller-only">
         <label>Orchestrator</label>
         <select id="cfg-controller-model">
@@ -882,6 +889,8 @@ function activate(context) {
         stopInstance(name).catch(() => {});
         // Kill headless Chrome for this panel
         try { require('./chrome-manager').killChrome(session.panelId); } catch {}
+        // Clean up any app-server connections for this session
+        try { require('./src/codex-app-server').closeAllConnections(); } catch {}
         session.dispose();
       },
       null,
@@ -1057,6 +1066,7 @@ function activate(context) {
           const name = instanceName(repoRoot, session.panelId);
           stopInstance(name).catch(() => {});
           try { require('./chrome-manager').killChrome(session.panelId); } catch {}
+          try { require('./src/codex-app-server').closeAllConnections(); } catch {}
           session.dispose();
         },
         null,
@@ -1070,6 +1080,8 @@ function deactivate() {
   stopTasksMcpServer().catch(() => {});
   stopQaDesktopMcpServer().catch(() => {});
   try { require('./chrome-manager').killAll(); } catch {}
+  // Clean up any persistent Codex app-server connections
+  try { require('./src/codex-app-server').closeAllConnections(); } catch {}
 }
 
 module.exports = { activate, deactivate };
