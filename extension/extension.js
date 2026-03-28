@@ -436,7 +436,6 @@ function getWebviewHtml(panel, extensionUri) {
       <button class="tab-btn" data-tab="instances">Instances</button>
       <button class="tab-btn" data-tab="computer">Computer</button>
       <button class="tab-btn" data-tab="browser">Browser</button>
-      <button class="tab-btn" data-tab="modes">Modes</button>
     </div>
 
     <div id="confirm-modal" style="display:none;">
@@ -472,44 +471,6 @@ function getWebviewHtml(panel, extensionUri) {
         </div>
       </div>
 
-      <!-- Existing mode selection steps -->
-      <div id="wizard-step-1" class="wizard-step">
-        <div class="wizard-brand">
-          <div class="wizard-panda-icon">&#x1F43C;</div>
-          <div class="wizard-panda-title">QA Panda</div>
-          <p class="wizard-subtitle">AI-powered QA for your codebase</p>
-        </div>
-        <p class="wizard-subtitle wizard-subtitle-action">What would you like to do?</p>
-        <div id="wizard-rerun-setup" class="wizard-rerun-setup"></div>
-        <div class="wizard-cards" id="wizard-mode-cards"></div>
-      </div>
-      <div id="wizard-step-2" class="wizard-step wizard-hidden">
-        <h2>Where should testing happen?</h2>
-        <div class="wizard-cards">
-          <div class="wizard-card" data-env="browser">
-            <div class="wizard-card-icon">&#127760;</div>
-            <div class="wizard-card-title">Browser</div>
-            <div class="wizard-card-desc">Test web apps in a headless Chrome browser</div>
-          </div>
-          <div class="wizard-card" data-env="computer">
-            <div class="wizard-card-icon">&#128421;</div>
-            <div class="wizard-card-title">Desktop</div>
-            <div class="wizard-card-desc">Test desktop apps in a Linux container</div>
-          </div>
-        </div>
-        <div class="wizard-nav">
-          <button class="wizard-back" id="wizard-back-2">Back</button>
-          <button class="wizard-skip" id="wizard-skip-2">Skip</button>
-        </div>
-      </div>
-      <div id="wizard-step-3" class="wizard-step wizard-hidden">
-        <h2>Setup</h2>
-        <div id="wizard-setup-options" class="wizard-cards"></div>
-        <div class="wizard-nav">
-          <button class="wizard-back" id="wizard-back-3">Back</button>
-          <button class="wizard-skip" id="wizard-skip-3">Skip</button>
-        </div>
-      </div>
     </div>
 
     <div id="tab-agent">
@@ -702,33 +663,6 @@ function getWebviewHtml(panel, extensionUri) {
       <img id="browser-chrome-frame" class="browser-chrome-frame" tabindex="0" style="display:none;" alt="Chrome Screencast" />
     </div><!-- /tab-browser -->
 
-    <div id="tab-modes" class="tab-hidden">
-      <div class="mcp-container">
-        <div class="mcp-section">
-          <div class="mcp-section-header">
-            <h3>System Modes</h3>
-            <span class="mcp-section-path">Built-in modes shipped with the extension</span>
-          </div>
-          <div id="mode-list-system" class="mcp-list"></div>
-        </div>
-        <div class="mcp-section">
-          <div class="mcp-section-header">
-            <h3>Global Modes</h3>
-            <span class="mcp-section-path">~/.qpanda/modes.json</span>
-            <button class="mode-add-btn" data-scope="global">+ Add</button>
-          </div>
-          <div id="mode-list-global" class="mcp-list"></div>
-        </div>
-        <div class="mcp-section">
-          <div class="mcp-section-header">
-            <h3>Project Modes</h3>
-            <span class="mcp-section-path">.qpanda/modes.json</span>
-            <button class="mode-add-btn" data-scope="project">+ Add</button>
-          </div>
-          <div id="mode-list-project" class="mcp-list"></div>
-        </div>
-      </div>
-    </div><!-- /tab-modes -->
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

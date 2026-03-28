@@ -11,16 +11,14 @@ describe('Onboarding wizard', () => {
     wv.postMessage(sampleInitConfig({ onboarding: { complete: false, data: null } }));
     assert.ok(wv.isVisible('#init-wizard'), 'wizard container should be visible');
     assert.ok(wv.isVisible('#wizard-step-onboard'), 'onboarding step should be visible');
-    assert.ok(!wv.isVisible('#wizard-step-1'), 'mode selection should be hidden');
   });
 
-  it('skips onboarding when complete', () => {
+  it('skips to chat when onboarding complete', () => {
     wv = createWebviewDom();
     wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
-    // Should show mode selection (step 1), not onboarding
-    assert.ok(wv.isVisible('#init-wizard'), 'wizard should be visible');
-    assert.ok(!wv.isVisible('#wizard-step-onboard'), 'onboarding should be hidden');
-    assert.ok(wv.isVisible('#wizard-step-1'), 'mode selection should be visible');
+    // Should go straight to chat, not show wizard
+    assert.ok(!wv.isVisible('#init-wizard'), 'wizard should be hidden');
+    assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible');
   });
 
   it('renders detection results', () => {
@@ -94,7 +92,7 @@ describe('Onboarding wizard', () => {
     assert.ok(nextBtn.disabled, 'continue button should be disabled when no CLIs');
   });
 
-  it('Skip Setup posts onboardingSave and shows mode selection', () => {
+  it('Skip Setup posts onboardingSave and goes to chat', () => {
     wv = createWebviewDom();
     wv.postMessage(sampleInitConfig({ onboarding: { complete: false, data: null } }));
     wv.postMessage({
@@ -107,10 +105,12 @@ describe('Onboarding wizard', () => {
     wv.click('#onboard-skip');
     const saveMsg = wv.messagesOfType('onboardingSave');
     assert.ok(saveMsg.length > 0, 'should post onboardingSave');
-    assert.ok(wv.isVisible('#wizard-step-1'), 'mode selection should be visible after skip');
+    // Should go to chat, not wizard step 1
+    assert.ok(!wv.isVisible('#init-wizard'), 'wizard should be hidden after skip');
+    assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible after skip');
   });
 
-  it('Continue shows summary, Get Started shows mode selection', () => {
+  it('Continue shows summary, Get Started goes to chat', () => {
     wv = createWebviewDom();
     wv.postMessage(sampleInitConfig({ onboarding: { complete: false, data: null } }));
     wv.postMessage({
@@ -125,7 +125,9 @@ describe('Onboarding wizard', () => {
     assert.ok(!wv.isVisible('#wizard-step-onboard'), 'onboarding step should be hidden');
 
     wv.click('#onboard-complete');
-    assert.ok(wv.isVisible('#wizard-step-1'), 'mode selection should be visible');
+    // Should go to chat, not wizard step 1
+    assert.ok(!wv.isVisible('#init-wizard'), 'wizard should be hidden after complete');
+    assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible after complete');
     const saveMsg = wv.messagesOfType('onboardingSave');
     assert.ok(saveMsg.length > 0, 'should post onboardingSave');
   });

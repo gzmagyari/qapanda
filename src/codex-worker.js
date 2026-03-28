@@ -238,7 +238,9 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       if (raw.item && raw.item.type === 'mcp_tool_call' && renderer._post) {
         const server = raw.item.server || '';
         const tool = raw.item.tool || '';
-        const cardId = 'mcp-' + (raw.item.id || tool + '-' + Date.now());
+        // Use item.id for matching started↔completed; track pending IDs for fallback
+        const itemId = raw.item.id || '';
+        const cardId = itemId ? ('mcp-' + itemId) : ('mcp-' + tool + '-' + Date.now());
 
         // Detect computer-use/chrome-devtools for inline widgets (keep this)
         if (raw.type === 'item.started') {

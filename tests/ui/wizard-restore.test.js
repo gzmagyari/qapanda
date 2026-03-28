@@ -6,28 +6,24 @@ let wv;
 afterEach(() => { if (wv) wv.cleanup(); });
 
 describe('Wizard restore behavior', () => {
-  it('shows wizard when no currentMode', () => {
+  it('goes to chat when onboarding complete', () => {
     wv = createWebviewDom();
-    wv.postMessage(sampleInitConfig({ runId: null }));
-    assert.ok(wv.isVisible('#init-wizard'), 'wizard should be visible');
-  });
-
-  it('hides wizard when currentMode + runId present', () => {
-    wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
-    wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
+    wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
     assert.ok(!wv.isVisible('#init-wizard'), 'wizard should be hidden');
     assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible');
   });
 
-  it('shows wizard when currentMode set but no runId (stale state)', () => {
-    wv = createWebviewDom({ savedState: { currentMode: 'dev' } });
-    wv.postMessage(sampleInitConfig({ runId: null }));
-    assert.ok(wv.isVisible('#init-wizard'), 'wizard should show for stale state');
+  it('shows onboarding when not complete', () => {
+    wv = createWebviewDom();
+    wv.postMessage(sampleInitConfig({ onboarding: { complete: false, data: null } }));
+    assert.ok(wv.isVisible('#init-wizard'), 'wizard should be visible');
+    assert.ok(wv.isVisible('#wizard-step-onboard'), 'onboarding step should show');
   });
 
-  it('shows wizard when currentMode references nonexistent mode', () => {
-    wv = createWebviewDom({ savedState: { currentMode: 'deleted-mode', runId: 'run-1' } });
-    wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
-    assert.ok(wv.isVisible('#init-wizard'), 'wizard should show for invalid mode');
+  it('restores saved chatTarget from state', () => {
+    wv = createWebviewDom({ savedState: { config: { chatTarget: 'agent-dev' } } });
+    wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
+    // Should not override the saved target with QA-Browser since 'agent-dev' is already an agent target
+    assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible');
   });
 });

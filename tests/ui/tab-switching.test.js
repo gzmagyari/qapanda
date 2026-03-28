@@ -5,9 +5,9 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 let wv;
 
 beforeEach(() => {
-  wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'test-run-1' } });
-  // Send initConfig with an active mode + runId so wizard is hidden and chat is shown
-  wv.postMessage(sampleInitConfig({ runId: 'test-run-1' }));
+  wv = createWebviewDom();
+  // Send initConfig with onboarding complete so wizard is hidden and chat is shown
+  wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
 });
 afterEach(() => { wv.cleanup(); });
 
@@ -23,7 +23,6 @@ describe('Tab switching', () => {
     assert.ok(!wv.isVisible('#tab-instances'), 'Instances should be hidden');
     assert.ok(!wv.isVisible('#tab-computer'), 'Computer should be hidden');
     assert.ok(!wv.isVisible('#tab-browser'), 'Browser should be hidden');
-    assert.ok(!wv.isVisible('#tab-modes'), 'Modes should be hidden');
   });
 
   it('clicking Tasks tab shows Tasks, hides Agent', () => {
@@ -57,11 +56,6 @@ describe('Tab switching', () => {
   it('clicking Browser tab shows Browser', () => {
     wv.click('[data-tab="browser"]');
     assert.ok(wv.isVisible('#tab-browser'));
-  });
-
-  it('clicking Modes tab shows Modes', () => {
-    wv.click('[data-tab="modes"]');
-    assert.ok(wv.isVisible('#tab-modes'));
   });
 
   it('active tab button gets .active class', () => {

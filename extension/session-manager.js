@@ -91,8 +91,6 @@ class SessionManager {
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
-    this._currentMode = null;
-    this._testEnv = null;
     this._loopMode = false;
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
@@ -306,22 +304,6 @@ class SessionManager {
     if (config.workerThinking !== undefined) this._workerThinking = config.workerThinking || null;
     if (config.chatTarget !== undefined) {
       this._chatTarget = config.chatTarget || 'controller';
-    }
-    if (config.mode !== undefined) {
-      this._currentMode = config.mode || null;
-      this._testEnv = config.testEnv || null;
-      // When a mode is selected, override chat target accordingly
-      if (this._currentMode) {
-        const modes = this._enabledModes();
-        const mode = modes[this._currentMode];
-        if (mode) {
-          if (!mode.useController) {
-            this._chatTarget = 'agent-' + (mode.defaultAgent || 'QA-Browser');
-          } else {
-            this._chatTarget = 'controller';
-          }
-        }
-      }
     }
     if (config.controllerCli !== undefined) {
       const newCli = config.controllerCli || 'codex';
@@ -1150,34 +1132,7 @@ class SessionManager {
     const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     if (Object.keys(controllerMcp).length > 0) opts.controllerMcpServers = controllerMcp;
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
-    let agents = this._enabledAgents();
-    // If current mode restricts available agents, filter to only those
-    if (this._currentMode) {
-      const modes = this._enabledModes();
-      const mode = modes[this._currentMode];
-      if (mode) {
-        // Resolve environment-aware fields (can be string/array or { browser: X, computer: Y })
-        const env = this._testEnv || 'browser';
-        const resolveByEnv = (val) => {
-          if (val && typeof val === 'object' && !Array.isArray(val)) {
-            return val[env] || val['browser'] || Object.values(val)[0];
-          }
-          return val;
-        };
-        const prompt = resolveByEnv(mode.controllerPrompt);
-        if (prompt) {
-          opts.controllerSystemPrompt = prompt;
-        }
-        const agentList = resolveByEnv(mode.availableAgents);
-        if (agentList && Array.isArray(agentList)) {
-          const filtered = {};
-          for (const agentId of agentList) {
-            if (agents[agentId]) filtered[agentId] = agents[agentId];
-          }
-          agents = filtered;
-        }
-      }
-    }
+    const agents = this._enabledAgents();
     if (Object.keys(agents).length > 0) opts.agents = agents;
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
@@ -1210,8 +1165,6 @@ class SessionManager {
       chatTarget: this._chatTarget || 'controller',
       controllerCli: this._controllerCli || 'codex',
       workerCli: this._workerCli || 'claude',
-      mode: this._currentMode || null,
-      testEnv: this._testEnv || null,
     };
   }
 
@@ -1244,34 +1197,8 @@ class SessionManager {
     const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
     this._activeManifest.workerMcpServers = Object.keys(workerMcp).length > 0 ? workerMcp : null;
-    // Sync enabled agents (filtered by mode if applicable)
-    let agents = this._enabledAgents();
-    if (this._currentMode) {
-      const modes = this._enabledModes();
-      const mode = modes[this._currentMode];
-      if (mode) {
-        const env = this._testEnv || 'browser';
-        const resolveByEnv = (val) => {
-          if (val && typeof val === 'object' && !Array.isArray(val)) {
-            return val[env] || val['browser'] || Object.values(val)[0];
-          }
-          return val;
-        };
-        const prompt = resolveByEnv(mode.controllerPrompt);
-        if (prompt) {
-          this._activeManifest.controllerSystemPrompt = prompt;
-        }
-        const agentList = resolveByEnv(mode.availableAgents);
-        if (agentList && Array.isArray(agentList)) {
-          const filtered = {};
-          for (const agentId of agentList) {
-            if (agents[agentId]) filtered[agentId] = agents[agentId];
-          }
-          agents = filtered;
-        }
-      }
-    }
-    this._activeManifest.agents = agents;
+    // Sync enabled agents
+    this._activeManifest.agents = this._enabledAgents();
     if (!this._activeManifest.worker.agentSessions) this._activeManifest.worker.agentSessions = {};
   }
 
