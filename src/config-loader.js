@@ -154,7 +154,7 @@ function isOnboardingComplete() {
 function getCliDefaults() {
   const data = loadOnboarding();
   if (data && data.defaults) return data.defaults;
-  return { controllerCli: 'codex', workerCli: 'claude' };
+  return { controllerCli: 'codex', workerCli: 'codex' };
 }
 
 // ── Env-aware field resolution ───────────────────────────────────

@@ -196,6 +196,9 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   await writeText(loop.controller.promptFile, `${prompt}\n`);
 
   const conn = getOrCreateConnection(manifest);
+  if (!conn.isConnected) {
+    renderer.controller('Waiting for Codex app-server to initialize\u2026');
+  }
   await conn.ensureConnected();
 
   // Set up turn completion tracking

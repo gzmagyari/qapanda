@@ -130,12 +130,12 @@ function normalizeRunOptions(options = {}) {
       config: Array.isArray(options.controllerConfig) ? options.controllerConfig : [],
       skipGitRepoCheck: Boolean(options.controllerSkipGitRepoCheck),
       extraInstructions: options.controllerExtraInstructions || null,
-      codexMode: options.controllerCodexMode || 'cli',  // 'cli' or 'app-server'
+      codexMode: options.controllerCodexMode || 'app-server',  // 'cli' or 'app-server'
       appServerThreadId: null,
     },
     worker: {
-      cli: options.workerCli || 'claude',
-      bin: options.workerCli || options.claudeBin || 'claude',
+      cli: options.workerCli || 'codex',
+      bin: options.workerCli || options.codexBin || 'codex',
       model: options.workerModel || null,
       sessionId: options.workerSessionId || randomId(),
       allowedTools: options.workerAllowedTools || 'Bash,Read,Edit',

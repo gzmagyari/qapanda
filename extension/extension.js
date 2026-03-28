@@ -513,8 +513,8 @@ function getWebviewHtml(panel, extensionUri) {
       <div class="config-group cfg-controller-only cfg-codex-only">
         <label>Codex Mode</label>
         <select id="cfg-codex-mode">
-          <option value="cli">CLI (per turn)</option>
           <option value="app-server">App Server (persistent)</option>
+          <option value="cli">CLI (per turn)</option>
         </select>
       </div>
       <div class="config-group cfg-controller-only">
@@ -529,8 +529,8 @@ function getWebviewHtml(panel, extensionUri) {
       <div class="config-group cfg-worker-only">
         <label>Default Worker CLI</label>
         <select id="cfg-worker-cli">
-          <option value="claude">Claude</option>
           <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
         </select>
       </div>
       <div class="config-group cfg-worker-only">
@@ -767,6 +767,8 @@ function activate(context) {
     const extensionPath1 = context.extensionUri.fsPath;
     session.setMcpServers(loadMergedMcpServers(repoRoot));
     session.setAgents(loadMergedAgents(repoRoot, extensionPath1));
+    // Pre-start Chrome and Codex app-server in background to speed up first message
+    session.prestart();
 
     panel.webview.onDidReceiveMessage(
       async (msg) => {
@@ -935,6 +937,8 @@ function activate(context) {
       const extensionPath2 = context.extensionUri.fsPath;
       session.setMcpServers(loadMergedMcpServers(repoRoot));
       session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
+      // Pre-start Chrome and Codex app-server in background to speed up first message
+      session.prestart();
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {

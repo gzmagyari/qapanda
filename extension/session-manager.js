@@ -79,9 +79,9 @@ class SessionManager {
     this._waitDelay = init.waitDelay || '';
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
-    this._codexMode = init.codexMode || 'cli';
+    this._codexMode = init.codexMode || 'app-server';
     this._renderer.controllerLabel = controllerLabelFor(this._controllerCli);
-    this._workerCli = init.workerCli || 'claude';
+    this._workerCli = init.workerCli || 'codex';
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
     // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
@@ -810,11 +810,18 @@ class SessionManager {
 
     if (command === '/clear') {
       this._clearWaitTimer();
+      // Close the old app-server connection (if any) and re-prestart for the next run
+      if (this._activeManifest && this._activeManifest.controller.codexMode === 'app-server') {
+        const { closeConnection } = require('./src/codex-app-server');
+        closeConnection(this._activeManifest.runId).catch(() => {});
+      }
       this._activeManifest = null;
       this._postMessage({ type: 'clear' });
       this._postMessage({ type: 'clearRunId' });
       this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Session cleared.');
+      // Re-prestart app-server so next message is fast
+      this.prestart();
       return;
     }
 
@@ -1183,9 +1190,77 @@ class SessionManager {
       waitDelay: this._waitDelay || '',
       chatTarget: this._chatTarget || 'controller',
       controllerCli: this._controllerCli || 'codex',
-      codexMode: this._codexMode || 'cli',
-      workerCli: this._workerCli || 'claude',
+      codexMode: this._codexMode || 'app-server',
+      workerCli: this._workerCli || 'codex',
     };
+  }
+
+  /**
+   * Pre-start Chrome and Codex app-server in the background.
+   * Called right after panel creation to speed up the first message.
+   */
+  prestart() {
+    // Pre-start headless Chrome if any enabled agent needs chrome-devtools
+    const agents = this._enabledAgents();
+    const needsChrome = Object.values(agents).some(a =>
+      a && a.mcps && Object.keys(a.mcps).some(n =>
+        n.includes('chrome-devtools') || n.includes('chrome_devtools')
+      )
+    );
+    if (needsChrome && !this._chromePort) {
+      const { ensureChrome, startScreencast } = require('./chrome-manager');
+      ensureChrome(this._panelId).then(chrome => {
+        if (chrome) {
+          this._chromePort = chrome.port;
+          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+          startScreencast(this._panelId, (frameData, metadata) => {
+            this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
+          }, (url) => {
+            this._postMessage({ type: 'chromeUrl', url });
+          });
+        }
+      }).catch(() => {});
+    }
+
+    // Pre-start Codex app-server processes (controller + worker)
+    this._renderer.banner('Pre-starting Codex app-server\u2026');
+    const { prestartConnection } = require('./src/codex-app-server');
+    const controllerMcps = this._mcpServersForRole('controller', false);
+    const workerMcps = this._mcpServersForRole('worker', false);
+    // Merge default agent MCPs (pick the first enabled agent with MCPs, e.g. QA-Browser)
+    let defaultAgentMcps = {};
+    for (const a of Object.values(agents)) {
+      if (a && a.mcps && Object.keys(a.mcps).length > 0) {
+        defaultAgentMcps = a.mcps;
+        break;
+      }
+    }
+    const fullWorkerMcps = { ...workerMcps, ...defaultAgentMcps };
+    const baseManifest = {
+      repoRoot: this._repoRoot,
+      extensionDir: this._extensionPath,
+      chromeDebugPort: this._chromePort || null,
+    };
+
+    // Pre-start controller connection
+    prestartConnection({
+      key: 'prestart',
+      bin: 'codex',
+      cwd: this._repoRoot,
+      mcpServers: controllerMcps,
+      manifest: baseManifest,
+    }).catch(() => {});
+
+    // Pre-start worker connection
+    prestartConnection({
+      key: 'prestart-worker',
+      bin: 'codex',
+      cwd: this._repoRoot,
+      mcpServers: fullWorkerMcps,
+      manifest: baseManifest,
+    }).then(() => {
+      this._renderer.banner('Codex app-server ready.');
+    }).catch(() => {});
   }
 
   _syncConfig() {

@@ -390,6 +390,9 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
     },
   };
   const conn = getOrCreateConnection(connManifest);
+  if (!conn.isConnected) {
+    renderer.claude('Waiting for Codex app-server to initialize\u2026');
+  }
   await conn.ensureConnected();
 
   // Track thread ID per agent session

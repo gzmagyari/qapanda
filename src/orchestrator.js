@@ -88,7 +88,7 @@ function getControllerRunner(manifest) {
 function getWorkerRunner(manifest, agentConfig) {
   const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
   if (cli === 'codex' || cli === 'qa-remote-codex') {
-    const codexMode = (agentConfig && agentConfig.codexMode) || manifest.controller.codexMode || 'cli';
+    const codexMode = (agentConfig && agentConfig.codexMode) || manifest.controller.codexMode || 'app-server';
     if (codexMode === 'app-server') return runCodexWorkerTurnAppServer;
     return runCodexWorkerTurn;
   }

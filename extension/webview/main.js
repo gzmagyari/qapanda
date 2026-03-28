@@ -450,8 +450,8 @@
       '<option value="interactive"' + (existingRunMode === 'interactive' ? ' selected' : '') + '>Interactive (terminal parser, experimental)</option>' +
       '</select></div>' +
       '<div class="agent-form-row" id="agent-f-codexmode-row"><label>Codex Mode</label><select class="mcp-input" id="agent-f-codexmode">' +
-      '<option value=""' + (existingCodexMode === '' ? ' selected' : '') + '>Default (CLI per turn)</option>' +
-      '<option value="app-server"' + (existingCodexMode === 'app-server' ? ' selected' : '') + '>App Server (persistent)</option>' +
+      '<option value=""' + (existingCodexMode === '' ? ' selected' : '') + '>Default (App Server)</option>' +
+      '<option value="cli"' + (existingCodexMode === 'cli' ? ' selected' : '') + '>CLI (per turn)</option>' +
       '</select></div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
@@ -2310,8 +2310,8 @@
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
       chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
-      codexMode: cfgCodexMode ? cfgCodexMode.value : 'cli',
-      workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'claude',
+      codexMode: cfgCodexMode ? cfgCodexMode.value : 'app-server',
+      workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'codex',
     };
   }
 

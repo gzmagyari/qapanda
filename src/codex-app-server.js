@@ -320,13 +320,18 @@ function buildMcpConfigArgs(mcpServers, manifest) {
 /**
  * Get or create an app-server connection for the given manifest.
  */
+function _buildFingerprint(mcpServers) {
+  // Only key on MCP server names — when chrome-devtools is added/removed,
+  // the key list changes and triggers a reconnect. We don't include chromePort
+  // because it changes after Chrome starts and would invalidate the prestarted
+  // connection unnecessarily (the port is resolved in -c args at spawn time).
+  return JSON.stringify(Object.keys(mcpServers).sort());
+}
+
 function getOrCreateConnection(manifest) {
   const key = manifest.runId || 'default';
   const mcpServers = manifest.controllerMcpServers || manifest.mcpServers || {};
-  const mcpFingerprint = JSON.stringify({
-    keys: Object.keys(mcpServers).sort(),
-    chromePort: manifest.chromeDebugPort || null,
-  });
+  const mcpFingerprint = _buildFingerprint(mcpServers);
 
   if (_connections.has(key)) {
     const existing = _connections.get(key);
@@ -340,6 +345,21 @@ function getOrCreateConnection(manifest) {
     }
   }
 
+  // Adopt a prestarted connection if available and MCP config matches.
+  // Check both 'prestart' (controller) and 'prestart-worker' (worker) keys.
+  for (const prestartKey of ['prestart', 'prestart-worker']) {
+    if (_connections.has(prestartKey)) {
+      const prestarted = _connections.get(prestartKey);
+      _connections.delete(prestartKey);
+      if (prestarted._mcpFingerprint === mcpFingerprint && prestarted.isConnected) {
+        _connections.set(key, prestarted);
+        return prestarted;
+      }
+      // MCP config changed — discard prestarted
+      prestarted.disconnect();
+    }
+  }
+
   // Build MCP config args from manifest (same as CLI mode, with placeholder resolution)
   const configArgs = buildMcpConfigArgs(mcpServers, manifest);
   const conn = new CodexAppServerConnection({
@@ -350,6 +370,21 @@ function getOrCreateConnection(manifest) {
   });
   conn._mcpFingerprint = mcpFingerprint;
   _connections.set(key, conn);
+  return conn;
+}
+
+/**
+ * Pre-start an app-server connection before the first run.
+ * The connection is stored under key 'prestart' and adopted by
+ * getOrCreateConnection() when the first real run starts.
+ */
+async function prestartConnection({ key, bin, cwd, mcpServers, manifest }) {
+  const storeKey = key || 'prestart';
+  const configArgs = buildMcpConfigArgs(mcpServers || {}, manifest || {});
+  const conn = new CodexAppServerConnection({ bin: bin || 'codex', cwd, configArgs });
+  conn._mcpFingerprint = _buildFingerprint(mcpServers || {});
+  await conn.connect();
+  _connections.set(storeKey, conn);
   return conn;
 }
 
@@ -378,6 +413,7 @@ async function closeAllConnections() {
 module.exports = {
   CodexAppServerConnection,
   getOrCreateConnection,
+  prestartConnection,
   closeConnection,
   closeAllConnections,
 };
