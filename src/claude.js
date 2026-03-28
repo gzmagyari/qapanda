@@ -3,6 +3,7 @@ const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
+const { expandPromptTags, buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
@@ -135,11 +136,19 @@ function buildClaudeArgs(manifest, options = {}) {
   // System prompt: agent with custom prompt uses --system-prompt (full replacement),
   // otherwise --append-system-prompt adds to Claude Code's default system prompt
   // NOTE: must be LAST because multiline text breaks cmd.exe arg parsing on Windows
+  const selfTestOpts = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
+  const _promptsDirs = buildPromptsDirs(manifest.repoRoot);
   if (agentConfig && agentConfig.system_prompt) {
-    args.push('--system-prompt', agentConfig.system_prompt);
+    let sysPrompt = expandPromptTags(agentConfig.system_prompt, _promptsDirs);
+    if (selfTestOpts) {
+      const { buildSelfTestingPrompt } = require('./prompts');
+      const isQaBrowser = (agentConfig.name || '').toLowerCase().includes('browser');
+      sysPrompt += '\n' + buildSelfTestingPrompt(isQaBrowser ? 'qa-browser' : 'agent', manifest.selfTestPrompts);
+    }
+    args.push('--system-prompt', sysPrompt);
   } else {
     const appendSystemPrompt = agentConfig
-      ? buildAgentWorkerSystemPrompt(agentConfig)
+      ? buildAgentWorkerSystemPrompt(agentConfig, selfTestOpts, _promptsDirs)
       : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
     if (appendSystemPrompt) {
       args.push('--append-system-prompt', appendSystemPrompt);
@@ -237,7 +246,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   try {
     const _shellArgs = args.map(a => a.includes(' ') || a.includes('"') || a.includes('{') ? "'" + a.replace(/'/g, "'\\''") + "'" : a);
     const _envInfo = `PATH_has_claude=${(spawnEnv.PATH || '').includes('claude')}, CLAUDE_CONFIG_DIR=${spawnEnv.CLAUDE_CONFIG_DIR || 'unset'}, CLAUDE_CODE_SIMPLE=${spawnEnv.CLAUDE_CODE_SIMPLE || 'unset'}, NODE_OPTIONS=${spawnEnv.NODE_OPTIONS || 'unset'}, ELECTRON_RUN_AS_NODE=${spawnEnv.ELECTRON_RUN_AS_NODE || 'unset'}`;
-    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-chrome-debug.log'), `[${new Date().toISOString()}] CWD: ${manifest.repoRoot}\nENV: ${_envInfo}\nCMD: ${workerBin} ${_shellArgs.join(' ')}\n\n`);
+    require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] CWD: ${manifest.repoRoot}\nENV: ${_envInfo}\nCMD: ${workerBin} ${_shellArgs.join(' ')}\n\n`);
   } catch {}
 
   const result = await spawnStreamingProcess({
@@ -264,7 +273,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       }
       // Debug: log the init event to see what MCPs Claude actually loaded
       if (raw.type === 'system' && raw.mcp_servers) {
-        try { require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-chrome-debug.log'), `\nINIT_MCP_SERVERS: ${JSON.stringify(raw.mcp_servers)}\n`); } catch {}
+        try { require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'), `\nINIT_MCP_SERVERS: ${JSON.stringify(raw.mcp_servers)}\n`); } catch {}
       }
       if (raw.session_id) {
         discoveredSessionId = raw.session_id;
@@ -413,11 +422,19 @@ function buildInteractiveArgs(manifest, options = {}) {
   }
 
   // System prompt (same logic as buildClaudeArgs)
+  const selfTestOpts2 = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
+  const _promptsDirs2 = buildPromptsDirs(manifest.repoRoot);
   if (agentConfig && agentConfig.system_prompt) {
-    args.push('--system-prompt', agentConfig.system_prompt);
+    let sysPrompt2 = expandPromptTags(agentConfig.system_prompt, _promptsDirs2);
+    if (selfTestOpts2) {
+      const { buildSelfTestingPrompt: bst } = require('./prompts');
+      const isQa = (agentConfig.name || '').toLowerCase().includes('browser');
+      sysPrompt2 += '\n' + bst(isQa ? 'qa-browser' : 'agent', manifest.selfTestPrompts);
+    }
+    args.push('--system-prompt', sysPrompt2);
   } else {
     const appendSystemPrompt = agentConfig
-      ? buildAgentWorkerSystemPrompt(agentConfig)
+      ? buildAgentWorkerSystemPrompt(agentConfig, selfTestOpts2, _promptsDirs2)
       : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
     if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
   }
@@ -475,14 +492,14 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
   }
 
   try {
-    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+    require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-interactive-debug.log'),
       `[${new Date().toISOString()}] runWorkerTurnInteractive START prompt=${JSON.stringify(prompt.slice(0,50))}\n`);
 
     let hadStreamedText = false;
     const result = await session.send(prompt, {
       onEvent(event) {
         try {
-          require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+          require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-interactive-debug.log'),
             `[${new Date().toISOString()}] EVENT ${JSON.stringify(event)}\n`);
         } catch {}
 
@@ -523,7 +540,7 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
       }
     });
 
-    require('fs').appendFileSync(require('path').join(require('os').homedir(), 'Desktop', 'cc-interactive-debug.log'),
+    require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-interactive-debug.log'),
       `[${new Date().toISOString()}] DONE resultText=${JSON.stringify(result.resultText)}\n`);
 
     renderer.workerLabel = prevWorkerLabel;

@@ -19,30 +19,15 @@ const path = require('node:path');
 const EXTENSION_DIR = path.resolve(__dirname, '../../extension');
 
 /**
- * Extract the HTML body content from extension.js getWebviewHtml().
- * We read the file and extract the template literal between the backticks.
+ * Get the HTML body content from the shared webview-html.js template.
  */
 function getWebviewBodyHtml() {
-  const extJs = fs.readFileSync(path.join(EXTENSION_DIR, 'extension.js'), 'utf8');
+  const { getWebviewHtml } = require(path.join(EXTENSION_DIR, 'webview-html'));
+  let html = getWebviewHtml({ styleHref: 'style.css', scriptSrc: 'main.js' });
 
-  // Find the template literal in getWebviewHtml — starts after "return `" and ends at "`;"
-  const startMarker = "return `<!DOCTYPE html>";
-  const endMarker = "</html>`;";
-  const startIdx = extJs.indexOf(startMarker);
-  const endIdx = extJs.indexOf(endMarker);
-
-  if (startIdx === -1 || endIdx === -1) {
-    throw new Error('Could not find HTML template in extension.js');
-  }
-
-  let html = extJs.slice(startIdx + 'return `'.length, endIdx + '</html>'.length);
-
-  // Replace template expressions: ${styleUri}, ${scriptUri}, ${nonce}, ${panel.webview.cspSource}
-  // Strip the CSP meta tag entirely (JSDOM doesn't enforce it)
-  html = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '');
-  // Remove the external stylesheet link (we'll inline it)
+  // Strip the stylesheet link (we'll inline it)
   html = html.replace(/<link rel="stylesheet"[^>]*>/, '');
-  // Remove the external script tag (we'll inline it)
+  // Strip the external script tag (we'll inline it)
   html = html.replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/, '');
 
   return html;

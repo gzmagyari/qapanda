@@ -244,6 +244,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
     loadCcManagerMd(manifest.repoRoot),
+    manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),
     '',
@@ -356,6 +357,7 @@ function buildControllerPrompt(manifest, request) {
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
     loadCcManagerMd(manifest.repoRoot),
+    manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),
     '',
@@ -394,17 +396,28 @@ function buildDefaultWorkerAppendSystemPrompt() {
   ].join(' ');
 }
 
-function buildAgentWorkerSystemPrompt(agentConfig) {
-  if (agentConfig && agentConfig.system_prompt) return agentConfig.system_prompt;
-  return buildDefaultWorkerAppendSystemPrompt();
+function buildAgentWorkerSystemPrompt(agentConfig, opts, promptsDirs) {
+  let prompt = (agentConfig && agentConfig.system_prompt)
+    ? agentConfig.system_prompt
+    : buildDefaultWorkerAppendSystemPrompt();
+  if (promptsDirs) {
+    const { expandPromptTags } = require('./prompt-tags');
+    prompt = expandPromptTags(prompt, promptsDirs);
+  }
+  if (opts && opts.selfTesting) {
+    const isQaBrowser = agentConfig && (agentConfig.name || '').toLowerCase().includes('browser');
+    prompt += '\n' + buildSelfTestingPrompt(isQaBrowser ? 'qa-browser' : 'agent', opts.selfTestPrompts);
+  }
+  return prompt;
 }
 
 /**
  * Base copilot prompt — used when no mode-specific controllerPrompt is set.
  * Shared between extension (session-manager) and CLI (shell).
  */
-function buildCopilotBasePrompt() {
-  return `You are a copilot that drives work forward by giving an AI agent its next task.
+function buildCopilotBasePrompt(opts) {
+  const selfTestSection = (opts && opts.selfTesting) ? '\n' + buildSelfTestingPrompt('controller', opts.selfTestPrompts) + '\n' : '';
+  return `You are a copilot that drives work forward by giving an AI agent its next task.${selfTestSection}
 
 Your output is JSON with these fields:
 - action: "delegate" (send instruction to agent) or "stop" (done)
@@ -526,11 +539,102 @@ CRITICAL RULES:
 - claude_message should be something the agent can immediately act on.`;
 }
 
+// ── Self-Testing Prompts ─────────────────────────────────────────────
+
+/**
+ * Build self-testing prompt section based on role.
+ * @param {'controller'|'qa-browser'|'agent'} role
+ * @returns {string}
+ */
+// Default self-testing prompts (used when settings have no custom override)
+const DEFAULT_SELF_TEST_PROMPTS = {
+  controller: `
+## Self-Testing Capability (only when asked)
+
+The QA Panda app can be tested as a web app. ONLY use this when the user explicitly asks to "test yourself", "self-test", or "test the QA Panda UI". Do NOT trigger self-testing for normal messages.
+
+When self-testing IS requested:
+- Delegate to QA-Browser agent to test the UI at http://localhost:3000
+- Delegate to Developer agent to fix any bugs found
+- After fixes, delegate back to QA-Browser to re-test
+- The web server is started with \`npm run web\` from the project root`,
+
+  'qa-browser': `
+## Self-Testing Capability (only when asked)
+
+You have the ability to test the QA Panda app itself as a web app. ONLY do this when the user explicitly asks you to "test yourself", "self-test", "test the QA Panda UI", or similar. Do NOT start self-testing unprompted — treat all other messages normally like any QA conversation.
+
+When self-testing IS requested: the QA Panda app IS the app under test. Test it exactly like you would test any other web app — open it in the browser, check that the UI renders correctly, verify features work.
+
+### Setup
+1. Start the web server: \`start_command\` with \`cd <repo-root> && npm run web\`
+   If port 3000 is busy, stop the old one first: \`start_command\` with \`npx kill-port 3000\`, then start again
+2. Wait for "Ready: http://localhost:3000" (check with \`read_output\`)
+3. Navigate to http://localhost:3000 using \`navigate_page\`
+4. Take a screenshot to see the initial state
+
+### How to test (default — unless the user specifies something specific to test)
+1. Create a test plan with \`create_test\`
+2. Go through EVERY tab one by one in this order: Agent, Tasks, Tests, Agents, MCP Servers, Instances, Computer, Browser, Settings
+3. For each tab:
+   a. Click the tab button
+   b. Take a screenshot
+   c. Verify the panel shows content (NOT empty/blank)
+   d. Record pass/fail with \`update_step_result\`
+4. Test the Agent tab interactivity: type in the input box, verify buttons are visible
+5. Complete the test run with \`complete_test_run\`
+6. Report findings with screenshot evidence
+
+### What "content renders" means for each tab
+- **Agent**: Chat area with input box at bottom, Send/Continue/Orchestrate buttons, welcome splash on fresh load, TARGET dropdown
+- **Tasks**: Kanban board with column headers (Backlog, In Progress, Review, Done) — even with zero tasks, columns must be visible
+- **Tests**: Test board with column headers — even with zero tests, columns must be visible
+- **Agents**: Agent cards showing system agents (QA Engineer, Developer, etc.) with toggle switches — or "No agents configured" message
+- **MCP Servers**: Two sections (Global, Project) with server config or "No servers configured"
+- **Instances**: Instance list or empty state message
+- **Computer**: VNC viewer placeholder or "Desktop not connected" message
+- **Browser**: Chrome screencast placeholder or "Chrome not connected" message
+- **Settings**: Developer Settings header with Self-Testing Mode toggle
+
+### DO NOT
+- Do NOT test the self-testing feature itself — don't look for the Settings toggle to verify "self-testing works"
+- Do NOT skip over empty or broken tabs — a blank panel with zero visible content is a FAIL
+- Do NOT assume tabs work just because they highlight on click — you must verify the PANEL content changes
+- Do NOT try to configure or toggle QA Panda settings during testing
+
+### Source code (for filing bugs)
+- UI: \`extension/webview/main.js\`, \`extension/webview/style.css\`
+- HTML template: \`extension/webview-html.js\`
+- Backend: \`extension/session-manager.js\`, \`web/server.js\``,
+
+  agent: `
+## Self-Testing Capability (only when asked)
+
+The QA Panda UI can be tested as a web app at http://localhost:3000 (start with \`npm run web\`). Only relevant when the user asks to test the QA Panda app itself.
+Source code: UI logic in \`extension/webview/main.js\` + \`style.css\`, HTML template in \`extension/webview-html.js\`, backend in \`extension/session-manager.js\`.
+After code changes, the web app hot-reloads automatically for UI files. Run \`npm run test:ui\` to verify automated tests pass.`,
+};
+
+function buildSelfTestingPrompt(role, customPrompts) {
+  // Use custom prompt from settings if provided, otherwise fall back to defaults
+  if (role === 'controller') {
+    return (customPrompts && customPrompts.controller) || DEFAULT_SELF_TEST_PROMPTS.controller;
+  }
+  if (role === 'qa-browser') {
+    return (customPrompts && customPrompts['qa-browser']) || DEFAULT_SELF_TEST_PROMPTS['qa-browser'];
+  }
+  return (customPrompts && customPrompts.agent) || DEFAULT_SELF_TEST_PROMPTS.agent;
+}
+
+// Exported so Settings UI can show defaults
+buildSelfTestingPrompt.DEFAULTS = DEFAULT_SELF_TEST_PROMPTS;
+
 module.exports = {
   buildAgentWorkerSystemPrompt,
   buildControllerPrompt,
   buildContinueDirective,
   buildCopilotBasePrompt,
   buildDefaultWorkerAppendSystemPrompt,
+  buildSelfTestingPrompt,
   loadWorkflows,
 };

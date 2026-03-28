@@ -9,7 +9,7 @@ const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const _debugLogPath = path.join(require('node:os').homedir(), 'Desktop', 'cc-chrome-debug.log');
+const _debugLogPath = path.join(require('node:os').tmpdir(), 'cc-chrome-debug.log');
 function _dbg(msg) {
   try { fs.appendFileSync(_debugLogPath, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
 }
@@ -49,7 +49,7 @@ function _findChromeBinary() {
   // Fallback to PATH
   const { execSync } = require('node:child_process');
   try {
-    const which = process.platform === 'win32' ? 'where chrome' : 'which google-chrome || which chromium';
+    const which = process.platform === 'win32' ? 'where chrome' : 'which google-chrome-stable || which google-chrome || which chromium-browser || which chromium';
     return execSync(which, { encoding: 'utf8' }).trim().split('\n')[0];
   } catch {
     return null;
@@ -139,7 +139,8 @@ async function ensureChrome(panelId) {
   });
 
   proc.on('exit', (code, signal) => {
-    _dbg(`ensureChrome: process exited code=${code} signal=${signal} stderr=${stderrChunks.slice(0, 500)}`);
+    _dbg(`ensureChrome: process EXITED code=${code} signal=${signal} stderr=${stderrChunks.slice(0, 500)}`);
+    _instances.delete(panelId);
   });
 
   _dbg('ensureChrome: waiting for Chrome to be ready...');
@@ -151,7 +152,7 @@ async function ensureChrome(panelId) {
     return null;
   }
 
-  _instances.set(panelId, { port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
+  _instances.set(panelId, { panelId, port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
   _dbg(`ensureChrome: Chrome started on port ${port}`);
   return { port };
 }
@@ -171,6 +172,7 @@ function _connectToTarget(instance, target) {
 
   // Close old WebSocket if any
   if (instance.ws) {
+    _dbg('_connectToTarget: closing old WebSocket');
     try { instance.ws.onclose = null; instance.ws.close(); } catch {}
     instance.ws = null;
   }
@@ -179,7 +181,7 @@ function _connectToTarget(instance, target) {
   const ws = new WS(target.webSocketDebuggerUrl);
 
   ws.onopen = () => {
-    _dbg('_connectToTarget: WebSocket OPEN');
+    _dbg('_connectToTarget: WebSocket OPEN — sending Page.enable + stealth + Page.startScreencast');
     ws.send(JSON.stringify({ id: instance.nextId++, method: 'Page.enable', params: {} }));
     // Stealth: hide navigator.webdriver and other automation signals
     ws.send(JSON.stringify({
@@ -206,10 +208,15 @@ function _connectToTarget(instance, target) {
     }));
   };
 
+  let _frameCount = 0;
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
       if (msg.method === 'Page.screencastFrame') {
+        _frameCount++;
+        if (_frameCount <= 3 || _frameCount % 50 === 0) {
+          _dbg(`screencastFrame #${_frameCount}: sessionId=${msg.params.sessionId} hasCallback=${!!instance.frameCallback}`);
+        }
         const { data, metadata, sessionId } = msg.params;
         ws.send(JSON.stringify({
           id: instance.nextId++,
@@ -219,15 +226,44 @@ function _connectToTarget(instance, target) {
         if (instance.frameCallback) instance.frameCallback(data, metadata);
       } else if (msg.method === 'Page.frameNavigated') {
         const frame = msg.params && msg.params.frame;
+        _dbg(`frameNavigated: url=${frame && frame.url} parentId=${frame && frame.parentId}`);
         if (frame && !frame.parentId && frame.url && instance.navCallback) {
           instance.navCallback(frame.url);
         }
       }
-    } catch {}
+    } catch (e) {
+      _dbg(`_connectToTarget onmessage error: ${e.message}`);
+    }
   };
 
-  ws.onerror = () => {};
-  ws.onclose = () => { if (instance.ws === ws) instance.ws = null; };
+  ws.onerror = (err) => {
+    _dbg(`_connectToTarget: WebSocket ERROR: ${err && err.message || 'unknown'}`);
+  };
+
+  ws.onclose = (ev) => {
+    _dbg(`_connectToTarget: WebSocket CLOSED code=${ev && ev.code} reason=${ev && ev.reason} wasClean=${ev && ev.wasClean} totalFrames=${_frameCount}`);
+    if (instance.ws === ws) {
+      instance.ws = null;
+      // Auto-reconnect after 1s if instance still alive
+      if (instance.panelId && _instances.has(instance.panelId)) {
+        setTimeout(async () => {
+          if (!_instances.has(instance.panelId) || instance.ws) return;
+          _dbg('auto-reconnect: attempting...');
+          try {
+            const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
+            if (!targets) { _dbg('auto-reconnect: /json failed'); return; }
+            const pg = targets.find(t => t.type === 'page');
+            if (pg && pg.webSocketDebuggerUrl) {
+              _dbg(`auto-reconnect: found page target id=${pg.id} url=${pg.url}`);
+              _connectToTarget(instance, pg);
+            } else {
+              _dbg(`auto-reconnect: no page target found (${targets.length} targets)`);
+            }
+          } catch (e) { _dbg(`auto-reconnect error: ${e.message}`); }
+        }, 1000);
+      }
+    }
+  };
 
   instance.ws = ws;
   instance.currentTargetId = target.id;
@@ -243,16 +279,34 @@ function _connectToTarget(instance, target) {
 async function startScreencast(panelId, onFrame, onNav) {
   _dbg(`startScreencast called, panelId=${panelId}`);
   const instance = _instances.get(panelId);
-  if (!instance) { _dbg('startScreencast: no instance found'); return; }
+  if (!instance) { _dbg('startScreencast: no instance for panelId'); return; }
 
   instance.frameCallback = onFrame;
   instance.navCallback = onNav || null;
 
   try {
-    const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`);
-    const page = targets.find(t => t.type === 'page');
+    // Retry up to 15 times (30s max) waiting for a page target to appear
+    let page = null;
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      _dbg(`startScreencast: attempt ${attempt}/15 — fetching /json on port ${instance.port}`);
+      const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(e => {
+        _dbg(`startScreencast: /json fetch FAILED: ${e.message}`);
+        return null;
+      });
+      if (targets) {
+        _dbg(`startScreencast: got ${targets.length} targets: ${targets.map(t => t.type + ':' + t.id).join(', ')}`);
+        page = targets.find(t => t.type === 'page');
+        if (page && page.webSocketDebuggerUrl) {
+          _dbg(`startScreencast: found page target id=${page.id} url=${page.url}`);
+          break;
+        }
+        _dbg('startScreencast: no page target with webSocketDebuggerUrl yet');
+      }
+      if (attempt < 15) await new Promise(r => setTimeout(r, 2000));
+    }
+
     if (!page || !page.webSocketDebuggerUrl) {
-      _dbg('startScreencast: no page target found');
+      _dbg('startScreencast: GIVING UP — no page target found after 15 attempts');
       return;
     }
 
@@ -319,7 +373,14 @@ function killChrome(panelId) {
     try { instance.ws.close(); } catch {}
   }
   if (instance.process) {
-    try { instance.process.kill(); } catch {}
+    if (process.platform === 'win32') {
+      try { instance.process.kill(); } catch {}
+    } else {
+      try { instance.process.kill('SIGTERM'); } catch {}
+      // Escalate to SIGKILL on Unix if Chrome doesn't exit cleanly
+      const proc = instance.process;
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 500);
+    }
   }
   _instances.delete(panelId);
   console.log(`[chrome-manager] Chrome killed for panel ${panelId.slice(0, 8)}`);

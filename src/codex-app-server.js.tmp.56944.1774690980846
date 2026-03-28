@@ -388,13 +388,10 @@ function getOrCreateConnection(manifest) {
  */
 async function prestartConnection({ key, bin, cwd, mcpServers, manifest }) {
   const storeKey = key || 'prestart';
-  const fp = _buildFingerprint(mcpServers || {});
-  _dbg(`prestartConnection key=${storeKey} fingerprint=${fp} mcpKeys=${JSON.stringify(Object.keys(mcpServers || {}))}`);
   const configArgs = buildMcpConfigArgs(mcpServers || {}, manifest || {});
   const conn = new CodexAppServerConnection({ bin: bin || 'codex', cwd, configArgs });
-  conn._mcpFingerprint = fp;
+  conn._mcpFingerprint = _buildFingerprint(mcpServers || {});
   await conn.connect();
-  _dbg(`prestartConnection key=${storeKey} CONNECTED isConnected=${conn.isConnected}`);
   _connections.set(storeKey, conn);
   return conn;
 }

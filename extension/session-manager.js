@@ -84,6 +84,7 @@ class SessionManager {
     this._workerCli = init.workerCli || 'codex';
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
+    this._chromePort = null;
     // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
     try {
       const { setQaDesktopPath } = require('./src/remote-desktop');
@@ -93,8 +94,18 @@ class SessionManager {
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
     this._loopMode = false;
+    try { this._selfTesting = !!require('./settings-store').getSetting('selfTesting'); } catch { this._selfTesting = false; }
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
+  }
+
+  /** Debug logger for screencast/session lifecycle — writes to same file as chrome-manager. */
+  _sDbg(msg) {
+    try {
+      const fs = require('node:fs');
+      const p = require('node:path').join(require('node:os').tmpdir(), 'cc-chrome-debug.log');
+      fs.appendFileSync(p, `[${new Date().toISOString()}] [session] ${msg}\n`);
+    } catch {}
   }
 
   /** Sync the chat log path to the renderer whenever the manifest changes. */
@@ -1160,6 +1171,16 @@ class SessionManager {
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
     const agents = this._enabledAgents();
     if (Object.keys(agents).length > 0) opts.agents = agents;
+    if (this._selfTesting) {
+      opts.selfTesting = true;
+      // Load custom prompts from settings
+      const settings = require('./settings-store').loadSettings();
+      const customPrompts = {};
+      if (settings.selfTestPromptController) customPrompts.controller = settings.selfTestPromptController;
+      if (settings.selfTestPromptQaBrowser) customPrompts['qa-browser'] = settings.selfTestPromptQaBrowser;
+      if (settings.selfTestPromptAgent) customPrompts.agent = settings.selfTestPromptAgent;
+      if (Object.keys(customPrompts).length > 0) opts.selfTestPrompts = customPrompts;
+    }
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
       if (this._controllerCli !== 'claude') {
@@ -1198,36 +1219,57 @@ class SessionManager {
   /**
    * Pre-start Chrome and Codex app-server in the background.
    * Called right after panel creation to speed up the first message.
+   * Chrome starts first (so we have the debug port), then Codex app-server.
    */
   prestart() {
-    // Pre-start headless Chrome if any enabled agent needs chrome-devtools
+    // Run the async sequence in the background (fire-and-forget)
+    this._prestartAsync().catch(() => {});
+  }
+
+  async _prestartAsync() {
     const agents = this._enabledAgents();
-    const needsChrome = Object.values(agents).some(a =>
+
+    // Determine what needs pre-starting
+    const needsChrome = !this._chromePort && Object.values(agents).some(a =>
       a && a.mcps && Object.keys(a.mcps).some(n =>
         n.includes('chrome-devtools') || n.includes('chrome_devtools')
       )
     );
-    if (needsChrome && !this._chromePort) {
-      const { ensureChrome, startScreencast } = require('./chrome-manager');
-      ensureChrome(this._panelId).then(chrome => {
+
+    this._sDbg(`_prestartAsync: panelId=${this._panelId} needsChrome=${needsChrome}`);
+
+    // Step 1: Start Chrome (if needed) — must complete before Codex so we have the port
+    // NOTE: prestart() is only called after the webview 'ready' message restores panelId,
+    // so this._panelId is stable here.
+    if (needsChrome) {
+      try {
+        const { ensureChrome, startScreencast } = require('./chrome-manager');
+        this._sDbg(`prestart: calling ensureChrome panelId=${this._panelId}`);
+        const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
-          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
-          startScreencast(this._panelId, (frameData, metadata) => {
+          this._sDbg(`prestart: Chrome on port ${chrome.port}, calling startScreencast panelId=${this._panelId}`);
+          await startScreencast(this._panelId, (frameData, metadata) => {
             this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
           }, (url) => {
             this._postMessage({ type: 'chromeUrl', url });
           });
+          this._sDbg('prestart: startScreencast returned, posting chromeReady');
+          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
         }
-      }).catch(() => {});
+      } catch (e) {
+        this._sDbg(`prestart: Chrome error: ${e.message}`);
+      }
     }
 
-    // Pre-start Codex app-server processes (controller + worker)
-    this._renderer.banner('Pre-starting Codex app-server\u2026');
+    // Step 2: Start agent-delegate MCP so it's included in the fingerprint
+    await this._startAgentDelegateMcp();
+
+    // Step 3: Pre-start Codex app-server (now chromeDebugPort and agent-delegate are set)
     const { prestartConnection } = require('./src/codex-app-server');
     const controllerMcps = this._mcpServersForRole('controller', false);
     const workerMcps = this._mcpServersForRole('worker', false);
-    // Merge default agent MCPs (pick the first enabled agent with MCPs, e.g. QA-Browser)
+    // Merge default agent MCPs (pick first enabled agent with MCPs)
     let defaultAgentMcps = {};
     for (const a of Object.values(agents)) {
       if (a && a.mcps && Object.keys(a.mcps).length > 0) {
@@ -1242,25 +1284,26 @@ class SessionManager {
       chromeDebugPort: this._chromePort || null,
     };
 
-    // Pre-start controller connection
-    prestartConnection({
-      key: 'prestart',
-      bin: 'codex',
-      cwd: this._repoRoot,
-      mcpServers: controllerMcps,
-      manifest: baseManifest,
-    }).catch(() => {});
+    // Pre-start controller and worker connections in parallel
+    await Promise.all([
+      prestartConnection({
+        key: 'prestart',
+        bin: 'codex',
+        cwd: this._repoRoot,
+        mcpServers: controllerMcps,
+        manifest: baseManifest,
+      }).catch(() => {}),
+      prestartConnection({
+        key: 'prestart-worker',
+        bin: 'codex',
+        cwd: this._repoRoot,
+        mcpServers: fullWorkerMcps,
+        manifest: baseManifest,
+      }).catch(() => {}),
+    ]);
 
-    // Pre-start worker connection
-    prestartConnection({
-      key: 'prestart-worker',
-      bin: 'codex',
-      cwd: this._repoRoot,
-      mcpServers: fullWorkerMcps,
-      manifest: baseManifest,
-    }).then(() => {
-      this._renderer.banner('Codex app-server ready.');
-    }).catch(() => {});
+    // Prestart complete — store flag so first message doesn't show "Waiting..."
+    this._prestartDone = true;
   }
 
   _syncConfig() {
@@ -1323,20 +1366,23 @@ class SessionManager {
     if (!this._chromePort) {
       try {
         const { ensureChrome, startScreencast } = require('./chrome-manager');
-        this._renderer.banner('Starting headless Chrome\u2026');
+        this._sDbg(`_ensureChromeIfNeeded: starting Chrome panelId=${this._panelId}`);
+        this._renderer.banner('Waiting for headless Chrome\u2026');
         const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
           if (this._activeManifest) this._activeManifest.chromeDebugPort = chrome.port;
-          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
-          startScreencast(this._panelId, (frameData, metadata) => {
+          this._sDbg(`_ensureChromeIfNeeded: Chrome on port ${chrome.port}, calling startScreencast`);
+          await startScreencast(this._panelId, (frameData, metadata) => {
             this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
           }, (url) => {
             this._postMessage({ type: 'chromeUrl', url });
           });
-          // Port is stored on manifest.chromeDebugPort for buildClaudeArgs to use
+          this._sDbg('_ensureChromeIfNeeded: startScreencast returned, posting chromeReady');
+          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
         }
       } catch (err) {
+        this._sDbg(`_ensureChromeIfNeeded: error: ${err.message}`);
         console.error('[session-manager] Failed to start Chrome:', err.message);
       }
     }
@@ -1353,32 +1399,32 @@ class SessionManager {
 
   /** Start headless Chrome directly (e.g. from Browser tab click). */
   async _startChromeDirect() {
-    const { ensureChrome, startScreencast, _dbg } = require('./chrome-manager');
-    _dbg(`[session-manager] _startChromeDirect called, panelId=${this._panelId}, existing chromePort=${this._chromePort}`);
+    const { ensureChrome, startScreencast } = require('./chrome-manager');
+    this._sDbg(`_startChromeDirect called, panelId=${this._panelId}, existing chromePort=${this._chromePort}`);
     if (this._chromePort) {
-      _dbg('[session-manager] Chrome already running, sending chromeReady');
+      this._sDbg('_startChromeDirect: Chrome already running, sending chromeReady');
       this._postMessage({ type: 'chromeReady', chromePort: this._chromePort });
       return;
     }
     try {
       const chrome = await ensureChrome(this._panelId);
-      _dbg(`[session-manager] ensureChrome returned: ${JSON.stringify(chrome)}`);
+      this._sDbg(`_startChromeDirect: ensureChrome returned: ${JSON.stringify(chrome)}`);
       if (chrome) {
         this._chromePort = chrome.port;
-        this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
-        _dbg('[session-manager] sent chromeReady, starting screencast...');
-        startScreencast(this._panelId, (frameData, metadata) => {
+        this._sDbg(`_startChromeDirect: Chrome on port ${chrome.port}, calling startScreencast`);
+        await startScreencast(this._panelId, (frameData, metadata) => {
           this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
         }, (url) => {
           this._postMessage({ type: 'chromeUrl', url });
         });
-        _dbg('[session-manager] screencast started');
+        this._sDbg('_startChromeDirect: startScreencast returned, posting chromeReady');
+        this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
       } else {
-        _dbg('[session-manager] ensureChrome returned null');
+        this._sDbg('_startChromeDirect: ensureChrome returned null');
         this._postMessage({ type: 'chromeGone' });
       }
     } catch (err) {
-      _dbg(`[session-manager] _startChromeDirect EXCEPTION: ${err.message}\n${err.stack}`);
+      this._sDbg(`_startChromeDirect: EXCEPTION: ${err.message}\n${err.stack}`);
       this._postMessage({ type: 'chromeGone' });
     }
   }
@@ -1522,7 +1568,7 @@ class SessionManager {
 
   /** Base copilot prompt — delegates to shared builder in prompts.js */
   _buildCopilotBasePrompt() {
-    return buildCopilotBasePrompt();
+    return buildCopilotBasePrompt({ selfTesting: this._selfTesting });
   }
 
   /** Continue directive — delegates to shared builder in prompts.js */

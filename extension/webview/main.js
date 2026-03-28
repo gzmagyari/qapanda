@@ -1,6 +1,24 @@
 (function () {
-  // @ts-ignore
-  const vscode = acquireVsCodeApi();
+  // @ts-ignore — acquireVsCodeApi exists in VSCode webviews; in a browser we shim via WebSocket
+  const vscode = (typeof acquireVsCodeApi === 'function')
+    ? acquireVsCodeApi()
+    : (function () {
+        const ws = new WebSocket('ws://' + location.host + '/ws');
+        const _ready = new Promise(function (r) { ws.addEventListener('open', r); });
+        const _SK = 'qapanda_state';
+        ws.addEventListener('message', function (e) {
+          try {
+            var msg = JSON.parse(e.data);
+            if (msg.type === '_reload') { location.reload(); return; }
+            window.dispatchEvent(new MessageEvent('message', { data: msg }));
+          } catch (_) {}
+        });
+        return {
+          postMessage: function (msg) { _ready.then(function () { ws.send(JSON.stringify(msg)); }); },
+          getState: function () { try { return JSON.parse(localStorage.getItem(_SK)); } catch (_) { return undefined; } },
+          setState: function (s) { localStorage.setItem(_SK, JSON.stringify(s)); },
+        };
+      })();
 
   // Debug logging — sends to extension host which writes to .qpanda/wizard-debug.log
   function _dbg(text) { try { vscode.postMessage({ type: '_debugLog', text: String(text) }); } catch {} }
@@ -26,6 +44,7 @@
     instances: document.getElementById('tab-instances'),
     computer: document.getElementById('tab-computer'),
     browser: document.getElementById('tab-browser'),
+    settings: document.getElementById('tab-settings'),
   };
 
   tabBar.addEventListener('click', (e) => {
@@ -46,6 +65,7 @@
       setInstancesLoading(true);
       vscode.postMessage({ type: 'instancesLoad', _actionId: instancesActionId });
     }
+    if (tab === 'settings') vscode.postMessage({ type: 'settingsLoad' });
     if (tab === 'browser') {
       if (!chromePort) {
         const ph = document.getElementById('browser-placeholder');
@@ -61,6 +81,61 @@
       vscode.postMessage({ type: 'browserStart' });
     }
   });
+
+  // ── Settings tab ────────────────────────────────────────────────────
+  const selfTestToggle = document.getElementById('setting-self-testing');
+  const settingsPromptsSection = document.getElementById('settings-prompts-section');
+  const settingPromptQaBrowser = document.getElementById('setting-prompt-qa-browser');
+  const settingPromptController = document.getElementById('setting-prompt-controller');
+  const settingPromptAgent = document.getElementById('setting-prompt-agent');
+  const settingsPromptsSave = document.getElementById('settings-prompts-save');
+  const settingsPromptsReset = document.getElementById('settings-prompts-reset');
+
+  const promptsExpander = document.getElementById('settings-prompts-expander');
+  const promptsContent = document.getElementById('settings-prompts-content');
+  if (promptsExpander) {
+    promptsExpander.addEventListener('click', () => {
+      promptsExpander.classList.toggle('expanded');
+      if (promptsContent) promptsContent.classList.toggle('expanded');
+    });
+  }
+
+  function updatePromptsVisibility() {
+    if (settingsPromptsSection) {
+      if (selfTestToggle && selfTestToggle.checked) {
+        settingsPromptsSection.classList.remove('settings-prompts-hidden');
+      } else {
+        settingsPromptsSection.classList.add('settings-prompts-hidden');
+      }
+    }
+  }
+
+  if (selfTestToggle) {
+    selfTestToggle.addEventListener('change', () => {
+      vscode.postMessage({ type: 'settingsSave', settings: { selfTesting: selfTestToggle.checked } });
+      updatePromptsVisibility();
+    });
+  }
+  if (settingsPromptsSave) {
+    settingsPromptsSave.addEventListener('click', () => {
+      vscode.postMessage({ type: 'settingsSave', settings: {
+        selfTestPromptController: settingPromptController ? settingPromptController.value : '',
+        selfTestPromptQaBrowser: settingPromptQaBrowser ? settingPromptQaBrowser.value : '',
+        selfTestPromptAgent: settingPromptAgent ? settingPromptAgent.value : '',
+      }});
+    });
+  }
+  if (settingsPromptsReset) {
+    settingsPromptsReset.addEventListener('click', () => {
+      vscode.postMessage({ type: 'settingsSave', settings: {
+        selfTestPromptController: '',
+        selfTestPromptQaBrowser: '',
+        selfTestPromptAgent: '',
+      }});
+      // Request fresh data to repopulate with defaults
+      vscode.postMessage({ type: 'settingsLoad' });
+    });
+  }
 
   // ── MCP Server Management ─────────────────────────────────────────
   let mcpGlobal = {};
@@ -1715,6 +1790,30 @@
 
   // ── Chrome screencast (Browser tab + split widget) ───────────────────
 
+  function updateBrowserStatus() {
+    const el = document.getElementById('browser-status');
+    if (!el) return;
+    if (chromePort) {
+      el.classList.add('online');
+    } else {
+      el.classList.remove('online');
+    }
+    // Show only when selected agent needs Chrome
+    const target = cfgChatTarget ? cfgChatTarget.value : '';
+    if (target.startsWith('agent-')) {
+      const agentId = target.slice('agent-'.length);
+      const allAgents = { ...agentsSystem, ...agentsGlobal, ...agentsProject };
+      const agent = allAgents[agentId];
+      const mcps = (agent && agent.mcps) || {};
+      const needsChrome = Object.keys(mcps).some(n =>
+        n.includes('chrome-devtools') || n.includes('chrome_devtools')
+      );
+      el.style.display = needsChrome ? 'inline-flex' : 'none';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
   function updateBrowserTab() {
     const placeholder = document.getElementById('browser-placeholder');
     const frame = document.getElementById('browser-chrome-frame');
@@ -2442,12 +2541,14 @@
     suppressTargetConfirm = false;
     _pendingChatTarget = null; // consumed
     updateConfigBarForTarget(cfgChatTarget.value);
+    updateBrowserStatus();
   }
 
   function onConfigChange() {
     updateControllerDropdowns();
     const target = cfgChatTarget ? cfgChatTarget.value : 'controller';
     updateConfigBarForTarget(target);
+    updateBrowserStatus();
     const config = getConfig();
     vscode.postMessage({ type: 'configChanged', config });
     vscode.postMessage({ type: 'setPanelTitle', title: labelForTarget(target) });
@@ -3404,6 +3505,7 @@
 
     chromeReady(msg) {
       chromePort = msg.chromePort || null;
+      updateBrowserStatus();
       updateBrowserTab();
       saveState();
     },
@@ -3438,6 +3540,7 @@
     chromeGone() {
       chromePort = null;
       chromeImgEl = null;
+      updateBrowserStatus();
       updateBrowserTab();
       hideBrowserNav();
       teardownSplitChrome(false);
@@ -3618,6 +3721,26 @@
           vscode.postMessage({ type: 'configChanged', config: { controllerCli: defaults.controllerCli, workerCli: defaults.workerCli } });
         }
       }
+    },
+
+    settingsData(msg) {
+      if (!msg.settings) return;
+      const selfTestToggle = document.getElementById('setting-self-testing');
+      if (selfTestToggle) {
+        selfTestToggle.checked = !!msg.settings.selfTesting;
+      }
+      // Populate prompt textareas (custom value or default)
+      const defaults = msg.defaults || {};
+      if (settingPromptController) {
+        settingPromptController.value = msg.settings.selfTestPromptController || defaults.controller || '';
+      }
+      if (settingPromptQaBrowser) {
+        settingPromptQaBrowser.value = msg.settings.selfTestPromptQaBrowser || defaults['qa-browser'] || '';
+      }
+      if (settingPromptAgent) {
+        settingPromptAgent.value = msg.settings.selfTestPromptAgent || defaults.agent || '';
+      }
+      updatePromptsVisibility();
     },
 
     dependencyMissing(msg) {

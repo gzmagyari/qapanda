@@ -3,6 +3,7 @@ const { readText, writeText, writeJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, summarizeCodexWorkerEvent, mapAppServerNotification } = require('./events');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
+const { buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
@@ -102,9 +103,9 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
  * Codex reads its full instructions from stdin (no --append-system-prompt flag).
  * For agents with a system_prompt, we prepend it before the actual user prompt.
  */
-function buildCodexWorkerStdin(prompt, agentConfig) {
+function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
   if (!agentConfig) return prompt;
-  const systemPrompt = buildAgentWorkerSystemPrompt(agentConfig);
+  const systemPrompt = buildAgentWorkerSystemPrompt(agentConfig, opts, buildPromptsDirs(repoRoot));
   if (!systemPrompt) return prompt;
   return `${systemPrompt}\n\n---\n\n${prompt}`;
 }
@@ -172,7 +173,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     spawnCommand = resolved.command;
     args = resolved.args;
   }
-  const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
+  const stdinText = buildCodexWorkerStdin(prompt, agentConfig, manifest.selfTesting ? { selfTesting: true } : undefined, manifest.repoRoot);
 
   await writeText(workerRecord.promptFile, `${stdinText}\n`);
 
@@ -368,7 +369,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   renderer.workerLabel = workerLabel;
 
   // Build stdin text with system prompt prepended
-  const stdinText = buildCodexWorkerStdin(prompt, agentConfig);
+  const stdinText = buildCodexWorkerStdin(prompt, agentConfig, manifest.selfTesting ? { selfTesting: true } : undefined, manifest.repoRoot);
   await writeText(workerRecord.promptFile, `${stdinText}\n`);
 
   // Get or create a connection keyed by a worker-specific key
@@ -389,6 +390,8 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
       model: (agentConfig && agentConfig.model) || manifest.worker.model,
     },
   };
+  const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
+  try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-worker: workerConnKey=${workerConnKey} baseMcpKeys=${JSON.stringify(Object.keys(baseMcpServers))} agentMcpKeys=${JSON.stringify(Object.keys(agentMcps))} mergedKeys=${JSON.stringify(Object.keys(workerMcpServers))} chromeDebugPort=${manifest.chromeDebugPort} agentId=${agentId} agentCli=${agentConfig && agentConfig.cli}\n`); } catch {}
   const conn = getOrCreateConnection(connManifest);
   if (!conn.isConnected) {
     renderer.claude('Waiting for Codex app-server to initialize\u2026');

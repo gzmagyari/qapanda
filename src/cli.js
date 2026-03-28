@@ -105,6 +105,7 @@ const RUN_SPEC = {
   'worker-append-system-prompt': { key: 'workerAppendSystemPrompt', kind: 'value' },
   'raw-events': { key: 'rawEvents', kind: 'boolean' },
   'quiet': { key: 'quiet', kind: 'boolean' },
+  'self-testing': { key: 'selfTesting', kind: 'boolean' },
 };
 
 const STATUS_SPEC = { 'state-dir': { key: 'stateRoot', kind: 'value' } };
@@ -138,7 +139,7 @@ function parseArgs(argv, spec) {
 function isPathLike(value) {
   if (!value) return false;
   if (path.isAbsolute(value)) return false;
-  return value.includes('/') || value.includes('\\') || value.startsWith('.');
+  return value.includes('/') || value.startsWith('.');
 }
 
 function normalizeOptions(options) {

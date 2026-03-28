@@ -159,6 +159,8 @@ function normalizeRunOptions(options = {}) {
     agents: options.agents || {},
     panelId: options.panelId || null,
     controllerSystemPrompt: options.controllerSystemPrompt || null,
+    selfTesting: !!options.selfTesting,
+    selfTestPrompts: options.selfTestPrompts || null,
   };
 }
 
@@ -210,6 +212,8 @@ async function prepareNewRun(initialMessage, options = {}) {
     agents: normalized.agents || {},
     panelId: normalized.panelId || null,
     controllerSystemPrompt: normalized.controllerSystemPrompt || null,
+    selfTesting: !!normalized.selfTesting,
+    selfTestPrompts: normalized.selfTestPrompts || null,
     counters: {
       request: 0,
       loop: 0,
