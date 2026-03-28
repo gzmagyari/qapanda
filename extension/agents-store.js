@@ -40,11 +40,15 @@ function loadSystemAgents(extensionDir) {
   const bundledPath = path.join(extensionDir, 'resources', 'system-agents.json');
   const bundled = loadAgentsFile(bundledPath);
   const userOverrides = loadAgentsFile(systemAgentsOverridePath());
+  const { loadFeatureFlags } = require('./src/feature-flags');
+  const flags = loadFeatureFlags(extensionDir);
 
   const agents = {};
   const meta = {};
 
   for (const [id, base] of Object.entries(bundled)) {
+    // Skip agents gated by a disabled feature flag
+    if (base.featureFlag && !flags[base.featureFlag]) continue;
     const override = userOverrides[id];
     if (override && override.removed) {
       // User deleted this agent — track as removable/restorable but exclude from agents

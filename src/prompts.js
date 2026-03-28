@@ -199,7 +199,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
   }
 
   const transcriptLines = buildTranscriptExcerpt(manifest);
-  const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
+  const workerCli = manifest.worker.cli || manifest.worker.bin || 'codex';
 
   // For auto-continue requests, show the original user message instead of the [AUTO-CONTINUE] prefix
   let userMessage = request.userMessage;
@@ -269,7 +269,7 @@ function buildControllerPrompt(manifest, request) {
     ? buildTranscriptExcerpt(manifest, lastSeen)
     : buildTranscriptExcerpt(manifest);
 
-  const workerCli = manifest.worker.cli || manifest.worker.bin || 'claude';
+  const workerCli = manifest.worker.cli || manifest.worker.bin || 'codex';
 
   const state = {
     repository_root: manifest.repoRoot,

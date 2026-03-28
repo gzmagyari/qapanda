@@ -190,7 +190,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let sawTextDelta = false;
 
   // Resolve binary and display label
-  let workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  let workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
   const agentName = agentConfig && agentConfig.name;
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabelFor(workerBin, agentName);
@@ -455,7 +455,7 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
     agentConfig = lookupAgentConfig(manifest.agents, agentId);
   }
 
-  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'claude';
+  const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
   const agentName = agentConfig && agentConfig.name;
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = workerLabelFor(workerBin, agentName);

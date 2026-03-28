@@ -507,8 +507,10 @@
     const existingRunMode = existing ? (existing.runMode || '') : '';
     const existingCodexMode = existing ? (existing.codexMode || '') : '';
 
-    const cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
+    let cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
     const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
+    if (!_featureFlags.enableClaudeCli) cliOptions = cliOptions.filter(v => v !== 'claude' && v !== 'qa-remote-claude');
+    if (!_featureFlags.enableRemoteDesktop) cliOptions = cliOptions.filter(v => v !== 'qa-remote-claude' && v !== 'qa-remote-codex');
     const cliSelectHtml = '<select class="mcp-input" id="agent-f-cli">' +
       cliOptions.map(v => '<option value="' + v + '"' + (existingCli === v ? ' selected' : '') + '>' + cliLabels[v] + '</option>').join('') +
       '</select>';
@@ -1201,26 +1203,31 @@
     // Build detection results
     let html = '<div class="onboard-section-label">Detected on your system:</div>';
 
-    html += makeOnboardItem(claudeOk ? 'ok' : 'fail', 'Claude Code CLI',
-      claudeOk ? (c.claude.version || '').split('\n')[0] : 'Not found');
+    if (_featureFlags.enableClaudeCli) {
+      html += makeOnboardItem(claudeOk ? 'ok' : 'fail', 'Claude Code CLI',
+        claudeOk ? (c.claude.version || '').split('\n')[0] : 'Not found');
+    }
     html += makeOnboardItem(codexOk ? 'ok' : 'fail', 'Codex CLI',
       codexOk ? (c.codex.version || '').split('\n')[0] : 'Not found');
     html += makeOnboardItem(t.chrome && t.chrome.available ? 'ok' : 'warn', 'Google Chrome',
       t.chrome && t.chrome.available ? 'Available — browser testing enabled' : 'Not found — browser testing unavailable');
 
-    const dockerRunning = t.docker && t.docker.available && t.docker.running;
-    const qaDesktopOk = t.qaDesktop && t.qaDesktop.available;
-    const desktopReady = dockerRunning && qaDesktopOk;
-    const dockerOk = t.docker && t.docker.available && t.docker.running;
-    html += makeOnboardItem(dockerOk ? 'ok' : 'warn', 'Desktop Testing',
-      dockerOk ? 'Docker running — desktop testing available'
-        : !t.docker || !t.docker.available ? 'Docker not found — install Docker Desktop for desktop testing'
-        : 'Docker installed but not running — start Docker Desktop');
+    if (_featureFlags.enableRemoteDesktop) {
+      const dockerRunning = t.docker && t.docker.available && t.docker.running;
+      const qaDesktopOk = t.qaDesktop && t.qaDesktop.available;
+      const desktopReady = dockerRunning && qaDesktopOk;
+      const dockerOk = t.docker && t.docker.available && t.docker.running;
+      html += makeOnboardItem(dockerOk ? 'ok' : 'warn', 'Desktop Testing',
+        dockerOk ? 'Docker running — desktop testing available'
+          : !t.docker || !t.docker.available ? 'Docker not found — install Docker Desktop for desktop testing'
+          : 'Docker installed but not running — start Docker Desktop');
+    }
 
     statusEl.innerHTML = html;
 
-    // Block if no CLI at all
-    if (!claudeOk && !codexOk) {
+    // Block if no CLI at all (only check claude if the flag is on)
+    const effectiveClaudeOk = _featureFlags.enableClaudeCli && claudeOk;
+    if (!effectiveClaudeOk && !codexOk) {
       statusEl.innerHTML += '<div class="onboard-item fail"><span class="onboard-item-icon">&#128683;</span><span class="onboard-item-label"><span class="onboard-item-name">No AI CLI found</span><span class="onboard-item-detail">Install Claude Code or Codex CLI to get started.</span></span></div>';
       if (nextBtn) nextBtn.disabled = true;
       return;
@@ -1240,13 +1247,14 @@
       cardsWrap.className = 'wizard-cards';
 
       const options = [];
-      if (claudeOk && codexOk) options.push({ id: 'both', icon: '&#9889;', title: 'Both (recommended)', desc: 'Codex as controller, Claude Code as worker — best results' });
-      if (claudeOk) options.push({ id: 'claude-only', icon: '&#129302;', title: 'Claude Code only', desc: 'Use Claude Code for everything' });
+      const claudeEnabled = _featureFlags.enableClaudeCli;
+      if (claudeEnabled && claudeOk && codexOk) options.push({ id: 'both', icon: '&#9889;', title: 'Both (recommended)', desc: 'Codex as controller, Claude Code as worker — best results' });
+      if (claudeEnabled && claudeOk) options.push({ id: 'claude-only', icon: '&#129302;', title: 'Claude Code only', desc: 'Use Claude Code for everything' });
       if (codexOk) options.push({ id: 'codex-only', icon: '&#128187;', title: 'Codex only', desc: 'Use Codex for everything' });
 
       // Auto-select
-      if (claudeOk && codexOk) onboardingPreference = 'both';
-      else if (claudeOk) onboardingPreference = 'claude-only';
+      if (claudeEnabled && claudeOk && codexOk) onboardingPreference = 'both';
+      else if (claudeEnabled && claudeOk) onboardingPreference = 'claude-only';
       else onboardingPreference = 'codex-only';
 
       for (const opt of options) {
@@ -3068,6 +3076,39 @@
 
   // ── Message handlers ───────────────────────────────────────────────
 
+  // ── Feature flags ──────────────────────────────────────────────────
+  let _featureFlags = {};
+  function applyFeatureFlags(flags) {
+    _featureFlags = flags || {};
+    // Hide Instances and Computer tabs when remote desktop is disabled
+    if (!flags.enableRemoteDesktop) {
+      const tabBtns = tabBar.querySelectorAll('.tab-btn');
+      tabBtns.forEach(btn => {
+        if (btn.dataset.tab === 'instances' || btn.dataset.tab === 'computer') {
+          btn.style.display = 'none';
+        }
+      });
+    }
+    // Hide Claude CLI options when Claude is disabled
+    if (!flags.enableClaudeCli) {
+      // Remove claude option from target dropdown
+      if (cfgChatTarget) {
+        const claudeOpt = cfgChatTarget.querySelector('option[value="claude"]');
+        if (claudeOpt) claudeOpt.remove();
+      }
+      // Remove claude options from controller/worker CLI dropdowns
+      const cfgControllerCliEl = document.getElementById('cfg-controller-cli');
+      const cfgWorkerCliEl = document.getElementById('cfg-worker-cli');
+      [cfgControllerCliEl, cfgWorkerCliEl].forEach(sel => {
+        if (!sel) return;
+        const opt = sel.querySelector('option[value="claude"]');
+        if (opt) opt.remove();
+        // Default to codex if claude was selected
+        if (sel.value === 'claude') sel.value = 'codex';
+      });
+    }
+  }
+
   const handlers = {
     user(msg) {
       streamingEntry = null;
@@ -3420,6 +3461,8 @@
         onboardingComplete = !!msg.onboarding.complete;
         _dbg('initConfig: onboardingComplete=' + onboardingComplete);
       }
+      // Apply feature flags — hide tabs and options for disabled features
+      if (msg.featureFlags) applyFeatureFlags(msg.featureFlags);
       // If onboarding is done (or has a saved chatTarget), go straight to chat.
       // Otherwise show onboarding detection wizard.
       _dbg('initConfig DECISION: onboardingComplete=' + onboardingComplete);

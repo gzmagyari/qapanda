@@ -109,7 +109,7 @@ async function runInteractiveShell(options = {}) {
 
   // Session config (can be changed mid-session)
   let controllerCli = options.controllerCli || defaults.controllerCli || 'codex';
-  let workerCli = options.workerCli || defaults.workerCli || 'claude';
+  let workerCli = options.workerCli || defaults.workerCli || 'codex';
   let controllerModel = options.controllerModel || null;
   let workerModel = options.workerModel || null;
   let controllerThinking = options.controllerThinking || null;

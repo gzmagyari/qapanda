@@ -14,6 +14,7 @@ const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-deskto
 const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding } = require('./onboarding');
 const { loadSettings, saveSettings } = require('./settings-store');
 const { buildSelfTestingPrompt } = require('./src/prompts');
+const { loadFeatureFlags } = require('./src/feature-flags');
 
 const activePanels = new Set();
 let _tasksMcpPort = null;
@@ -74,7 +75,9 @@ function activate(context) {
   const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
   startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
-  startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
+  if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
+    startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
+  }
 
   const openCommand = vscode.commands.registerCommand('qapanda.open', () => {
     const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
@@ -182,7 +185,7 @@ function activate(context) {
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
           const onboardingData = loadOnboarding();
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData } });
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath) });
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -420,7 +423,7 @@ function activate(context) {
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
             const onboardingData2 = loadOnboarding();
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 } });
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath) });
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {

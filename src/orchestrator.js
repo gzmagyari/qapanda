@@ -86,7 +86,7 @@ function getControllerRunner(manifest) {
 }
 
 function getWorkerRunner(manifest, agentConfig) {
-  const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
+  const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'codex';
   if (cli === 'codex' || cli === 'qa-remote-codex') {
     const codexMode = (agentConfig && agentConfig.codexMode) || manifest.controller.codexMode || 'app-server';
     if (codexMode === 'app-server') return runCodexWorkerTurnAppServer;
@@ -320,7 +320,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       const delegateAgentConfig = delegateAgentId && delegateAgentId !== 'default'
         ? lookupAgentConfig(manifest.agents, delegateAgentId)
         : null;
-      const delegateCli = (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli || 'claude';
+      const delegateCli = (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli || 'codex';
       const workerSameSession = delegateAgentId && delegateAgentId !== 'default'
         ? !!((manifest.worker.agentSessions || {})[delegateAgentId] || {}).hasStarted
         : manifest.worker.hasStarted;
@@ -457,7 +457,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     manifest.phase = 'controller';
     manifest.stopReason = null;
     manifest.error = null;
-    const agentCli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'claude';
+    const agentCli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'codex';
     const agentName = agentConfig ? agentConfig.name : null;
     const sameSession = agentId && agentId !== 'default'
       ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted

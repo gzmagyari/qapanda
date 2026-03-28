@@ -191,7 +191,7 @@ class SessionManager {
         },
       };
     }
-    if (this._qaDesktopMcpPort) {
+    if (this._qaDesktopMcpPort && require('./src/feature-flags').getFlag('enableRemoteDesktop')) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
     // Auto-inject agent delegation MCP
@@ -358,7 +358,7 @@ class SessionManager {
       }
     }
     if (config.workerCli !== undefined) {
-      const newWorkerCli = config.workerCli || 'claude';
+      const newWorkerCli = config.workerCli || 'codex';
       if (newWorkerCli !== this._workerCli) {
         this._workerCli = newWorkerCli;
         this._renderer.workerLabel = workerLabelFor(newWorkerCli);
@@ -1343,7 +1343,7 @@ class SessionManager {
   /** Start headless Chrome if a local agent needs chrome-devtools MCP. */
   async _ensureChromeIfNeeded(agentId) {
     // Determine which CLI will run
-    let cli = this._workerCli || 'claude';
+    let cli = this._workerCli || 'codex';
     if (agentId) {
       const agents = this._enabledAgents();
       const agent = agents[agentId];

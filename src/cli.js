@@ -405,11 +405,17 @@ async function runOneShot(argv) {
   const config = loadConfig(options.repoRoot);
   const { options: enriched, directAgent } = applyConfigToOptions(options, config);
 
-  // Verify CLIs
+  // Verify CLIs — only check binaries that are actually configured
+  const workerIsCodex = !enriched.workerCli || enriched.workerCli === 'codex' || enriched.workerCli === 'qa-remote-codex';
+  const workerIsClaude = enriched.workerCli === 'claude' || enriched.workerCli === 'qa-remote-claude';
   if (enriched.controllerCli !== 'claude' && !directAgent) {
     await ensureBinaryAvailable(enriched.codexBin || 'codex');
   }
-  await ensureBinaryAvailable(enriched.claudeBin || 'claude');
+  if (enriched.controllerCli === 'claude' || workerIsClaude) {
+    await ensureBinaryAvailable(enriched.claudeBin || 'claude');
+  } else if (directAgent && workerIsCodex) {
+    await ensureBinaryAvailable(enriched.codexBin || 'codex');
+  }
 
   // Auto-start Chrome if needed (for agents with chrome-devtools MCP)
   if (!enriched.noChrome) {

@@ -214,6 +214,7 @@ wss.on('connection', (ws) => {
         panelId,
         runId: msg.runId || null,
         onboarding: { complete: isOnboardingComplete(), data: onboardingData },
+        featureFlags: require(path.join(__dirname, '..', 'src', 'feature-flags')).loadFeatureFlags(),
       });
       return;
     }

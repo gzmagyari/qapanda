@@ -133,6 +133,7 @@ function sampleInitConfig(overrides = {}) {
   return {
     type: 'initConfig',
     config: {},
+    featureFlags: { enableRemoteDesktop: true, enableClaudeCli: true },
     mcpServers: { global: {}, project: {} },
     agents: {
       system: {
