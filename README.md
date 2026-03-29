@@ -12,9 +12,6 @@
   <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">
     <img src="https://img.shields.io/visual-studio-marketplace/v/qapandaapp.qapanda-vscode?label=VS%20Code%20Marketplace&logo=visual-studio-code&logoColor=white&color=0078d7" alt="VS Code Marketplace">
   </a>
-  <a href="https://www.npmjs.com/package/qapanda">
-    <img src="https://img.shields.io/npm/v/qapanda?label=npm&logo=npm&color=cb3837" alt="npm">
-  </a>
   <a href="https://github.com/gzmagyari/qapanda/actions">
     <img src="https://img.shields.io/github/actions/workflow/status/gzmagyari/qapanda/ci.yml?label=CI&logo=github" alt="CI">
   </a>
@@ -31,20 +28,11 @@
 
 ---
 
-<table>
-<tr>
-<td width="80" align="center">
+<p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">
-    <img src="https://cdn.vsassets.io/v/M245_20250326.2/_content/Header/default_icon_128.png" width="48" alt="VSCode">
-    <br><strong>Install Extension</strong>
+    <img src="https://img.shields.io/badge/Install_for_VSCode-0078d7?style=for-the-badge&logo=visual-studio-code&logoColor=white" alt="Install for VSCode">
   </a>
-</td>
-<td>
-  <strong>Get QA Panda for VSCode</strong> — the primary way to use QA Panda. Install from the <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">VS Code Marketplace</a> or run:<br>
-  <code>code --install-extension qapandaapp.qapanda-vscode</code>
-</td>
-</tr>
-</table>
+</p>
 
 QA Panda is an AI-powered QA testing tool that runs as a **VSCode extension** (primary) and a **terminal CLI**. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor.
 
