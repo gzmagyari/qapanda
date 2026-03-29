@@ -30,6 +30,7 @@ Say <strong>"test the login page"</strong> and watch it work.<br>
 It launches a <strong>real browser</strong>, navigates your app, clicks through flows,<br>
 finds bugs, takes screenshots, and gives you a <strong>professional QA report</strong>.<br><br>
 It can even delegate to a Developer agent to <strong>fix bugs and re-test automatically</strong>.<br>
+Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</strong> to fix.<br>
 Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal CLI</a>.
 </p>
 
