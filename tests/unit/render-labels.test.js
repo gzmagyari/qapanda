@@ -27,9 +27,9 @@ describe('workerLabelFor', () => {
     assert.equal(workerLabelFor('claude'), 'Worker (Claude)');
   });
 
-  it('returns Worker (Claude) for null/undefined CLI', () => {
-    assert.equal(workerLabelFor(null), 'Worker (Claude)');
-    assert.equal(workerLabelFor(undefined), 'Worker (Claude)');
+  it('returns Worker (Codex) for null/undefined CLI', () => {
+    assert.equal(workerLabelFor(null), 'Worker (Codex)');
+    assert.equal(workerLabelFor(undefined), 'Worker (Codex)');
   });
 
   it('returns Worker (Codex) for codex', () => {

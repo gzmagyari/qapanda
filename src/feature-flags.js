@@ -36,5 +36,6 @@ function getFlag(name, extensionRoot) {
 
 // Reset cache (for testing)
 function _resetCache() { _cached = null; }
+function _setForTest(overrides) { _cached = { ...DEFAULTS, ...overrides }; }
 
-module.exports = { loadFeatureFlags, getFlag, DEFAULTS, _resetCache };
+module.exports = { loadFeatureFlags, getFlag, DEFAULTS, _resetCache, _setForTest };

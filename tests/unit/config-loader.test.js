@@ -1,7 +1,10 @@
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, before } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createTempDir, writeJson, readJson } = require('../helpers/test-utils');
+
+// Enable all feature flags so gated agents are visible in tests
+before(() => { require('../../src/feature-flags')._setForTest({ enableRemoteDesktop: true, enableClaudeCli: true }); });
 const {
   findResourcesDir,
   loadSystemAgents,

@@ -94,8 +94,8 @@ function controllerLabelFor(cli) {
 
 function workerLabelFor(cli, agentName) {
   if (agentName) return agentName;
-  if (!cli || cli === 'claude') return 'Worker (Claude)';
-  if (cli === 'codex') return 'Worker (Codex)';
+  if (cli === 'claude') return 'Worker (Claude)';
+  if (!cli || cli === 'codex') return 'Worker (Codex)';
   return `Worker (${cli})`;
 }
 

@@ -1,6 +1,10 @@
-const { describe, it } = require('node:test');
+const { describe, it, before } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+
+// Enable all feature flags so gated agents are visible in tests
+before(() => { require('../../src/feature-flags')._setForTest({ enableRemoteDesktop: true, enableClaudeCli: true }); });
+
 const { parseArgs, normalizeOptions, loadConfig, applyConfigToOptions } = require('../../src/cli');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');

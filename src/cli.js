@@ -1,5 +1,7 @@
 const path = require('node:path');
 
+const { loadFeatureFlags } = require('./feature-flags');
+const _flags = loadFeatureFlags();
 const { execForText } = require('./process-utils');
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
@@ -50,12 +52,12 @@ Common options:
   --state-dir <path>                 State directory
   --mode <id>                        Select mode (quick-test, auto-test, quick-dev, auto-dev, auto-dev-test)
   --agent <id>                       Direct to specific agent (bypasses controller)
-  --test-env <browser|computer>      Test environment for modes
+  --test-env <browser${_flags.enableRemoteDesktop ? '|computer' : ''}>      Test environment for modes
   --print                            One-shot: run single turn, print result, exit
-  --controller-cli <codex|claude>    Controller CLI backend
+  --controller-cli <codex${_flags.enableClaudeCli ? '|claude' : ''}>    Controller CLI backend
   --controller-model <name>          Controller model
   --controller-thinking <level>      Controller thinking (minimal/low/medium/high/xhigh)
-  --worker-cli <claude|codex>        Worker CLI backend
+  --worker-cli <codex${_flags.enableClaudeCli ? '|claude' : ''}>        Worker CLI backend
   --worker-model <name>              Worker model
   --worker-thinking <level>          Worker thinking (low/medium/high)
   --wait <delay>                     Auto-pass delay (1m, 5m, 1h, etc.)
@@ -275,18 +277,22 @@ async function runDoctor(argv) {
   console.log('QA Panda Doctor\n');
 
   // CLIs
-  const claude = await detectCli('claude');
-  console.log(`Claude Code CLI:    ${claude.available ? '✓ ' + claude.version.split('\n')[0] : '✗ Not found'}`);
+  if (_flags.enableClaudeCli) {
+    const claude = await detectCli('claude');
+    console.log(`Claude Code CLI:    ${claude.available ? '✓ ' + claude.version.split('\n')[0] : '✗ Not found'}`);
+  }
   const codex = await detectCli('codex');
   console.log(`Codex CLI:          ${codex.available ? '✓ ' + codex.version.split('\n')[0] : '✗ Not found'}`);
 
   // Tools
   const chrome = await detectChrome();
   console.log(`Google Chrome:      ${chrome.available ? '✓ Found' : '✗ Not found'}`);
-  const docker = await detectDocker();
-  console.log(`Docker Desktop:     ${docker.available ? (docker.running ? '✓ Running' : '⚠ Installed but not running') : '✗ Not found'}`);
-  const qaDesktop = await detectQaDesktop();
-  console.log(`qa-desktop:         ${qaDesktop.available ? '✓ Available' : '✗ Not found'}`);
+  if (_flags.enableRemoteDesktop) {
+    const docker = await detectDocker();
+    console.log(`Docker Desktop:     ${docker.available ? (docker.running ? '✓ Running' : '⚠ Installed but not running') : '✗ Not found'}`);
+    const qaDesktop = await detectQaDesktop();
+    console.log(`qa-desktop:         ${qaDesktop.available ? '✓ Available' : '✗ Not found'}`);
+  }
 
   // Bundled tools
   const { findDetachedCommandPath, findTasksMcpPath } = require('./mcp-injector');
@@ -310,24 +316,37 @@ async function runSetup() {
   console.log('QA Panda Setup\n');
   console.log('Detecting environment...');
 
-  const [claude, codex, chrome, docker, qaDesktop] = await Promise.all([
-    detectCli('claude'), detectCli('codex'), detectChrome(), detectDocker(), detectQaDesktop(),
-  ]);
+  const checks = [detectCli('codex'), detectChrome()];
+  if (_flags.enableClaudeCli) checks.unshift(detectCli('claude'));
+  if (_flags.enableRemoteDesktop) { checks.push(detectDocker()); checks.push(detectQaDesktop()); }
+  const results = await Promise.all(checks);
 
-  console.log(`  ${claude.available ? '✓' : '✗'} Claude Code CLI ${claude.available ? claude.version.split('\n')[0] : '— not found'}`);
+  let idx = 0;
+  const claude = _flags.enableClaudeCli ? results[idx++] : { available: false };
+  const codex = results[idx++];
+  const chrome = results[idx++];
+  const docker = _flags.enableRemoteDesktop ? results[idx++] : { available: false, running: false };
+  const qaDesktop = _flags.enableRemoteDesktop ? results[idx++] : { available: false };
+
+  if (_flags.enableClaudeCli) {
+    console.log(`  ${claude.available ? '✓' : '✗'} Claude Code CLI ${claude.available ? claude.version.split('\n')[0] : '— not found'}`);
+  }
   console.log(`  ${codex.available ? '✓' : '✗'} Codex CLI ${codex.available ? codex.version.split('\n')[0] : '— not found'}`);
   console.log(`  ${chrome.available ? '✓' : '⚠'} Google Chrome ${chrome.available ? '— found' : '— not found (browser testing unavailable)'}`);
-  console.log(`  ${docker.available && docker.running ? '✓' : '⚠'} Docker Desktop ${docker.available ? (docker.running ? '— running' : '— installed but not running') : '— not found (desktop testing unavailable)'}`);
+  if (_flags.enableRemoteDesktop) {
+    console.log(`  ${docker.available && docker.running ? '✓' : '⚠'} Docker Desktop ${docker.available ? (docker.running ? '— running' : '— installed but not running') : '— not found (desktop testing unavailable)'}`);
+  }
   console.log('');
 
-  if (!claude.available && !codex.available) {
-    console.error('Error: No AI CLI found. Install Claude Code or Codex CLI first.');
+  const effectiveClaudeOk = _flags.enableClaudeCli && claude.available;
+  if (!effectiveClaudeOk && !codex.available) {
+    console.error('Error: Codex CLI not found. Install with: npm install -g @openai/codex');
     process.exit(1);
   }
 
   // Determine preference
-  let preference = 'both';
-  if (claude.available && codex.available) {
+  let preference = 'codex-only';
+  if (_flags.enableClaudeCli && claude.available && codex.available) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     preference = await new Promise((resolve) => {
       rl.question('CLI preference? [both/claude-only/codex-only] (both): ', (answer) => {
@@ -337,16 +356,17 @@ async function runSetup() {
         else resolve('both');
       });
     });
-  } else if (claude.available) {
+  } else if (_flags.enableClaudeCli && claude.available) {
     preference = 'claude-only';
     console.log('Only Claude Code found — using claude-only mode.');
   } else {
     preference = 'codex-only';
-    console.log('Only Codex found — using codex-only mode.');
+    if (!_flags.enableClaudeCli) console.log('Using Codex.');
+    else console.log('Only Codex found — using codex-only mode.');
   }
 
   // Auto-pull Docker image if Docker is running but image missing
-  if (docker.available && docker.running) {
+  if (_flags.enableRemoteDesktop && docker.available && docker.running) {
     const { getImageName } = require('../qa-desktop/lib/docker');
     console.log('\nChecking Docker image...');
     const image = await getImageName(null, (msg) => console.log(`  ${msg}`));
@@ -378,7 +398,7 @@ async function listAgentsCmd(argv) {
   const { allAgents } = loadConfig(repoRoot);
   console.log('Available agents:\n');
   for (const [id, agent] of Object.entries(allAgents)) {
-    console.log(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'claude'}`);
+    console.log(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'codex'}`);
   }
 }
 

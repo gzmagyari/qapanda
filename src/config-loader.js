@@ -61,10 +61,14 @@ function loadSystemAgents(resourcesDir) {
   const bundledPath = path.join(resourcesDir, 'system-agents.json');
   const bundled = readJsonFile(bundledPath);
   const userOverrides = readJsonFile(systemAgentsOverridePath());
+  const { loadFeatureFlags } = require('./feature-flags');
+  const flags = loadFeatureFlags();
 
   const agents = {};
   const meta = {};
   for (const [id, base] of Object.entries(bundled)) {
+    // Skip agents gated by a disabled feature flag
+    if (base.featureFlag && !flags[base.featureFlag]) continue;
     const override = userOverrides[id];
     if (override && override.removed) {
       meta[id] = { hasUserOverride: true, removed: true, bundled: base };

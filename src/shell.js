@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const readline = require('node:readline/promises');
 const path = require('node:path');
 
+const { loadFeatureFlags } = require('./feature-flags');
+const _flags = loadFeatureFlags();
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
 const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./prompts');
@@ -69,8 +71,8 @@ Config:
   /modes               List all available modes
   /agent [id]          Show or switch to a direct agent
   /agents              List all available agents
-  /controller-cli [c]  Show or set controller CLI (codex/claude)
-  /worker-cli [c]      Show or set worker CLI (claude/codex)
+  /controller-cli [c]  Show or set controller CLI${_flags.enableClaudeCli ? ' (codex/claude)' : ' (codex)'}
+  /worker-cli [c]      Show or set worker CLI${_flags.enableClaudeCli ? ' (codex/claude)' : ' (codex)'}
   /controller-model [m] Show or set controller model
   /worker-model [m]    Show or set worker model
   /controller-thinking [l] Show or set controller thinking level
@@ -81,9 +83,9 @@ Tasks:
   /task add <title>    Create a new task
   /task done <id>      Mark task as done
   /task <id>           Show task details
-
+${_flags.enableRemoteDesktop ? `
 Instances:
-  /instances           List Docker desktop instances
+  /instances           List Docker desktop instances` : ''}
   /mcp                 List configured MCP servers
 
 Plain text:
@@ -494,7 +496,7 @@ async function runInteractiveShell(options = {}) {
           const lines = ['Available agents:'];
           for (const [id, agent] of Object.entries(allAgents)) {
             const active = id === directAgent ? ' ← active' : '';
-            lines.push(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'claude'}${active}`);
+            lines.push(`  ${id.padEnd(20)} ${(agent.name || '').padEnd(25)} cli: ${agent.cli || 'codex'}${active}`);
           }
           renderer.banner(lines.join('\n'));
           continue;
@@ -518,6 +520,12 @@ async function runInteractiveShell(options = {}) {
 
         if (command === '/controller-cli') {
           if (!rest) { renderer.banner(`Controller CLI: ${controllerCli}`); continue; }
+          if (!_flags.enableClaudeCli && (rest === 'claude' || rest === 'qa-remote-claude')) {
+            renderer.banner('Claude CLI is not enabled. Use codex.'); continue;
+          }
+          if (!_flags.enableRemoteDesktop && rest.startsWith('qa-remote')) {
+            renderer.banner('Remote desktop is not enabled.'); continue;
+          }
           controllerCli = rest;
           if (activeManifest) { activeManifest.controller.cli = rest; activeManifest.controller.sessionId = null; }
           renderer.banner(`Controller CLI set to: ${rest}`);
@@ -526,6 +534,12 @@ async function runInteractiveShell(options = {}) {
 
         if (command === '/worker-cli') {
           if (!rest) { renderer.banner(`Worker CLI: ${workerCli}`); continue; }
+          if (!_flags.enableClaudeCli && (rest === 'claude' || rest === 'qa-remote-claude')) {
+            renderer.banner('Claude CLI is not enabled. Use codex.'); continue;
+          }
+          if (!_flags.enableRemoteDesktop && rest.startsWith('qa-remote')) {
+            renderer.banner('Remote desktop is not enabled.'); continue;
+          }
           workerCli = rest;
           renderer.banner(`Worker CLI set to: ${rest}`);
           continue;
@@ -693,6 +707,7 @@ async function runInteractiveShell(options = {}) {
         // ── Instances / MCP ──────────────────────────────────────
 
         if (command === '/instances') {
+          if (!_flags.enableRemoteDesktop) { renderer.banner('Remote desktop feature is not enabled.'); continue; }
           try {
             const { listInstances } = require('./remote-desktop');
             const instances = await listInstances(null, cwd);
