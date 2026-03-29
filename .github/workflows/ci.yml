@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, prod]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22]
+    runs-on: ${{ matrix.os }}
+    name: Test (${{ matrix.os }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: UI tests
+        run: npm run test:ui
+
+      - name: Build extension
+        run: npm run ext:build
+
+      - name: Install extension in VSCode
+        run: |
+          npm install -g @vscode/vsce 2>/dev/null || true
+          code --install-extension extension/qapanda.vsix 2>/dev/null || echo "VSCode not available (expected in CI)"
+        shell: bash
+
+      - name: Install CLI globally
+        run: npm install -g .
+
+      - name: CLI doctor
+        run: qapanda doctor
+
+      - name: CLI help
+        run: qapanda help
+
+      - name: CLI agents
+        run: qapanda agents
