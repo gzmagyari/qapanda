@@ -15,11 +15,14 @@ const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboardi
 const { loadSettings, saveSettings } = require('./settings-store');
 const { buildSelfTestingPrompt } = require('./src/prompts');
 const { loadFeatureFlags } = require('./src/feature-flags');
+const { startQaPandaControlMcpServer, stopQaPandaControlMcpServer } = require('./qa-panda-control-mcp');
 
 const activePanels = new Set();
+const _panelRegistry = new Map(); // panelId → {session, panel, repoRoot}
 let _tasksMcpPort = null;
 let _testsMcpPort = null;
 let _qaDesktopMcpPort = null;
+let _controlMcpPort = null;
 
 
 // (Task/Test/Agent/Mode/Instance handlers moved to message-handlers.js)
@@ -78,6 +81,15 @@ function activate(context) {
   if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
     startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
   }
+  // QA Panda Control MCP — lets external tools (Claude Code) discover and control panels
+  startQaPandaControlMcpServer(_panelRegistry).then(r => {
+    _controlMcpPort = r.port;
+    // Write port to well-known location so external tools can discover it
+    const portFile = path.join(defaultRepoRoot, '.qpanda', '.control-mcp-port');
+    try { fs.mkdirSync(path.dirname(portFile), { recursive: true }); } catch {}
+    try { fs.writeFileSync(portFile, String(r.port)); } catch {}
+    console.log(`[ext] QA Panda Control MCP on port ${r.port}`);
+  }).catch(e => console.error('[ext] Failed to start control MCP:', e));
 
   const openCommand = vscode.commands.registerCommand('qapanda.open', () => {
     const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
@@ -188,6 +200,8 @@ function activate(context) {
           _extDbg(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
           if (msg.panelId) session._panelId = msg.panelId;
           _extDbg(`ready: after restore _panelId=${session._panelId}`);
+          // Register panel in control MCP registry
+          _panelRegistry.set(session._panelId, { session, panel, repoRoot });
           const mcpData = loadMergedMcpServers(repoRoot);
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
@@ -271,6 +285,7 @@ function activate(context) {
     panel.onDidDispose(
       () => {
         activePanels.delete(panel);
+        _panelRegistry.delete(session.panelId);
         // Stop the Docker container linked to this panel
         const name = instanceName(repoRoot, session.panelId);
         stopInstance(name).catch(() => {});
@@ -433,6 +448,8 @@ function activate(context) {
             _extDbg2(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
             if (msg.panelId) session._panelId = msg.panelId;
             _extDbg2(`ready: after restore _panelId=${session._panelId}`);
+            // Register panel in control MCP registry
+            _panelRegistry.set(session._panelId, { session, panel, repoRoot });
             const mcpData = loadMergedMcpServers(repoRoot);
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
@@ -475,6 +492,7 @@ function activate(context) {
       panel.onDidDispose(
         () => {
           activePanels.delete(panel);
+          _panelRegistry.delete(session.panelId);
           const name = instanceName(repoRoot, session.panelId);
           stopInstance(name).catch(() => {});
           try { require('./chrome-manager').killChrome(session.panelId); } catch {}
@@ -491,6 +509,15 @@ function activate(context) {
 function deactivate() {
   stopTasksMcpServer().catch(() => {});
   stopQaDesktopMcpServer().catch(() => {});
+  stopQaPandaControlMcpServer().catch(() => {});
+  _panelRegistry.clear();
+  // Clean up port file (best-effort — getRepoRoot needs workspace folders)
+  try {
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 0) {
+      fs.unlinkSync(path.join(folders[0].uri.fsPath, '.qpanda', '.control-mcp-port'));
+    }
+  } catch {}
   try { require('./chrome-manager').killAll(); } catch {}
   // Clean up any persistent Codex app-server connections
   try { require('./src/codex-app-server').closeAllConnections(); } catch {}
