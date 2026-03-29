@@ -2,3 +2,9 @@ node_modules
 .qpanda/
 .cc-manager/
 .tmp-review-state*
+*.tgz
+*.tmp.*
+.claude/
+MONETIZATION-*.md
+PLAN-*.md
+IDEAS.md
