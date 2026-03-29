@@ -9,7 +9,18 @@
 </p>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">VSCode Marketplace</a> •
+  <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/qapandaapp.qapanda-vscode?label=VS%20Code%20Marketplace&logo=visual-studio-code&logoColor=white&color=0078d7" alt="VS Code Marketplace">
+  </a>
+  <a href="https://www.npmjs.com/package/qapanda">
+    <img src="https://img.shields.io/npm/v/qapanda?label=npm&logo=npm&color=cb3837" alt="npm">
+  </a>
+  <a href="https://github.com/gzmagyari/qapanda/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/gzmagyari/qapanda/ci.yml?label=CI&logo=github" alt="CI">
+  </a>
+</p>
+
+<p align="center">
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
@@ -20,7 +31,22 @@
 
 ---
 
-QA Panda is an AI-powered QA testing tool that runs as a **VSCode extension** and a **terminal CLI**. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor or terminal.
+<table>
+<tr>
+<td width="80" align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">
+    <img src="https://cdn.vsassets.io/v/M245_20250326.2/_content/Header/default_icon_128.png" width="48" alt="VSCode">
+    <br><strong>Install Extension</strong>
+  </a>
+</td>
+<td>
+  <strong>Get QA Panda for VSCode</strong> — the primary way to use QA Panda. Install from the <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">VS Code Marketplace</a> or run:<br>
+  <code>code --install-extension qapandaapp.qapanda-vscode</code>
+</td>
+</tr>
+</table>
+
+QA Panda is an AI-powered QA testing tool that runs as a **VSCode extension** (primary) and a **terminal CLI**. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor.
 
 Point it at your app and say **"test the login page"** — it launches a headless browser, navigates to your app, clicks through flows, takes screenshots, files bugs, and gives you a professional QA report. It can also delegate to a Developer agent to fix bugs and re-test automatically.
 

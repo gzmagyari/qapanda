@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="resources/icon.png" width="80" height="80" alt="QA Panda">
-</p>
-
 <h1 align="center">QA Panda</h1>
 
 <p align="center">
@@ -9,17 +5,17 @@
 </p>
 
 <p align="center">
-  <a href="#installation">Installation</a> •
-  <a href="#quick-start">Quick Start</a> •
+  <a href="https://github.com/gzmagyari/qapanda">GitHub Repository</a> •
+  <a href="https://github.com/gzmagyari/qapanda/issues">Report Issues</a> •
   <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
   <a href="#agents">Agents</a> •
-  <a href="#cli">CLI</a> •
   <a href="#configuration">Configuration</a>
 </p>
 
 ---
 
-QA Panda is an AI-powered QA testing tool that runs as a **VSCode extension** and a **terminal CLI**. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor or terminal.
+QA Panda is an AI-powered QA testing tool. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor. Also available as a [terminal CLI](https://github.com/gzmagyari/qapanda#cli).
 
 Point it at your app and say **"test the login page"** — it launches a headless browser, navigates to your app, clicks through flows, takes screenshots, files bugs, and gives you a professional QA report. It can also delegate to a Developer agent to fix bugs and re-test automatically.
 
