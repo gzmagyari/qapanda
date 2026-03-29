@@ -51,7 +51,8 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
     <div id="init-wizard" class="wizard-hidden">
       <!-- Onboarding steps (shown on first run only) -->
       <div id="wizard-step-onboard" class="wizard-step wizard-hidden">
-        <h2>&#x1F43C; QA Panda</h2>
+        <div class="welcome-icon">&#x1F43C;</div>
+        <h2>QA Panda</h2>
         <p class="wizard-subtitle">Let's check your environment and preferences.</p>
         <div id="onboard-status" class="onboard-status"></div>
         <div id="onboard-cli-preference" class="wizard-cards wizard-hidden"></div>

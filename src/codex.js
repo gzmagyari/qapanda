@@ -198,7 +198,7 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-controller: runId=${manifest.runId} controllerMcpKeys=${JSON.stringify(Object.keys(manifest.controllerMcpServers || {}))} codexMode=${manifest.controller.codexMode}\n`); } catch {}
   const conn = getOrCreateConnection(manifest);
-  if (!conn.isConnected) {
+  if (!conn.isConnected && !manifest.controller.appServerThreadId) {
     renderer.controller('Waiting for Codex app-server to initialize\u2026');
   }
   await conn.ensureConnected();

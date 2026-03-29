@@ -1233,9 +1233,8 @@
       return;
     }
 
-    // Show CLI preference section with clear heading
+    // Show CLI preference section (only if there are multiple choices)
     if (prefEl) {
-      prefEl.classList.remove('wizard-hidden');
       prefEl.innerHTML = '';
 
       const heading = document.createElement('div');
@@ -1256,6 +1255,14 @@
       if (claudeEnabled && claudeOk && codexOk) onboardingPreference = 'both';
       else if (claudeEnabled && claudeOk) onboardingPreference = 'claude-only';
       else onboardingPreference = 'codex-only';
+
+      // Hide preference section if only one option
+      if (options.length <= 1) {
+        prefEl.classList.add('wizard-hidden');
+        if (nextBtn) nextBtn.disabled = false;
+        return;
+      }
+      prefEl.classList.remove('wizard-hidden');
 
       for (const opt of options) {
         const card = document.createElement('div');
@@ -1302,12 +1309,14 @@
     const prefLabel = { both: 'Both CLIs', 'claude-only': 'Claude Code only', 'codex-only': 'Codex only' };
     items.push(makeOnboardItem('ok', 'CLI Preference', prefLabel[onboardingPreference] || onboardingPreference));
 
-    if (c.claude && c.claude.available) items.push(makeOnboardItem('ok', 'Claude Code', 'Available'));
+    if (_featureFlags.enableClaudeCli && c.claude && c.claude.available) items.push(makeOnboardItem('ok', 'Claude Code', 'Available'));
     if (c.codex && c.codex.available) items.push(makeOnboardItem('ok', 'Codex', 'Available'));
     if (t.chrome && t.chrome.available) items.push(makeOnboardItem('ok', 'Chrome', 'Browser testing available'));
     else items.push(makeOnboardItem('warn', 'Chrome', 'Not available — browser testing disabled'));
-    if (t.docker && t.docker.available && t.docker.running) items.push(makeOnboardItem('ok', 'Docker', 'Desktop testing available'));
-    else items.push(makeOnboardItem('warn', 'Docker', 'Not available — desktop testing disabled'));
+    if (_featureFlags.enableRemoteDesktop) {
+      if (t.docker && t.docker.available && t.docker.running) items.push(makeOnboardItem('ok', 'Docker', 'Desktop testing available'));
+      else items.push(makeOnboardItem('warn', 'Docker', 'Not available — desktop testing disabled'));
+    }
 
     summaryEl.innerHTML = items.join('');
   }
@@ -1315,7 +1324,16 @@
   // Wire up onboarding buttons
   const onboardNextBtn = document.getElementById('onboard-next');
   if (onboardNextBtn) {
-    onboardNextBtn.addEventListener('click', () => renderOnboardingSummary());
+    onboardNextBtn.addEventListener('click', () => {
+      // Skip summary step if there's nothing extra to show (no claude, no remote desktop)
+      if (!_featureFlags.enableClaudeCli && !_featureFlags.enableRemoteDesktop) {
+        onboardingComplete = true;
+        vscode.postMessage({ type: 'onboardingSave', preference: onboardingPreference || 'codex-only', detected: onboardingDetected || { clis: {}, tools: {} } });
+        goToChat();
+        return;
+      }
+      renderOnboardingSummary();
+    });
   }
   const onboardSkipBtn = document.getElementById('onboard-skip');
   if (onboardSkipBtn) {
@@ -3088,6 +3106,11 @@
           btn.style.display = 'none';
         }
       });
+    }
+    // Hide Skip Setup button when there's nothing to skip (no CLI choice)
+    if (!flags.enableClaudeCli) {
+      const skipBtn = document.getElementById('onboard-skip');
+      if (skipBtn) skipBtn.style.display = 'none';
     }
     // Hide Claude CLI options when Claude is disabled
     if (!flags.enableClaudeCli) {
