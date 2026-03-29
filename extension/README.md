@@ -13,6 +13,14 @@
   <a href="#configuration">Configuration</a>
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=4XdG6p-HByM">
+    <img src="https://img.youtube.com/vi/4XdG6p-HByM/maxresdefault.jpg" width="600" alt="QA Panda Demo">
+  </a>
+  <br>
+  <em>▶ Watch the demo</em>
+</p>
+
 ---
 
 QA Panda is an AI-powered QA testing tool. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor. Also available as a [terminal CLI](https://github.com/gzmagyari/qapanda#cli).
