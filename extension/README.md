@@ -23,7 +23,15 @@
 
 ---
 
-QA Panda is an open-source AI QA engineer that lives inside VSCode. **Say "test the login page" and watch it work** — it launches a real browser, navigates your app, clicks through flows, finds bugs, takes screenshots, and gives you a professional QA report. It can even delegate to a Developer agent to fix bugs and re-test automatically. Also available as a [terminal CLI](https://github.com/gzmagyari/qapanda#cli).
+<h3 align="center">An open-source AI QA engineer that lives inside VSCode.</h3>
+
+<p align="center">
+Say <strong>"test the login page"</strong> and watch it work.<br>
+It launches a <strong>real browser</strong>, navigates your app, clicks through flows,<br>
+finds bugs, takes screenshots, and gives you a <strong>professional QA report</strong>.<br><br>
+It can even delegate to a Developer agent to <strong>fix bugs and re-test automatically</strong>.<br>
+Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal CLI</a>.
+</p>
 
 ### Why QA Panda?
 
