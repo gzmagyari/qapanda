@@ -2,12 +2,17 @@
   "name": "qapanda-vscode",
   "displayName": "QA Panda",
   "description": "AI-powered QA agents for your codebase — test, fix, and ship with confidence",
-  "version": "0.2.0",
-  "publisher": "qapanda",
+  "version": "0.2.1",
+  "publisher": "qapandaapp",
+  "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gzmagyari/qapanda"
+  },
+  "categories": ["Testing", "Other"],
   "activationEvents": [
     "onStartupFinished",
     "onWebviewPanel:qapandaPanel"

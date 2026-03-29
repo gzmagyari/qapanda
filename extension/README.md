@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extension/resources/icon.png" width="80" height="80" alt="QA Panda">
+  <img src="resources/icon.png" width="80" height="80" alt="QA Panda">
 </p>
 
 <h1 align="center">QA Panda</h1>
@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=qapandaapp.qapanda-vscode">VSCode Marketplace</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
