@@ -23,19 +23,28 @@
 
 ---
 
-QA Panda is an AI-powered QA testing tool. It uses AI agents to test your web apps, find bugs, and manage your entire QA workflow — all from inside your editor. Also available as a [terminal CLI](https://github.com/gzmagyari/qapanda#cli).
+QA Panda is an open-source AI QA engineer that lives inside VSCode. **Say "test the login page" and watch it work** — it launches a real browser, navigates your app, clicks through flows, finds bugs, takes screenshots, and gives you a professional QA report. It can even delegate to a Developer agent to fix bugs and re-test automatically. Also available as a [terminal CLI](https://github.com/gzmagyari/qapanda#cli).
 
-Point it at your app and say **"test the login page"** — it launches a headless browser, navigates to your app, clicks through flows, takes screenshots, files bugs, and gives you a professional QA report. It can also delegate to a Developer agent to fix bugs and re-test automatically.
+### Why QA Panda?
+
+- **No test scripts to write.** Describe what to test in plain English.
+- **Real browser, real bugs.** Controls headless Chrome and interacts with your actual app.
+- **Find, fix, and verify in one loop.** QA finds bugs, Developer fixes them, QA re-tests. Automated.
+- **Built-in test & bug tracking.** Test cases, run history, kanban board, screenshots — no external tools needed.
+- **Copy the report, paste to Claude Code / Codex / Cursor.** Use QA Panda for testing, then hand the bug report to your favorite coding tool to fix.
+- **Free and open source.** MIT licensed. [Star us on GitHub!](https://github.com/gzmagyari/qapanda)
+
+---
 
 ## What Can It Do?
 
-- **AI QA Engineer** — A professional QA agent that creates test plans, executes them step by step, logs bugs with evidence, and tracks pass/fail results
+- **AI QA Engineer** — Creates test plans, executes them step by step, logs bugs with screenshot evidence, and tracks pass/fail results
 - **Browser Testing** — Headless Chrome with screenshots, DOM inspection, network monitoring, and full page interaction
 - **Test Case Management** — Create, run, and track repeatable test cases with pass/fail/skip status and full history
 - **Bug Tracking** — Built-in kanban board with task tracking, comments, and progress updates
-- **Orchestration** — Chain agents together: QA finds bugs → Developer fixes them → QA re-tests → repeat until done
+- **Agent Orchestration** — Chain agents together: QA finds bugs -> Developer fixes them -> QA re-tests -> repeat until done
 - **MCP Ecosystem** — Extensible with any MCP server (file system, databases, APIs, custom tools)
-- **Developer Agent** — A coding agent that can read your codebase, write fixes, and run tests (useful when paired with QA)
+- **Developer Agent** — A coding agent that can read your codebase, write fixes, and run tests
 
 ## Installation
 
