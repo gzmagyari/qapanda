@@ -11,7 +11,7 @@ const { globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpSe
 const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
 const { startTestsMcpServer, stopTestsMcpServer } = require('./tests-mcp-http');
 const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
-const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding } = require('./onboarding');
+const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require('./onboarding');
 const { loadSettings, saveSettings } = require('./settings-store');
 const { buildSelfTestingPrompt } = require('./src/prompts');
 const { loadFeatureFlags } = require('./src/feature-flags');
@@ -152,6 +152,13 @@ function activate(context) {
           }).catch(() => {
             try { panel.webview.postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' }); } catch {}
           });
+          return;
+        }
+        if (msg.type === 'onboardingAutoFix') {
+          runAutoFix(msg.step,
+            (text) => { try { panel.webview.postMessage({ type: 'onboardingFixProgress', step: msg.step, text }); } catch {} },
+            (success, error) => { try { panel.webview.postMessage({ type: 'onboardingFixDone', step: msg.step, success, error }); } catch {} }
+          );
           return;
         }
         if (msg.type === 'onboardingSave') {
@@ -333,6 +340,13 @@ function activate(context) {
             }).catch(() => {
               try { panel.webview.postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' }); } catch {}
             });
+            return;
+          }
+          if (msg.type === 'onboardingAutoFix') {
+            runAutoFix(msg.step,
+              (text) => { try { panel.webview.postMessage({ type: 'onboardingFixProgress', step: msg.step, text }); } catch {} },
+              (success, error) => { try { panel.webview.postMessage({ type: 'onboardingFixDone', step: msg.step, success, error }); } catch {} }
+            );
             return;
           }
           if (msg.type === 'onboardingSave') {

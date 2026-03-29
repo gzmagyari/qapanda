@@ -1198,6 +1198,7 @@
     const c = detected.clis || {};
     const t = detected.tools || {};
     const platform = detected.platform || 'win32';
+    _onboardPlatform = platform;
     const codex = c.codex || {};
     const chrome = t.chrome || {};
     const node = t.node || {};
@@ -1205,20 +1206,20 @@
     const claudeOk = claudeEnabled && c.claude && c.claude.available;
     const codexOk = codex.available;
 
-    // Build check items with detailed status/messages
+    // Build check items with detailed status/messages + fixStep for actionable items
     const items = [];
 
     // Codex CLI
     if (codexOk) {
       if (!codex.versionOk) {
-        items.push({ status: 'warn', name: 'Codex CLI', detail: 'Outdated (v' + (codex.parsed ? codex.parsed.raw : codex.version) + '). Update with: npm install -g @openai/codex@latest' });
+        items.push({ status: 'warn', name: 'Codex CLI', detail: 'Outdated (v' + (codex.parsed ? codex.parsed.raw : codex.version) + ')', fixStep: 'codex-install' });
       } else if (!codex.loggedIn) {
-        items.push({ status: 'warn', name: 'Codex CLI', detail: 'v' + (codex.parsed ? codex.parsed.raw : '') + ' — not logged in. Run codex login in your terminal to authenticate.' });
+        items.push({ status: 'warn', name: 'Codex CLI', detail: 'v' + (codex.parsed ? codex.parsed.raw : '') + ' — not logged in', fixStep: 'codex-login' });
       } else {
         items.push({ status: 'ok', name: 'Codex CLI', detail: 'v' + (codex.parsed ? codex.parsed.raw : '') + ' — logged in via ' + (codex.loginMethod || 'API key') });
       }
     } else {
-      items.push({ status: 'fail', name: 'Codex CLI', detail: 'Not found. Install with: npm install -g @openai/codex', action: 'npm install -g @openai/codex' });
+      items.push({ status: 'fail', name: 'Codex CLI', detail: 'Not found', fixStep: 'codex-install' });
     }
 
     // Claude CLI (only if feature flag on)
@@ -1233,23 +1234,23 @@
     // Node.js
     if (node.available) {
       if (!node.versionOk) {
-        items.push({ status: 'warn', name: 'Node.js', detail: 'v' + (node.major || '') + ' is too old. Update to v18+ from nodejs.org' });
+        items.push({ status: 'warn', name: 'Node.js', detail: 'v' + (node.major || '') + ' is too old — update to v18+', fixStep: 'node-install' });
       } else {
         items.push({ status: 'ok', name: 'Node.js', detail: node.version });
       }
     } else {
-      items.push({ status: 'warn', name: 'Node.js', detail: 'Not found. Install from nodejs.org for full MCP support.' });
+      items.push({ status: 'warn', name: 'Node.js', detail: 'Not found', fixStep: 'node-install' });
     }
 
     // Chrome
     if (chrome.available) {
       if (!chrome.versionOk) {
-        items.push({ status: 'warn', name: 'Google Chrome', detail: 'v' + (chrome.major || '?') + ' is too old for headless debugging. Update to v120+.' });
+        items.push({ status: 'warn', name: 'Google Chrome', detail: 'v' + (chrome.major || '?') + ' is too old — update to v120+', fixStep: 'chrome-update' });
       } else {
         items.push({ status: 'ok', name: 'Google Chrome', detail: 'v' + chrome.major + ' — browser testing ready' });
       }
     } else {
-      items.push({ status: 'warn', name: 'Google Chrome', detail: 'Not found. Install from google.com/chrome for browser testing.' });
+      items.push({ status: 'warn', name: 'Google Chrome', detail: 'Not found', fixStep: 'chrome-install' });
     }
 
     // Docker (only if remote desktop flag on)
@@ -1269,14 +1270,14 @@
     statusEl.innerHTML = '';
     items.forEach(function (item, i) {
       if (animDelay === 0) {
-        statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail);
+        statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail, item.fixStep);
         if (i === items.length - 1) {
           _showOnboardImpact(statusEl, codexOk, codex, chrome, node, claudeOk);
           _showOnboardPreference(prefEl, nextBtn, codexOk, claudeOk);
         }
       } else {
         setTimeout(function () {
-          statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail);
+          statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail, item.fixStep);
           if (i === items.length - 1) {
             _showOnboardImpact(statusEl, codexOk, codex, chrome, node, claudeOk);
             _showOnboardPreference(prefEl, nextBtn, codexOk, claudeOk);
@@ -1367,15 +1368,76 @@
     if (nextBtn) nextBtn.disabled = false;
   }
 
-  function makeOnboardItem(status, name, detail) {
-    var colors = { ok: '#4caf50', warn: '#ff9800', fail: '#f44336' };
+  var _onboardPlatform = 'win32';
+
+  function makeOnboardItem(status, name, detail, fixStep) {
     var icons = { ok: '\u2705', warn: '\u26A0\uFE0F', fail: '\u274C' };
-    return '<div class="onboard-item ' + status + ' onboard-fade-in">'
+    var html = '<div class="onboard-item ' + status + ' onboard-fade-in" data-step="' + (fixStep || '') + '">'
       + '<span class="onboard-item-icon">' + (icons[status] || '') + '</span>'
       + '<span class="onboard-item-label">'
       + '<span class="onboard-item-name">' + name + '</span>'
-      + '<span class="onboard-item-detail">' + detail + '</span>'
-      + '</span></div>';
+      + '<span class="onboard-item-detail">' + detail + '</span>';
+    // Add action buttons for failing/warning items that have a fix step
+    if (status !== 'ok' && fixStep) {
+      var canAutoFix = (fixStep === 'codex-install' || fixStep === 'codex-login');
+      html += '<div class="onboard-actions">';
+      if (canAutoFix) html += '<button class="onboard-fix-btn" data-step="' + fixStep + '">Fix automatically</button>';
+      html += '<button class="onboard-manual-btn" data-step="' + fixStep + '">Show manual steps</button>';
+      html += '</div>';
+      html += '<div class="onboard-manual-instructions" id="manual-' + fixStep + '">' + _getManualInstructions(fixStep, _onboardPlatform) + '</div>';
+      html += '<div class="onboard-fix-output" id="fix-output-' + fixStep + '" style="display:none"></div>';
+    }
+    html += '</span></div>';
+    return html;
+  }
+
+  function _getManualInstructions(step, platform) {
+    var openTerminal = platform === 'win32'
+      ? 'Open <strong>Command Prompt</strong> (press Win+R, type <code>cmd</code>, press Enter)'
+      : platform === 'darwin'
+        ? 'Open <strong>Terminal</strong> (press Cmd+Space, type <code>Terminal</code>, press Enter)'
+        : 'Open a <strong>terminal</strong>';
+    if (step === 'codex-install') {
+      return '<ol>'
+        + '<li>' + openTerminal + '</li>'
+        + '<li>Type the following command and press Enter:<br><code>npm install -g @openai/codex</code></li>'
+        + '<li>Wait for installation to complete</li>'
+        + '<li>Click <strong>Re-check</strong> to verify</li>'
+        + '</ol>';
+    }
+    if (step === 'codex-login') {
+      return '<ol>'
+        + '<li>' + openTerminal + '</li>'
+        + '<li>Type the following command and press Enter:<br><code>codex login</code></li>'
+        + '<li>Your browser will open — sign in to your account</li>'
+        + '<li>Return here and click <strong>Re-check</strong></li>'
+        + '</ol>';
+    }
+    if (step === 'node-install') {
+      if (platform === 'darwin') {
+        return '<ol><li>Download and install from <strong>nodejs.org</strong> (LTS version)</li>'
+          + '<li>Or run: <code>brew install node</code></li>'
+          + '<li>Click <strong>Re-check</strong> to verify</li></ol>';
+      }
+      if (platform === 'linux') {
+        return '<ol><li>Run: <code>sudo apt install nodejs npm</code> (Ubuntu/Debian)</li>'
+          + '<li>Or download from <strong>nodejs.org</strong></li>'
+          + '<li>Click <strong>Re-check</strong> to verify</li></ol>';
+      }
+      return '<ol><li>Download and install from <strong>nodejs.org</strong> (LTS version recommended)</li>'
+        + '<li>Click <strong>Re-check</strong> to verify</li></ol>';
+    }
+    if (step === 'chrome-install') {
+      var html = '<ol><li>Download from <strong>google.com/chrome</strong></li>';
+      if (platform === 'linux') html += '<li>Or run: <code>sudo apt install google-chrome-stable</code></li>';
+      html += '<li>Click <strong>Re-check</strong> to verify</li></ol>';
+      return html;
+    }
+    if (step === 'chrome-update') {
+      return '<ol><li>Open Chrome and go to <strong>Settings → About Chrome</strong> to update</li>'
+        + '<li>Click <strong>Re-check</strong> to verify</li></ol>';
+    }
+    return '';
   }
 
   function renderOnboardingSummary() {
@@ -1440,6 +1502,33 @@
   const onboardSummaryBackBtn = document.getElementById('onboard-summary-back');
   if (onboardSummaryBackBtn) {
     onboardSummaryBackBtn.addEventListener('click', () => renderOnboardingStep());
+  }
+  // Re-check button
+  const onboardRecheckBtn = document.getElementById('onboard-recheck');
+  if (onboardRecheckBtn) {
+    onboardRecheckBtn.addEventListener('click', () => renderOnboardingStep());
+  }
+  // Event delegation for auto-fix and manual instruction buttons
+  const onboardStatusEl = document.getElementById('onboard-status');
+  if (onboardStatusEl) {
+    onboardStatusEl.addEventListener('click', function (e) {
+      var fixBtn = e.target.closest('.onboard-fix-btn');
+      if (fixBtn) {
+        var step = fixBtn.dataset.step;
+        fixBtn.disabled = true;
+        fixBtn.textContent = step === 'codex-login' ? 'Waiting for login...' : 'Installing...';
+        var outputEl = document.getElementById('fix-output-' + step);
+        if (outputEl) { outputEl.style.display = ''; outputEl.textContent = ''; }
+        vscode.postMessage({ type: 'onboardingAutoFix', step: step });
+        return;
+      }
+      var manualBtn = e.target.closest('.onboard-manual-btn');
+      if (manualBtn) {
+        var manualEl = document.getElementById('manual-' + manualBtn.dataset.step);
+        if (manualEl) manualEl.classList.toggle('visible');
+        return;
+      }
+    });
   }
 
   function hideInitWizard() {
@@ -3859,6 +3948,23 @@
       _dbg('onboardingDetected received');
       if (msg.detected) {
         renderOnboardingDetected(msg.detected);
+      }
+    },
+
+    onboardingFixProgress(msg) {
+      var el = document.getElementById('fix-output-' + msg.step);
+      if (el) { el.textContent += msg.text; el.scrollTop = el.scrollHeight; }
+    },
+
+    onboardingFixDone(msg) {
+      var outputEl = document.getElementById('fix-output-' + msg.step);
+      if (outputEl) {
+        outputEl.textContent += msg.success ? '\n✅ Done!\n' : '\n❌ Failed: ' + (msg.error || 'unknown error') + '\n';
+        outputEl.scrollTop = outputEl.scrollHeight;
+      }
+      // Auto re-check after a short delay
+      if (msg.success) {
+        setTimeout(function () { renderOnboardingStep(); }, 1500);
       }
     },
 

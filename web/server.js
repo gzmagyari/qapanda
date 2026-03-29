@@ -25,7 +25,7 @@ const SessionManager = require(path.join(EXTENSION_DIR, 'session-manager')).Sess
   || require(path.join(EXTENSION_DIR, 'session-manager'));
 const { loadMergedAgents, loadAgentsFile } = require(path.join(EXTENSION_DIR, 'agents-store'));
 const { loadMergedModes } = require(path.join(EXTENSION_DIR, 'modes-store'));
-const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding } = require(path.join(EXTENSION_DIR, 'onboarding'));
+const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require(path.join(EXTENSION_DIR, 'onboarding'));
 const handlers = require(path.join(EXTENSION_DIR, 'message-handlers'));
 const { loadSettings, saveSettings } = require(path.join(EXTENSION_DIR, 'settings-store'));
 const { buildSelfTestingPrompt } = require(path.join(__dirname, '..', 'src', 'prompts'));
@@ -186,6 +186,13 @@ wss.on('connection', (ws) => {
       }).catch(() => {
         postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' });
       });
+      return;
+    }
+    if (msg.type === 'onboardingAutoFix') {
+      runAutoFix(msg.step,
+        (text) => postMessage({ type: 'onboardingFixProgress', step: msg.step, text }),
+        (success, error) => postMessage({ type: 'onboardingFixDone', step: msg.step, success, error })
+      );
       return;
     }
     if (msg.type === 'onboardingSave') {

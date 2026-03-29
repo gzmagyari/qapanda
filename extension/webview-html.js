@@ -58,6 +58,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <div id="onboard-cli-preference" class="wizard-cards wizard-hidden"></div>
         <div class="wizard-nav">
           <button class="wizard-skip" id="onboard-skip">Skip Setup</button>
+          <button class="wizard-secondary" id="onboard-recheck">Re-check</button>
           <button class="wizard-next" id="onboard-next" disabled>Continue</button>
         </div>
       </div>

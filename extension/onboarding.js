@@ -240,6 +240,38 @@ async function runFullDetection() {
   };
 }
 
+// ── Auto-fix ─────────────────────────────────────────────────────
+
+const { spawn } = require('node:child_process');
+
+const AUTO_FIX_COMMANDS = {
+  'codex-install': { cmd: 'npm', args: ['install', '-g', '@openai/codex'] },
+  'codex-login': { cmd: 'codex', args: ['login'] },
+};
+
+/**
+ * Run an auto-fix step. Streams output via onProgress, calls onDone when finished.
+ * @param {string} step - 'codex-install' | 'codex-login'
+ * @param {(text: string) => void} onProgress
+ * @param {(success: boolean, error?: string) => void} onDone
+ */
+function runAutoFix(step, onProgress, onDone) {
+  const spec = AUTO_FIX_COMMANDS[step];
+  if (!spec) { onDone(false, 'Unknown step: ' + step); return; }
+
+  const cmd = _cmdName(spec.cmd);
+  const useShell = process.platform === 'win32';
+  const child = spawn(cmd, spec.args, { stdio: ['ignore', 'pipe', 'pipe'], shell: useShell });
+
+  child.stdout.on('data', (data) => onProgress(data.toString()));
+  child.stderr.on('data', (data) => onProgress(data.toString()));
+  child.on('error', (err) => onDone(false, err.message));
+  child.on('close', (code) => {
+    if (code === 0) onDone(true);
+    else onDone(false, 'Process exited with code ' + code);
+  });
+}
+
 // ── Agent CLI overrides based on preference ───────────────────────
 
 const { loadAgentsFile, saveAgentsFile, systemAgentsOverridePath } = require('./agents-store');
@@ -331,4 +363,5 @@ module.exports = {
   applyCliPreference,
   getCliDefaults,
   completeOnboarding,
+  runAutoFix,
 };
