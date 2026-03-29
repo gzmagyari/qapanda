@@ -23,7 +23,7 @@
 
 ---
 
-<h3 align="center">An open-source AI QA engineer that lives inside VSCode.</h3>
+<h3 align="center">An open-source AI QA engineer that lives inside VSCode.<br>Works with your ChatGPT subscription — no API keys needed.</h3>
 
 <p align="center">
 Say <strong>"test the login page"</strong> and watch it work.<br>
@@ -41,6 +41,7 @@ Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal 
 - **Find, fix, and verify in one loop.** QA finds bugs, Developer fixes them, QA re-tests. Automated.
 - **Built-in test & bug tracking.** Test cases, run history, kanban board, screenshots — no external tools needed.
 - **Copy the report, paste to Claude Code / Codex / Cursor.** Use QA Panda for testing, then hand the bug report to your favorite coding tool to fix.
+- **Works with your ChatGPT subscription.** Powered by [Codex CLI](https://github.com/openai/codex) — no expensive API tokens. Just use your existing ChatGPT Plus/Pro subscription.
 - **Free and open source.** MIT licensed. [Star us on GitHub!](https://github.com/gzmagyari/qapanda)
 
 ---

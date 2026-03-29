@@ -38,7 +38,7 @@
   <video src="https://github.com/user-attachments/assets/79c990ac-a185-455d-ba88-0e47ef0fdc45" controls width="600"></video>
 </p>
 
-<h3 align="center">An open-source AI QA engineer that lives inside VSCode.</h3>
+<h3 align="center">An open-source AI QA engineer that lives inside VSCode.<br>Works with your ChatGPT subscription — no API keys needed.</h3>
 
 <p align="center">
 Say <strong>"test the login page"</strong> and watch it work.<br>
@@ -56,7 +56,8 @@ Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</str
 - **Built-in test & bug tracking.** Test cases, run history, kanban board, screenshots — no external tools needed.
 - **Works with your stack.** Extend with any MCP server. Add your own agents. Customize everything.
 - **Copy the report, paste to Claude Code / Codex / Cursor.** Use QA Panda for testing, then hand the bug report to your favorite coding tool to fix.
-- **Free and open source.** MIT licensed. Bring your own AI backend.
+- **Works with your ChatGPT subscription.** Powered by [Codex CLI](https://github.com/openai/codex) — no expensive API tokens needed. Just use your existing ChatGPT Plus/Pro subscription.
+- **Free and open source.** MIT licensed.
 
 ---
 
