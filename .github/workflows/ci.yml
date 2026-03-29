@@ -30,6 +30,9 @@ jobs:
         run: cd extension && npm install --production
         shell: bash
 
+      - name: Pre-install vsce (avoid npx TTY hang on Windows)
+        run: npm install -g @vscode/vsce
+
       - name: Unit tests
         run: npm run test:unit
 
