@@ -64,6 +64,8 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      // Skip onboarding animations in tests
+      window._noOnboardAnimation = true;
       // Mock acquireVsCodeApi — the only VSCode-specific global
       window.acquireVsCodeApi = () => ({
         postMessage: (msg) => messages.push(msg),

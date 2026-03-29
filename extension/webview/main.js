@@ -1197,66 +1197,141 @@
 
     const c = detected.clis || {};
     const t = detected.tools || {};
-    const claudeOk = c.claude && c.claude.available;
-    const codexOk = c.codex && c.codex.available;
+    const platform = detected.platform || 'win32';
+    const codex = c.codex || {};
+    const chrome = t.chrome || {};
+    const node = t.node || {};
+    const claudeEnabled = _featureFlags.enableClaudeCli;
+    const claudeOk = claudeEnabled && c.claude && c.claude.available;
+    const codexOk = codex.available;
 
-    // Build detection results
-    let html = '<div class="onboard-section-label">Detected on your system:</div>';
+    // Build check items with detailed status/messages
+    const items = [];
 
-    if (_featureFlags.enableClaudeCli) {
-      html += makeOnboardItem(claudeOk ? 'ok' : 'fail', 'Claude Code CLI',
-        claudeOk ? (c.claude.version || '').split('\n')[0] : 'Not found');
+    // Codex CLI
+    if (codexOk) {
+      if (!codex.versionOk) {
+        items.push({ status: 'warn', name: 'Codex CLI', detail: 'Outdated (v' + (codex.parsed ? codex.parsed.raw : codex.version) + '). Update with: npm install -g @openai/codex@latest' });
+      } else if (!codex.loggedIn) {
+        items.push({ status: 'warn', name: 'Codex CLI', detail: 'v' + (codex.parsed ? codex.parsed.raw : '') + ' — not logged in. Run codex login in your terminal to authenticate.' });
+      } else {
+        items.push({ status: 'ok', name: 'Codex CLI', detail: 'v' + (codex.parsed ? codex.parsed.raw : '') + ' — logged in via ' + (codex.loginMethod || 'API key') });
+      }
+    } else {
+      items.push({ status: 'fail', name: 'Codex CLI', detail: 'Not found. Install with: npm install -g @openai/codex', action: 'npm install -g @openai/codex' });
     }
-    html += makeOnboardItem(codexOk ? 'ok' : 'fail', 'Codex CLI',
-      codexOk ? (c.codex.version || '').split('\n')[0] : 'Not found');
-    html += makeOnboardItem(t.chrome && t.chrome.available ? 'ok' : 'warn', 'Google Chrome',
-      t.chrome && t.chrome.available ? 'Available — browser testing enabled' : 'Not found — browser testing unavailable');
 
+    // Claude CLI (only if feature flag on)
+    if (claudeEnabled) {
+      if (claudeOk) {
+        items.push({ status: 'ok', name: 'Claude Code CLI', detail: (c.claude.version || '').split('\\n')[0] });
+      } else {
+        items.push({ status: 'fail', name: 'Claude Code CLI', detail: 'Not found' });
+      }
+    }
+
+    // Node.js
+    if (node.available) {
+      if (!node.versionOk) {
+        items.push({ status: 'warn', name: 'Node.js', detail: 'v' + (node.major || '') + ' is too old. Update to v18+ from nodejs.org' });
+      } else {
+        items.push({ status: 'ok', name: 'Node.js', detail: node.version });
+      }
+    } else {
+      items.push({ status: 'warn', name: 'Node.js', detail: 'Not found. Install from nodejs.org for full MCP support.' });
+    }
+
+    // Chrome
+    if (chrome.available) {
+      if (!chrome.versionOk) {
+        items.push({ status: 'warn', name: 'Google Chrome', detail: 'v' + (chrome.major || '?') + ' is too old for headless debugging. Update to v120+.' });
+      } else {
+        items.push({ status: 'ok', name: 'Google Chrome', detail: 'v' + chrome.major + ' — browser testing ready' });
+      }
+    } else {
+      items.push({ status: 'warn', name: 'Google Chrome', detail: 'Not found. Install from google.com/chrome for browser testing.' });
+    }
+
+    // Docker (only if remote desktop flag on)
     if (_featureFlags.enableRemoteDesktop) {
-      const dockerRunning = t.docker && t.docker.available && t.docker.running;
-      const qaDesktopOk = t.qaDesktop && t.qaDesktop.available;
-      const desktopReady = dockerRunning && qaDesktopOk;
-      const dockerOk = t.docker && t.docker.available && t.docker.running;
-      html += makeOnboardItem(dockerOk ? 'ok' : 'warn', 'Desktop Testing',
-        dockerOk ? 'Docker running — desktop testing available'
-          : !t.docker || !t.docker.available ? 'Docker not found — install Docker Desktop for desktop testing'
-          : 'Docker installed but not running — start Docker Desktop');
+      const docker = t.docker || {};
+      if (docker.available && docker.running) {
+        items.push({ status: 'ok', name: 'Docker', detail: 'Running — desktop testing available' });
+      } else if (docker.available) {
+        items.push({ status: 'warn', name: 'Docker', detail: 'Installed but not running — start Docker Desktop' });
+      } else {
+        items.push({ status: 'warn', name: 'Docker', detail: 'Not found — install Docker Desktop for desktop testing' });
+      }
     }
 
-    statusEl.innerHTML = html;
+    // Animate items appearing one by one (skip animation in test environment)
+    var animDelay = (typeof window._noOnboardAnimation !== 'undefined') ? 0 : 200;
+    statusEl.innerHTML = '';
+    items.forEach(function (item, i) {
+      if (animDelay === 0) {
+        statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail);
+        if (i === items.length - 1) {
+          _showOnboardImpact(statusEl, codexOk, codex, chrome, node, claudeOk);
+          _showOnboardPreference(prefEl, nextBtn, codexOk, claudeOk);
+        }
+      } else {
+        setTimeout(function () {
+          statusEl.innerHTML += makeOnboardItem(item.status, item.name, item.detail);
+          if (i === items.length - 1) {
+            _showOnboardImpact(statusEl, codexOk, codex, chrome, node, claudeOk);
+            _showOnboardPreference(prefEl, nextBtn, codexOk, claudeOk);
+          }
+        }, i * animDelay);
+      }
+    });
+  }
 
-    // Block if no CLI at all (only check claude if the flag is on)
-    const effectiveClaudeOk = _featureFlags.enableClaudeCli && claudeOk;
-    if (!effectiveClaudeOk && !codexOk) {
-      statusEl.innerHTML += '<div class="onboard-item fail"><span class="onboard-item-icon">&#128683;</span><span class="onboard-item-label"><span class="onboard-item-name">No AI CLI found</span><span class="onboard-item-detail">Install Claude Code or Codex CLI to get started.</span></span></div>';
+  function _showOnboardImpact(statusEl, codexOk, codex, chrome, node, claudeOk) {
+    var impacts = [];
+    if (!codexOk) {
+      impacts.push({ icon: '\u274C', text: 'QA Panda requires Codex CLI to function. Install it to continue.', cls: 'impact-block' });
+    } else if (!codex.loggedIn) {
+      impacts.push({ icon: '\u26A0\uFE0F', text: 'Log in to Codex (run codex login) before using QA Panda.', cls: 'impact-warn' });
+    } else {
+      impacts.push({ icon: '\u2705', text: 'AI Chat & Agents ready', cls: 'impact-ok' });
+    }
+    if (chrome.available && chrome.versionOk) {
+      impacts.push({ icon: '\u2705', text: 'Browser testing ready', cls: 'impact-ok' });
+    } else if (chrome.available) {
+      impacts.push({ icon: '\u26A0\uFE0F', text: 'Update Chrome for browser testing (v120+ required)', cls: 'impact-warn' });
+    } else {
+      impacts.push({ icon: '\u2139\uFE0F', text: 'Browser testing unavailable — install Chrome to enable it', cls: 'impact-info' });
+    }
+    if (!node.available || !node.versionOk) {
+      impacts.push({ icon: '\u2139\uFE0F', text: 'Some MCP tools may be limited without Node.js 18+', cls: 'impact-info' });
+    }
+
+    var html = '<div class="onboard-impact">';
+    for (var j = 0; j < impacts.length; j++) {
+      html += '<div class="onboard-impact-item ' + impacts[j].cls + '">' + impacts[j].icon + ' ' + impacts[j].text + '</div>';
+    }
+    html += '</div>';
+    statusEl.innerHTML += html;
+  }
+
+  function _showOnboardPreference(prefEl, nextBtn, codexOk, claudeOk) {
+    if (!codexOk && !claudeOk) {
       if (nextBtn) nextBtn.disabled = true;
       return;
     }
 
-    // Show CLI preference section (only if there are multiple choices)
     if (prefEl) {
       prefEl.innerHTML = '';
-
-      const heading = document.createElement('div');
-      heading.className = 'onboard-section-label';
-      heading.textContent = 'Choose your preferred CLI setup:';
-      prefEl.appendChild(heading);
-
-      const cardsWrap = document.createElement('div');
-      cardsWrap.className = 'wizard-cards';
-
-      const options = [];
-      const claudeEnabled = _featureFlags.enableClaudeCli;
+      var claudeEnabled = _featureFlags.enableClaudeCli;
+      var options = [];
       if (claudeEnabled && claudeOk && codexOk) options.push({ id: 'both', icon: '&#9889;', title: 'Both (recommended)', desc: 'Codex as controller, Claude Code as worker — best results' });
       if (claudeEnabled && claudeOk) options.push({ id: 'claude-only', icon: '&#129302;', title: 'Claude Code only', desc: 'Use Claude Code for everything' });
       if (codexOk) options.push({ id: 'codex-only', icon: '&#128187;', title: 'Codex only', desc: 'Use Codex for everything' });
 
-      // Auto-select
       if (claudeEnabled && claudeOk && codexOk) onboardingPreference = 'both';
       else if (claudeEnabled && claudeOk) onboardingPreference = 'claude-only';
       else onboardingPreference = 'codex-only';
 
-      // Hide preference section if only one option
       if (options.length <= 1) {
         prefEl.classList.add('wizard-hidden');
         if (nextBtn) nextBtn.disabled = false;
@@ -1264,17 +1339,27 @@
       }
       prefEl.classList.remove('wizard-hidden');
 
-      for (const opt of options) {
-        const card = document.createElement('div');
-        card.className = 'wizard-card' + (opt.id === onboardingPreference ? ' selected' : '');
-        card.dataset.pref = opt.id;
-        card.innerHTML = '<div class="wizard-card-icon">' + opt.icon + '</div><div class="wizard-card-title">' + opt.title + '</div><div class="wizard-card-desc">' + opt.desc + '</div>';
-        card.addEventListener('click', () => {
-          onboardingPreference = opt.id;
-          cardsWrap.querySelectorAll('.wizard-card').forEach(c => c.classList.remove('selected'));
-          card.classList.add('selected');
-        });
-        cardsWrap.appendChild(card);
+      var heading = document.createElement('div');
+      heading.className = 'onboard-section-label';
+      heading.textContent = 'Choose your preferred CLI setup:';
+      prefEl.appendChild(heading);
+
+      var cardsWrap = document.createElement('div');
+      cardsWrap.className = 'wizard-cards';
+
+      for (var k = 0; k < options.length; k++) {
+        (function (opt) {
+          var card = document.createElement('div');
+          card.className = 'wizard-card' + (opt.id === onboardingPreference ? ' selected' : '');
+          card.dataset.pref = opt.id;
+          card.innerHTML = '<div class="wizard-card-icon">' + opt.icon + '</div><div class="wizard-card-title">' + opt.title + '</div><div class="wizard-card-desc">' + opt.desc + '</div>';
+          card.addEventListener('click', function () {
+            onboardingPreference = opt.id;
+            cardsWrap.querySelectorAll('.wizard-card').forEach(function (c) { c.classList.remove('selected'); });
+            card.classList.add('selected');
+          });
+          cardsWrap.appendChild(card);
+        })(options[k]);
       }
       prefEl.appendChild(cardsWrap);
     }
@@ -1283,10 +1368,10 @@
   }
 
   function makeOnboardItem(status, name, detail) {
-    const icons = { ok: '&#9679;', warn: '&#9679;', fail: '&#9679;' };
-    const colors = { ok: '#4caf50', warn: '#ff9800', fail: '#f44336' };
-    return '<div class="onboard-item ' + status + '">'
-      + '<span class="onboard-item-icon" style="color:' + (colors[status] || '#999') + '">' + (icons[status] || '') + '</span>'
+    var colors = { ok: '#4caf50', warn: '#ff9800', fail: '#f44336' };
+    var icons = { ok: '\u2705', warn: '\u26A0\uFE0F', fail: '\u274C' };
+    return '<div class="onboard-item ' + status + ' onboard-fade-in">'
+      + '<span class="onboard-item-icon">' + (icons[status] || '') + '</span>'
       + '<span class="onboard-item-label">'
       + '<span class="onboard-item-name">' + name + '</span>'
       + '<span class="onboard-item-detail">' + detail + '</span>'
