@@ -69,14 +69,17 @@ function buildTranscriptExcerpt(manifest, sinceLine) {
 
 function loadCcManagerMd(repoRoot) {
   if (!repoRoot) return null;
-  const filePath = path.join(repoRoot, 'CCMANAGER.md');
-  try {
-    const content = fs.readFileSync(filePath, 'utf8').trim();
-    if (content) {
-      return `Project instructions from CCMANAGER.md:\n${content}`;
+  // Try QAPANDA.md first, fall back to CCMANAGER.md for backwards compatibility
+  for (const name of ['QAPANDA.md', 'CCMANAGER.md']) {
+    const filePath = path.join(repoRoot, name);
+    try {
+      const content = fs.readFileSync(filePath, 'utf8').trim();
+      if (content) {
+        return `Project instructions from ${name}:\n${content}`;
+      }
+    } catch {
+      // File doesn't exist — that's fine
     }
-  } catch {
-    // File doesn't exist — that's fine
   }
   return null;
 }

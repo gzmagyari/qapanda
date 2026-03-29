@@ -157,9 +157,9 @@ Plain text starts a new run (if none attached) or sends a message to the current
 
 Place workflow directories in `.qpanda/workflows/` (project-level) or `~/.qpanda/workflows/` (global). Each directory must contain a `WORKFLOW.md` with YAML frontmatter (`name`, `description`). Use `/workflow` to list available workflows or `/workflow <name>` to run one.
 
-## Project-level customization (CCMANAGER.md)
+## Project-level customization (QAPANDA.md)
 
-Place a `CCMANAGER.md` file in your project root to customize the controller's behavior — similar to how `CLAUDE.md` customizes Claude Code. Its contents are automatically appended to the controller's system prompt as "Project instructions from CCMANAGER.md". This works in both the CLI and the VSCode extension. If the file doesn't exist, nothing is appended.
+Place a `QAPANDA.md` file in your project root to customize the controller's behavior — similar to how `CLAUDE.md` customizes Claude Code. Its contents are automatically appended to the controller's system prompt as "Project instructions from QAPANDA.md". This works in both the CLI and the VSCode extension. If the file doesn't exist, nothing is appended. `CCMANAGER.md` is also supported for backwards compatibility.
 
 ## Prerequisites
 
