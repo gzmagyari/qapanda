@@ -34,6 +34,20 @@ Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</str
 Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal CLI</a>.
 </p>
 
+## Hot Updates
+
+**2026-04-01**  
+Latest updates. See the full history in the
+[GitHub changelog](https://github.com/gzmagyari/qapanda/blob/main/extension/CHANGELOG.md).
+
+- 🔥 Added full **BYOK API mode** with curated provider/model support for OpenAI, Gemini, Anthropic, and OpenRouter.
+- 🔐 Kept **Codex + your ChatGPT subscription** as the primary no-key-required path.
+- 🧪 Added live QA progress cards plus cleaner final test summaries.
+- 📋 Added a unified **QA Report** with `This Run` / `This Session`, clickable details, copy actions, and **Export PDF**.
+- 🏷️ Renamed user-facing **Tasks** to **Issues** and improved test/issue ID visibility across the UI.
+- 🧠 Added automatic context compaction plus manual `/compact` for long API sessions.
+- 🐼 Added the animated panda beside the chat input.
+
 ### Why QA Panda?
 
 - **No test scripts to write.** Describe what to test in plain English.
