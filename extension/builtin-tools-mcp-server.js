@@ -9,9 +9,24 @@
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+const path = require('node:path');
+const fs = require('node:fs');
 
-// Import tool definitions and executor from the shared module
-const { TOOLS } = require('./src/builtin-tools-mcp');
+function loadBuiltinToolsModule() {
+  const candidates = [
+    path.resolve(__dirname, 'src', 'builtin-tools-mcp.js'),
+    path.resolve(__dirname, '..', 'src', 'builtin-tools-mcp.js'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return require(candidate);
+    }
+  }
+  throw new Error(`builtin-tools-mcp.js not found. Looked in: ${candidates.join(', ')}`);
+}
+
+// Import tool definitions from the shared module.
+const { TOOLS } = loadBuiltinToolsModule();
 
 // Resolve working directory from env or fallback to process.cwd()
 const cwd = process.env.CWD || process.cwd();
@@ -19,8 +34,6 @@ const cwd = process.env.CWD || process.cwd();
 // Dynamically import executeTool (it's async, defined in the module)
 async function executeTool(name, args) {
   // Re-require to get the execute function (uses same TOOLS definitions)
-  const path = require('node:path');
-  const fs = require('node:fs');
   const { promisify } = require('node:util');
   const { exec } = require('node:child_process');
   const execAsync = promisify(exec);
