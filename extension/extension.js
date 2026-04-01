@@ -22,6 +22,7 @@ let loadSettings, saveSettings;
 let buildSelfTestingPrompt;
 let loadFeatureFlags;
 let exportQaReportPdf;
+let buildApiCatalogPayload;
 
 try {
   ({ WebviewRenderer } = require('./webview-renderer'));
@@ -48,6 +49,8 @@ try {
   _aDbg('require OK: settings-store');
   ({ buildSelfTestingPrompt } = require('./src/prompts'));
   _aDbg('require OK: prompts');
+  ({ buildApiCatalogPayload } = require('./src/model-catalog'));
+  _aDbg('require OK: model-catalog');
   ({ loadFeatureFlags } = require('./src/feature-flags'));
   ({ exportQaReportPdf } = require('./qa-report-export'));
   _aDbg('All top-level requires succeeded');
@@ -266,7 +269,7 @@ function _activateInner(context) {
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
           const onboardingData = loadOnboarding();
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath) });
+          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath), apiCatalog: buildApiCatalogPayload() });
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -530,7 +533,7 @@ async function _deserializeInner(panel, state, context) {
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
             const onboardingData2 = loadOnboarding();
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath) });
+            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath), apiCatalog: buildApiCatalogPayload() });
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {

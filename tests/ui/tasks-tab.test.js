@@ -45,4 +45,16 @@ describe('Issues tab', () => {
     const board = wv.document.getElementById('kanban-board');
     assert.ok(board, 'board should exist even with no tasks');
   });
+
+  it('issue detail view shows the short badge and raw id', () => {
+    wv.postMessage({
+      type: 'tasksData',
+      tasks: [
+        { id: 'task-12', title: 'Fix login redirect', status: 'todo', description: 'Short summary', detail_text: 'Detailed notes', comments: [], progress_updates: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      ],
+    });
+    wv.click('.kanban-card');
+    assert.match(wv.text('#task-detail'), /#12/);
+    assert.match(wv.text('#task-detail'), /task-12/);
+  });
 });

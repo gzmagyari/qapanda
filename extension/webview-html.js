@@ -310,7 +310,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
           </div>
           <div class="settings-list">
             <div class="settings-item">
-              <div class="settings-item-info"><div class="settings-item-name">OpenAI</div><div class="settings-item-desc">For GPT-4.1, GPT-5, o3, o4 models</div></div>
+              <div class="settings-item-info"><div class="settings-item-name">OpenAI</div><div class="settings-item-desc">For GPT-4.1, GPT-5, o-series, and current direct chat models</div></div>
               <input type="password" class="settings-api-key-input" id="api-key-openai" placeholder="sk-proj-..." data-provider="openai" />
             </div>
             <div class="settings-item">
@@ -318,11 +318,11 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
               <input type="password" class="settings-api-key-input" id="api-key-anthropic" placeholder="sk-ant-..." data-provider="anthropic" />
             </div>
             <div class="settings-item">
-              <div class="settings-item-info"><div class="settings-item-name">OpenRouter</div><div class="settings-item-desc">Access all providers through one key</div></div>
+              <div class="settings-item-info"><div class="settings-item-name">OpenRouter</div><div class="settings-item-desc">Access curated OpenAI, Anthropic, Gemini, Grok, Kimi, Qwen, DeepSeek, MiniMax, and Mistral models</div></div>
               <input type="password" class="settings-api-key-input" id="api-key-openrouter" placeholder="sk-or-..." data-provider="openrouter" />
             </div>
             <div class="settings-item">
-              <div class="settings-item-info"><div class="settings-item-name">Google Gemini</div><div class="settings-item-desc">For Gemini 3 Flash, Pro models</div></div>
+              <div class="settings-item-info"><div class="settings-item-name">Google Gemini</div><div class="settings-item-desc">For Gemini 2.5 and 3.x Pro/Flash models</div></div>
               <input type="password" class="settings-api-key-input" id="api-key-gemini" placeholder="AI..." data-provider="gemini" />
             </div>
             <div class="settings-item">

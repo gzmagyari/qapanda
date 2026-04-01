@@ -20,6 +20,7 @@
     "test:ui": "node --test tests/ui/*.test.js",
     "test:live:cli-e2e": "node --test tests/live/cli-*.test.js",
     "test:api": "node --test tests/live/api-*.test.js",
+    "verify:models": "node scripts/verify-model-catalog.js",
     "test:all": "node tests/run-all.js",
     "test:cleanup": "node tests/cleanup.js",
     "ext:copy-src": "node -e \"const fs=require('fs');const p=require('path');function cp(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=p.join(s,e.name),dp=p.join(d,e.name);e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}}cp('src','extension/src');const cd='extension/claude-parser';fs.mkdirSync(cd,{recursive:true});for(const f of['index.js','parse-stream.js','package.json'])fs.copyFileSync(p.join('claude-parser',f),p.join(cd,f));cp('qa-desktop','extension/qa-desktop');cp('resources','extension/resources');cp('prompts','extension/prompts')\"",

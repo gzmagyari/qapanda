@@ -50,4 +50,15 @@ describe('Config bar', () => {
       assert.ok(configMsgs.length > 0, 'should post configChanged on target change');
     }
   });
+
+  it('renders API provider models from initConfig catalog', () => {
+    wv.postMessage(sampleInitConfig({
+      config: { controllerCli: 'api', workerCli: 'api', apiProvider: 'openai', controllerModel: 'gpt-5.4', workerModel: 'gpt-5.4-mini' },
+    }));
+    const workerModel = wv.document.getElementById('cfg-worker-model');
+    const values = Array.from(workerModel.options).map((option) => option.value);
+    assert.ok(values.includes('gpt-5.4'));
+    assert.ok(values.includes('gpt-5.4-mini'));
+    assert.ok(values.includes('_custom'));
+  });
 });

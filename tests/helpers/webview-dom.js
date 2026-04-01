@@ -15,6 +15,7 @@
 const { JSDOM } = require('jsdom');
 const fs = require('node:fs');
 const path = require('node:path');
+const { buildApiCatalogPayload } = require('../../src/model-catalog');
 
 const EXTENSION_DIR = path.resolve(__dirname, '../../extension');
 
@@ -148,6 +149,7 @@ function sampleInitConfig(overrides = {}) {
   return {
     type: 'initConfig',
     config: {},
+    apiCatalog: buildApiCatalogPayload(),
     featureFlags: { enableRemoteDesktop: true, enableClaudeCli: true },
     mcpServers: { global: {}, project: {} },
     agents: {

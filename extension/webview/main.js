@@ -787,7 +787,12 @@
 
     const isEdit = !!editTest;
     let html = `<div class="task-form">`;
-    html += `<div class="task-form-header"><h3>${isEdit ? 'Test: ' + escapeHtml(editTest.title) : 'New Test'}</h3>`;
+    html += `<div class="task-form-header">`;
+    if (isEdit) {
+      html += `<div class="task-detail-artifact-header">${renderArtifactHeaderHtml('test', editTest.id, editTest.title, { extraMeta: editTest.environment || '' })}</div>`;
+    } else {
+      html += `<h3>New Test</h3>`;
+    }
     html += `<button class="task-form-close" id="test-form-close">✕</button></div>`;
 
     html += `<label>Title</label><input type="text" id="test-title" value="${isEdit ? escapeHtml(editTest.title) : ''}" placeholder="Test title..." />`;
@@ -1789,6 +1794,7 @@
         '<button class="mcp-btn" id="task-back">Back</button>' +
         (isEdit ? '<button class="mcp-btn mcp-btn-danger" id="task-delete">Delete</button>' : '') +
       '</div>' +
+      (isEdit ? '<div class="task-detail-artifact-header">' + renderArtifactHeaderHtml('task', t.id, t.title || 'Issue') + '</div>' : '') +
       '<div class="mcp-form">' +
         '<div class="mcp-form-row"><label>Title</label><input class="mcp-input" id="task-f-title" value="' + escapeHtml(t.title) + '"></div>' +
         '<div class="mcp-form-row"><label>Status</label><select class="mcp-input" id="task-f-status">' +
@@ -2767,53 +2773,43 @@
     { value: 'high', label: 'High' },
   ];
 
-  // API provider model/thinking lists (loaded from llm-client.js exports via initConfig)
-  var API_PROVIDER_MODELS = {
-    openai: [
-      { value: 'gpt-4.1', label: 'GPT-4.1' },
-      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-      { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano' },
-      { value: 'gpt-5', label: 'GPT-5' },
-      { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
-      { value: 'o3', label: 'o3' },
-      { value: 'o4-mini', label: 'o4 Mini' },
-    ],
-    anthropic: [
-      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-      { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    ],
-    openrouter: [
-      { value: 'openai/gpt-4.1', label: 'GPT-4.1' },
-      { value: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-      { value: 'openai/gpt-5', label: 'GPT-5' },
-      { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-      { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-      { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
-      { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash' },
-      { value: 'x-ai/grok-code-fast-1', label: 'Grok Code Fast' },
-    ],
-    gemini: [
-      { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
-      { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
-    ],
-    custom: [
-      { value: '_custom', label: 'Custom...' },
-    ],
-  };
-  // Add _custom to all provider model lists
-  for (var _pk of Object.keys(API_PROVIDER_MODELS)) {
-    var _list = API_PROVIDER_MODELS[_pk];
-    if (!_list.some(function(m) { return m.value === '_custom'; })) _list.push({ value: '_custom', label: 'Custom...' });
+  // API provider model/thinking lists (loaded from extension initConfig)
+  var API_PROVIDER_MODELS = {};
+  var API_PROVIDER_THINKING = {};
+
+  function cloneCatalogOptions(options) {
+    return Array.isArray(options) ? options.map(function(option) { return { value: option.value, label: option.label }; }) : [];
   }
-  var API_PROVIDER_THINKING = {
-    openai: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
-    anthropic: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low (4K)' }, { value: 'medium', label: 'Medium (10K)' }, { value: 'high', label: 'High (20K)' }, { value: 'xhigh', label: 'XHigh (50K)' }],
-    openrouter: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
-    gemini: [{ value: '', label: 'Thinking: off' }, { value: 'minimal', label: 'Minimal' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
-    custom: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
-  };
+
+  function withCustomModelOption(options) {
+    var list = cloneCatalogOptions(options);
+    if (!list.some(function(entry) { return entry && entry.value === '_custom'; })) {
+      list.push({ value: '_custom', label: 'Custom...' });
+    }
+    return list;
+  }
+
+  function applyApiCatalog(catalog) {
+    var models = (catalog && catalog.models) || {};
+    var thinking = (catalog && catalog.thinking) || {};
+    API_PROVIDER_MODELS = {};
+    API_PROVIDER_THINKING = {};
+    Object.keys(models).forEach(function(provider) {
+      API_PROVIDER_MODELS[provider] = withCustomModelOption(models[provider]);
+    });
+    Object.keys(thinking).forEach(function(provider) {
+      API_PROVIDER_THINKING[provider] = cloneCatalogOptions(thinking[provider]);
+    });
+    if (!API_PROVIDER_MODELS.custom) API_PROVIDER_MODELS.custom = [{ value: '_custom', label: 'Custom...' }];
+    if (!API_PROVIDER_THINKING.custom) {
+      API_PROVIDER_THINKING.custom = [
+        { value: '', label: 'Thinking: off' },
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+      ];
+    }
+  }
 
   var cfgApiProvider = document.getElementById('cfg-api-provider');
   var cfgApiBaseURL = document.getElementById('cfg-api-base-url');
@@ -4873,6 +4869,9 @@
     },
 
     initConfig(msg) {
+      if (msg.apiCatalog) {
+        applyApiCatalog(msg.apiCatalog);
+      }
       setConfig(msg.config);
       if (msg.panelId && !panelId) {
         panelId = msg.panelId;

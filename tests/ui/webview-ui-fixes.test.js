@@ -170,6 +170,27 @@ describe('webview UI fixes', () => {
     assert.match(wv.clipboardWrites.at(-1), /Linked Issues: #1 \(task-1\)/);
   });
 
+  it('test detail view shows the short badge and raw id', () => {
+    wv.click('[data-tab="tests"]');
+    wv.postMessage({
+      type: 'testsData',
+      tests: [{
+        id: 'test-28',
+        title: 'Protected route redirects',
+        status: 'failing',
+        environment: 'browser',
+        description: 'Verify logout blocks access',
+        tags: [],
+        linkedTaskIds: [],
+        lastTestedAt: '2026-03-31T10:00:00Z',
+        steps: [],
+      }],
+    });
+    wv.click('.test-card');
+    assert.match(wv.text('#test-detail'), /#28/);
+    assert.match(wv.text('#test-detail'), /test-28/);
+  });
+
   it('copies structured text from chat task cards', async () => {
     wv.postMessage({
       type: 'taskCard',
