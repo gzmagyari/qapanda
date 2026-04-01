@@ -11,10 +11,14 @@ beforeEach(() => {
 });
 afterEach(() => { wv.cleanup(); });
 
-describe('Tasks tab', () => {
+describe('Issues tab', () => {
   it('kanban board exists', () => {
     const board = wv.document.getElementById('kanban-board');
     assert.ok(board, 'kanban board should exist');
+  });
+
+  it('renders the Issues tab label', () => {
+    assert.equal(wv.document.querySelector('[data-tab="tasks"]').textContent.trim(), 'Issues');
   });
 
   it('tasksData renders tasks', () => {
@@ -28,6 +32,8 @@ describe('Tasks tab', () => {
     const tabContent = wv.document.getElementById('tab-tasks').innerHTML;
     assert.ok(tabContent.includes('Fix login'), 'should render task title');
     assert.ok(tabContent.includes('Add tests'), 'should render second task');
+    assert.ok(tabContent.includes('#1'), 'should render short issue badge');
+    assert.ok(tabContent.includes('task-1'), 'should render raw issue id');
   });
 
   it('empty tasks shows empty state', () => {

@@ -2,6 +2,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
+const {
+  buildMergedRunView,
+  hasTranscriptV2,
+  readTranscriptEntriesSync,
+  transcriptLineSlice,
+} = require('./transcript');
 
 /**
  * Build transcript excerpt from chat.jsonl — the unified chat history.
@@ -46,6 +52,76 @@ function buildTranscriptExcerpt(manifest, sinceLine) {
   const requests = allRequests;
   const requestLines = [];
   for (const request of requests) {
+    const msg = request.userMessage;
+    if (msg && !msg.startsWith('[AUTO-CONTINUE]') && !msg.startsWith('[CONTROLLER GUIDANCE]') && !msg.startsWith('[ORCHESTRATE]')) {
+      requestLines.push(`User: ${msg}`);
+    }
+    for (const loop of request.loops || []) {
+      if (loop.controller && loop.controller.decision) {
+        for (const message of loop.controller.decision.controller_messages || []) {
+          requestLines.push(`Controller: ${message}`);
+        }
+      }
+      if (loop.worker && loop.worker.resultText) {
+        requestLines.push(`Worker: ${loop.worker.resultText}`);
+      }
+    }
+    if (request.stopReason) {
+      requestLines.push(`Stop reason: ${request.stopReason}`);
+    }
+  }
+  return requestLines;
+}
+
+function buildTranscriptExcerptLegacy(manifest, sinceLine) {
+  const transcriptFile = manifest.files && manifest.files.transcript;
+  if (transcriptFile) {
+    try {
+      const entries = readTranscriptEntriesSync(transcriptFile);
+      if (entries.length > 0 && hasTranscriptV2(entries)) {
+        return buildMergedRunView(transcriptLineSlice(entries, sinceLine), manifest);
+      }
+      if (entries.length > 0) {
+        return buildMergedRunView(transcriptLineSlice(entries, sinceLine), manifest);
+      }
+    } catch {
+      // transcript unreadable — fall through to legacy sources
+    }
+  }
+
+  const chatLogFile = manifest.files && manifest.files.chatLog;
+  if (chatLogFile) {
+    try {
+      const raw = fs.readFileSync(chatLogFile, 'utf8').trim();
+      if (raw) {
+        const allLines = raw.split('\n');
+        const lines = (sinceLine != null && sinceLine > 0) ? allLines.slice(sinceLine) : allLines;
+        return lines.map(line => {
+          try {
+            const e = JSON.parse(line);
+            if (e.type === 'user') return `User: ${e.text}`;
+            if (e.type === 'controller') return `${e.label || 'Controller'}: ${e.text}`;
+            if (e.type === 'claude' || e.type === 'mdLine') return `${e.label || 'Worker'}: ${e.text}`;
+            if (e.type === 'toolCall') return `${e.label || 'Worker'} tool: ${e.text}`;
+            if (e.type === 'stop') return `${e.label || 'Controller'}: STOP`;
+            if (e.type === 'error') return `Error: ${e.text}`;
+            if (e.type === 'banner') return `System: ${e.text}`;
+            if (e.type === 'shell') return `Shell: ${e.text}`;
+            if (e.type === 'line') return `${e.label || ''}: ${e.text}`;
+            if (e.type === 'chatScreenshot') return null;
+            if (e.type === 'testCard' || e.type === 'bugCard' || e.type === 'taskCard') return null;
+            return null;
+          } catch { return null; }
+        }).filter(Boolean);
+      }
+    } catch {
+      // chat.jsonl unreadable — fall through to final legacy fallback
+    }
+  }
+
+  const allRequests = manifest.requests || [];
+  const requestLines = [];
+  for (const request of allRequests) {
     const msg = request.userMessage;
     if (msg && !msg.startsWith('[AUTO-CONTINUE]') && !msg.startsWith('[CONTROLLER GUIDANCE]') && !msg.startsWith('[ORCHESTRATE]')) {
       requestLines.push(`User: ${msg}`);
@@ -266,7 +342,7 @@ function buildControllerPrompt(manifest, request) {
 
   // Incremental transcript: on resume, only send NEW chat lines since the controller's last turn
   const isResume = !!manifest.controller.sessionId;
-  const lastSeen = manifest.controller.lastSeenChatLine || 0;
+  const lastSeen = manifest.controller.lastSeenTranscriptLine || manifest.controller.lastSeenChatLine || 0;
   const isIncremental = isResume && lastSeen > 0;
   const transcriptLines = isIncremental
     ? buildTranscriptExcerpt(manifest, lastSeen)

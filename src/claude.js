@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
-const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
+const { parseJsonLine, extractTextFromClaudeContent, summarizeClaudeEvent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
 const { expandPromptTags, buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
@@ -160,7 +160,7 @@ function buildClaudeArgs(manifest, options = {}) {
   return args;
 }
 
-async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   await writeText(workerRecord.promptFile, `${prompt}\n`);
 
   // Resolve agent config and session
@@ -188,6 +188,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   let finalEvent = null;
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let sawTextDelta = false;
+  const pendingToolCalls = new Map();
 
   // Resolve binary and display label
   let workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
@@ -257,7 +258,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
     env: spawnEnv,
     abortSignal,
     resolveOnResult: true,
-    onStdoutLine: (line) => {
+    onStdoutLine: async (line) => {
       const raw = parseJsonLine(line);
       Promise.resolve(emitEvent({
         ts: new Date().toISOString(),
@@ -306,13 +307,34 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       }
 
       if ((raw.type === 'assistant_message' || raw.type === 'assistant') && sawTextDelta) {
+        if (turnTracker) await turnTracker.flushPendingMutations();
         return;
       }
       if ((raw.type === 'result_message' || raw.type === 'result') && sawTextDelta) {
         renderer.flushStream();
+        if (turnTracker) await turnTracker.flushPendingMutations();
         return;
       }
+      if (turnTracker) {
+        const summary = summarizeClaudeEvent(raw);
+        if (summary && summary.kind === 'tool-start') {
+          pendingToolCalls.set(summary.index, { name: summary.toolName, inputJson: '' });
+        } else if (summary && summary.kind === 'tool-input-delta') {
+          const pending = pendingToolCalls.get(summary.index);
+          if (pending) pending.inputJson += summary.text || '';
+        } else if (summary && summary.kind === 'block-stop') {
+          const pending = pendingToolCalls.get(summary.index);
+          let input = {};
+          if (pending) {
+            try { input = JSON.parse(pending.inputJson || '{}'); } catch {}
+            turnTracker.noteRenderedToolCard(pending.name, input, renderer.workerLabel);
+            turnTracker.queueMutation(pending.name, input, renderer.workerLabel);
+            pendingToolCalls.delete(summary.index);
+          }
+        }
+      }
       renderer.claudeEvent(raw);
+      if (turnTracker) await turnTracker.flushPendingMutations();
     },
     onStderrLine: (line) => {
       Promise.resolve(emitEvent({
@@ -446,7 +468,7 @@ function buildInteractiveArgs(manifest, options = {}) {
  * Interactive-mode worker turn: uses ClaudeSession (persistent PTY)
  * instead of spawning a fresh process per turn.
  */
-async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   await writeText(workerRecord.promptFile, `${prompt}\n`);
 
   const isCustomAgent = agentId && agentId !== 'default';
@@ -497,7 +519,7 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
 
     let hadStreamedText = false;
     const result = await session.send(prompt, {
-      onEvent(event) {
+      async onEvent(event) {
         try {
           require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-interactive-debug.log'),
             `[${new Date().toISOString()}] EVENT ${JSON.stringify(event)}\n`);
@@ -517,6 +539,10 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
         } else if (event.kind === 'tool-start') {
           hadStreamedText = true;
           renderer.flushStream();
+          if (turnTracker) {
+            turnTracker.noteRenderedToolCard(event.toolName || '', {}, renderer.workerLabel);
+            turnTracker.queueMutation(event.toolName || '', {}, renderer.workerLabel);
+          }
           const tn = event.toolName || '';
           const isComputerUse = tn.startsWith('mcp__computer-control__') || tn.startsWith('mcp__chrome-devtools__');
           const isChromeDevtools = tn.startsWith('mcp__chrome-devtools__');
@@ -536,6 +562,9 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
             renderer.streamMarkdown(renderer.workerLabel, plainText + '\n', '\x1b[32m');
           }
           renderer.flushStream();
+        }
+        if (turnTracker) {
+          await turnTracker.flushPendingMutations();
         }
       }
     });

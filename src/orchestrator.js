@@ -4,9 +4,21 @@ const { runControllerTurn: runCodexControllerTurn, runControllerTurnAppServer } 
 const { runClaudeControllerTurn } = require('./claude-controller');
 const { runWorkerTurn, runWorkerTurnInteractive, closeInteractiveSessions } = require('./claude');
 const { runCodexWorkerTurn, runCodexWorkerTurnAppServer } = require('./codex-worker');
+const { runApiControllerTurn } = require('./api-controller');
+const { runApiWorkerTurn } = require('./api-worker');
 const { controllerLabelFor, workerLabelFor } = require('./render');
 const { formatToolCall, summarizeCodexWorkerEvent } = require('./events');
 const { closeConnection } = require('./codex-app-server');
+const { TurnEntityTracker } = require('./turn-entity-tracker');
+const { buildFinalQaReportState, loadQaState } = require('./qa-report');
+const {
+  appendTranscriptRecord,
+  countTranscriptLinesSync,
+  createTranscriptRecord,
+  controllerSessionKey,
+  transcriptBackend,
+  workerSessionKey,
+} = require('./transcript');
 
 /**
  * Create an activity log accumulator that captures tool calls and text
@@ -80,6 +92,7 @@ function createActivityLog() {
 }
 
 function getControllerRunner(manifest) {
+  if (manifest.controller.cli === 'api') return runApiControllerTurn;
   if (manifest.controller.cli === 'claude') return runClaudeControllerTurn;
   if (manifest.controller.codexMode === 'app-server') return runControllerTurnAppServer;
   return runCodexControllerTurn;
@@ -87,6 +100,7 @@ function getControllerRunner(manifest) {
 
 function getWorkerRunner(manifest, agentConfig) {
   const cli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'codex';
+  if (cli === 'api') return runApiWorkerTurn;
   if (cli === 'codex' || cli === 'qa-remote-codex') {
     const codexMode = (agentConfig && agentConfig.codexMode) || manifest.controller.codexMode || 'app-server';
     if (codexMode === 'app-server') return runCodexWorkerTurnAppServer;
@@ -108,6 +122,48 @@ function setWorkerLabel(renderer, manifest) {
   if (renderer && manifest && manifest.worker) {
     renderer.workerLabel = workerLabelFor(manifest.worker.cli);
   }
+}
+
+async function runWorkerWithTracking(runWorker, workerOpts) {
+  const tracker = new TurnEntityTracker({
+    manifest: workerOpts.manifest,
+    renderer: workerOpts.renderer,
+    request: workerOpts.request,
+  });
+  try {
+    const result = await runWorker({ ...workerOpts, turnTracker: tracker });
+    await tracker.finalize({ emitFinalCards: true });
+    return result;
+  } catch (error) {
+    await tracker.finalize({ emitFinalCards: false });
+    throw error;
+  }
+}
+
+async function emitFinalQaReport(manifest, request, renderer) {
+  if (renderer && typeof renderer._post === 'function') {
+    renderer._post({ type: 'clearLiveQaReportCard' });
+  }
+  const finalState = buildFinalQaReportState({
+    manifest,
+    request,
+    state: loadQaState(manifest.repoRoot),
+  });
+  if (!finalState) {
+    return false;
+  }
+  manifest.qaReportSession = finalState.sessionArtifacts;
+  request.qaReportArtifacts = finalState.requestArtifacts;
+  request.qaReportSummary = finalState.payload;
+  request.qaReportLabel = finalState.label || request.qaReportLabel || null;
+  if (renderer && typeof renderer._post === 'function') {
+    renderer._post({
+      type: 'qaReportCard',
+      label: request.qaReportLabel || workerLabelFor(manifest.worker.cli),
+      data: finalState.payload,
+    });
+  }
+  return true;
 }
 
 function progressTimestamp() {
@@ -138,8 +194,64 @@ async function emitEvent(manifest, event, renderer) {
   }
 }
 
-async function appendTranscript(manifest, entry) {
-  await appendJsonl(manifest.files.transcript, entry);
+function workerTranscriptMeta(manifest, agentId) {
+  const resolvedAgentId = agentId && agentId !== 'default' ? agentId : null;
+  const agentConfig = resolvedAgentId ? lookupAgentConfig(manifest.agents, resolvedAgentId) : null;
+  const workerCli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'codex';
+  return {
+    agentId: resolvedAgentId,
+    agentConfig,
+    sessionKey: workerSessionKey(resolvedAgentId),
+    backend: transcriptBackend('worker', workerCli),
+    workerCli,
+    agentName: agentConfig ? agentConfig.name : null,
+  };
+}
+
+async function appendTranscript(manifest, data) {
+  await appendTranscriptRecord(manifest, createTranscriptRecord(data));
+}
+
+async function appendBackendTranscriptEvent(manifest, event, options = {}) {
+  const source = String(event && event.source || '');
+  if (!source.includes('-json') && source !== 'controller-api' && source !== 'worker-api') {
+    return;
+  }
+  const payload = event && event.parsed
+    ? event.parsed
+    : Object.fromEntries(
+        Object.entries(event || {}).filter(([key, value]) =>
+          !['ts', 'requestId', 'loopIndex', 'rawLine'].includes(key) && value !== undefined
+        )
+      );
+  await appendTranscript(manifest, {
+    kind: 'backend_event',
+    sessionKey: options.sessionKey,
+    backend: options.backend,
+    requestId: event.requestId || options.requestId || null,
+    loopIndex: event.loopIndex == null ? options.loopIndex ?? null : event.loopIndex,
+    agentId: options.agentId || null,
+    controllerCli: options.controllerCli || null,
+    workerCli: options.workerCli || null,
+    payload,
+    text: event && event.text != null ? String(event.text) : null,
+    labelHint: options.labelHint || null,
+  });
+}
+
+function syncControllerTranscriptCursor(manifest) {
+  try {
+    manifest.controller.lastSeenTranscriptLine = countTranscriptLinesSync(manifest.files && manifest.files.transcript);
+  } catch {}
+}
+
+function buildLaunchText(prompt, sameSession, agentId, agentCli, agentName) {
+  const backendLabel = agentCli ? workerLabelFor(agentCli, agentName) : 'Worker';
+  const agentLabel = !agentName && agentId && agentId !== 'default' ? ` [${agentId}]` : '';
+  const prefix = sameSession
+    ? `Launching ${backendLabel}${agentLabel} (same session) with: `
+    : `Launching ${backendLabel}${agentLabel} with: `;
+  return `${prefix}"${prompt}"`;
 }
 
 function markInterrupted(manifest, request, reason) {
@@ -152,15 +264,28 @@ function markInterrupted(manifest, request, reason) {
   }
 }
 
-async function startUserRequest(manifest, renderer, userMessage) {
+async function startUserRequest(manifest, renderer, userMessage, options = {}) {
   const request = createRequest(manifest, userMessage);
   manifest.status = 'running';
-  manifest.phase = 'controller';
+  manifest.phase = options.phase || 'controller';
   manifest.stopReason = null;
   manifest.error = null;
 
-  renderer.user(userMessage);
-  await appendTranscript(manifest, { ts: nowIso(), role: 'user', text: userMessage, requestId: request.id });
+  if (options.render !== false) {
+    renderer.user(userMessage);
+  }
+  await appendTranscript(manifest, {
+    kind: 'user_message',
+    sessionKey: options.sessionKey || controllerSessionKey(),
+    backend: options.backend || 'user',
+    requestId: request.id,
+    loopIndex: options.loopIndex == null ? null : options.loopIndex,
+    agentId: options.agentId || null,
+    workerCli: options.workerCli || null,
+    text: userMessage,
+    payload: { role: 'user', content: userMessage },
+    display: options.display !== false,
+  });
   await emitEvent(
     manifest,
     { ts: nowIso(), source: 'user-message', requestId: request.id, text: userMessage },
@@ -231,6 +356,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       await saveManifest(manifest);
 
       const runControllerTurn = getControllerRunner(manifest);
+      const controllerBackend = transcriptBackend('controller', manifest.controller.cli || 'codex');
       const controllerResult = await runControllerTurn({
         manifest,
         request,
@@ -245,6 +371,13 @@ async function runManagerLoop(manifest, renderer, options = {}) {
             await appendJsonl(loop.controller.stderrFile, { text: event.text });
           }
           await emitEvent(manifest, event, renderer);
+          await appendBackendTranscriptEvent(manifest, event, {
+            sessionKey: controllerSessionKey(),
+            backend: controllerBackend,
+            requestId: request.id,
+            loopIndex: loop.index,
+            controllerCli: manifest.controller.cli || 'codex',
+          });
         },
       });
 
@@ -254,8 +387,9 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       for (const message of controllerResult.decision.controller_messages) {
         renderer.controller(message);
         await appendTranscript(manifest, {
-          ts: nowIso(),
-          role: 'controller',
+          kind: 'controller_message',
+          sessionKey: controllerSessionKey(),
+          backend: controllerBackend,
           text: message,
           controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id,
@@ -288,15 +422,18 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         manifest.stopReason = request.stopReason;
         manifest.activeRequestId = null;
         manifest.transcriptSummary = truncate(request.userMessage, 120);
+        await emitFinalQaReport(manifest, request, renderer);
         renderer.stop();
         await appendTranscript(manifest, {
-          ts: nowIso(),
-          role: 'controller',
+          kind: 'controller_message',
+          sessionKey: controllerSessionKey(),
+          backend: controllerBackend,
           text: '[STOP]',
           controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id,
           loopIndex: loop.index,
         });
+        syncControllerTranscriptCursor(manifest);
         await emitEvent(
           manifest,
           {
@@ -321,11 +458,35 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         ? lookupAgentConfig(manifest.agents, delegateAgentId)
         : null;
       const delegateCli = (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli || 'codex';
+      const workerMeta = workerTranscriptMeta(manifest, delegateAgentId);
       const workerSameSession = delegateAgentId && delegateAgentId !== 'default'
         ? !!((manifest.worker.agentSessions || {})[delegateAgentId] || {}).hasStarted
         : manifest.worker.hasStarted;
       const delegateAgentName = delegateAgentConfig ? delegateAgentConfig.name : null;
       renderer.launchClaude(controllerResult.decision.claude_message, workerSameSession, delegateAgentId, delegateCli, delegateAgentName);
+      await appendTranscript(manifest, {
+        kind: 'launch',
+        sessionKey: controllerSessionKey(),
+        backend: controllerBackend,
+        requestId: request.id,
+        loopIndex: loop.index,
+        controllerCli: manifest.controller.cli || 'codex',
+        agentId: workerMeta.agentId,
+        text: buildLaunchText(controllerResult.decision.claude_message, workerSameSession, delegateAgentId, delegateCli, delegateAgentName),
+      });
+      await appendTranscript(manifest, {
+        kind: 'user_message',
+        sessionKey: workerMeta.sessionKey,
+        backend: 'user',
+        requestId: request.id,
+        loopIndex: loop.index,
+        agentId: workerMeta.agentId,
+        workerCli: workerMeta.workerCli,
+        text: controllerResult.decision.claude_message,
+        payload: { role: 'user', content: controllerResult.decision.claude_message },
+        display: false,
+      });
+      syncControllerTranscriptCursor(manifest);
       await emitEvent(
         manifest,
         {
@@ -342,7 +503,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
       const activityLog = createActivityLog();
       workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
-      const workerResult = await runWorker({
+      const workerResult = await runWorkerWithTracking(runWorker, {
         manifest,
         request,
         loop,
@@ -360,17 +521,31 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           }
           activityLog.feed(event.parsed);
           await emitEvent(manifest, event, renderer);
+          await appendBackendTranscriptEvent(manifest, event, {
+            sessionKey: workerMeta.sessionKey,
+            backend: workerMeta.backend,
+            requestId: request.id,
+            loopIndex: loop.index,
+            agentId: workerMeta.agentId,
+            workerCli: workerMeta.workerCli,
+          });
         },
       });
       activityLog.finish();
 
-      await appendTranscript(manifest, {
-        ts: nowIso(),
-        role: 'claude',
-        text: workerResult.resultText,
-        requestId: request.id,
-        loopIndex: loop.index,
-      });
+      if (delegateCli !== 'api') {
+        await appendTranscript(manifest, {
+          kind: 'assistant_message',
+          sessionKey: workerMeta.sessionKey,
+          backend: workerMeta.backend,
+          requestId: request.id,
+          loopIndex: loop.index,
+          agentId: workerMeta.agentId,
+          workerCli: workerMeta.workerCli,
+          text: workerResult.resultText,
+          payload: { role: 'assistant', content: workerResult.resultText },
+        });
+      }
       await emitEvent(
         manifest,
         {
@@ -448,6 +623,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
 
   const agentId = options.agentId || null;
   const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
+  const workerMeta = workerTranscriptMeta(manifest, agentId);
 
   let request;
   if (options.isDelegation) {
@@ -463,11 +639,36 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted
       : manifest.worker.hasStarted;
     renderer.launchClaude(userMessage, sameSession, agentId, agentCli, agentName, 'Agent delegation');
-    await appendTranscript(manifest, { ts: nowIso(), role: 'delegation', text: userMessage, requestId: request.id, agentId });
+    await appendTranscript(manifest, {
+      kind: 'delegation',
+      sessionKey: controllerSessionKey(),
+      backend: transcriptBackend('controller', manifest.controller.cli || 'codex'),
+      requestId: request.id,
+      agentId: workerMeta.agentId,
+      text: buildLaunchText(userMessage, sameSession, agentId, agentCli, agentName),
+      labelHint: 'Agent delegation',
+      controllerCli: manifest.controller.cli || 'codex',
+    });
+    await appendTranscript(manifest, {
+      kind: 'user_message',
+      sessionKey: workerMeta.sessionKey,
+      backend: 'user',
+      requestId: request.id,
+      agentId: workerMeta.agentId,
+      workerCli: workerMeta.workerCli,
+      text: userMessage,
+      payload: { role: 'user', content: userMessage },
+      display: false,
+    });
     await emitEvent(manifest, { ts: nowIso(), source: 'delegation', requestId: request.id, text: userMessage, agentId }, renderer);
     await saveManifest(manifest);
   } else {
-    request = await startUserRequest(manifest, renderer, userMessage);
+    request = await startUserRequest(manifest, renderer, userMessage, {
+      phase: 'worker',
+      sessionKey: workerMeta.sessionKey,
+      agentId: workerMeta.agentId,
+      workerCli: workerMeta.workerCli,
+    });
   }
 
   const signalController = new AbortController();
@@ -513,7 +714,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     const activityLog = createActivityLog();
     workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
 
-    const workerResult = await runWorker({
+    const workerResult = await runWorkerWithTracking(runWorker, {
       manifest,
       request,
       loop,
@@ -531,17 +732,31 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         }
         activityLog.feed(event.parsed);
         await emitEvent(manifest, event, renderer);
+        await appendBackendTranscriptEvent(manifest, event, {
+          sessionKey: workerMeta.sessionKey,
+          backend: workerMeta.backend,
+          requestId: request.id,
+          loopIndex: loop.index,
+          agentId: workerMeta.agentId,
+          workerCli: workerMeta.workerCli,
+        });
       },
     });
     activityLog.finish();
 
-    await appendTranscript(manifest, {
-      ts: nowIso(),
-      role: 'claude',
-      text: workerResult.resultText,
-      requestId: request.id,
-      loopIndex: loop.index,
-    });
+    if (workerMeta.workerCli !== 'api') {
+      await appendTranscript(manifest, {
+        kind: 'assistant_message',
+        sessionKey: workerMeta.sessionKey,
+        backend: workerMeta.backend,
+        requestId: request.id,
+        loopIndex: loop.index,
+        agentId: workerMeta.agentId,
+        workerCli: workerMeta.workerCli,
+        text: workerResult.resultText,
+        payload: { role: 'assistant', content: workerResult.resultText },
+      });
+    }
     await emitEvent(
       manifest,
       {
@@ -564,6 +779,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     manifest.stopReason = request.stopReason;
     manifest.activeRequestId = null;
     manifest.transcriptSummary = truncate(workerResult.resultText || userMessage, 120);
+    await emitFinalQaReport(manifest, request, renderer);
     await saveManifest(manifest);
     return manifest;
   } catch (error) {
@@ -629,12 +845,13 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
     // Step 2-4: Controller watches and sends follow-ups
     while (!signalController.signal.aborted) {
       // Create a new request for the controller turn
-      const request = manifest.requests[manifest.requests.length - 1] || await startUserRequest(manifest, '[copilot-auto]');
+      const request = manifest.requests[manifest.requests.length - 1] || await startUserRequest(manifest, renderer, '[copilot-auto]');
       const loop = await createLoopRecord(manifest, request);
       await saveManifest(manifest);
 
       // Run controller turn — controller reads transcript and decides
       const runControllerTurn = getControllerRunner(manifest);
+      const controllerBackend = transcriptBackend('controller', manifest.controller.cli || 'codex');
       const controllerResult = await runControllerTurn({
         manifest, request, loop, renderer,
         abortSignal: signalController.signal,
@@ -646,6 +863,13 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
             await appendJsonl(loop.controller.stderrFile, { text: event.text });
           }
           await emitEvent(manifest, event, renderer);
+          await appendBackendTranscriptEvent(manifest, event, {
+            sessionKey: controllerSessionKey(),
+            backend: controllerBackend,
+            requestId: request.id,
+            loopIndex: loop.index,
+            controllerCli: manifest.controller.cli || 'codex',
+          });
         },
       });
 
@@ -656,7 +880,10 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
       for (const message of controllerResult.decision.controller_messages) {
         renderer.controller(message);
         await appendTranscript(manifest, {
-          ts: nowIso(), role: 'controller', text: message,
+          kind: 'controller_message',
+          sessionKey: controllerSessionKey(),
+          backend: controllerBackend,
+          text: message,
           controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id, loopIndex: loop.index,
         });
@@ -677,7 +904,17 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
         manifest.phase = 'idle';
         manifest.stopReason = request.stopReason;
         manifest.activeRequestId = null;
-        await appendTranscript(manifest, { ts: nowIso(), role: 'controller', text: '[STOP]', controllerCli: manifest.controller.cli || 'codex', requestId: request.id, loopIndex: loop.index });
+        await appendTranscript(manifest, {
+          kind: 'controller_message',
+          sessionKey: controllerSessionKey(),
+          backend: controllerBackend,
+          text: '[STOP]',
+          controllerCli: manifest.controller.cli || 'codex',
+          requestId: request.id,
+          loopIndex: loop.index,
+        });
+        syncControllerTranscriptCursor(manifest);
+        await emitFinalQaReport(manifest, request, renderer);
         await saveManifest(manifest);
         renderer.stop(controllerResult.decision.stop_reason || 'Copilot stopped.');
         return manifest;
@@ -692,11 +929,35 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
 
       const delegateAgentConfig = delegateAgentId && delegateAgentId !== 'default'
         ? lookupAgentConfig(manifest.agents, delegateAgentId) : null;
+      const workerMeta = workerTranscriptMeta(manifest, delegateAgentId);
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
 
       renderer.launchClaude(delegateMessage, true, delegateAgentId, (delegateAgentConfig && delegateAgentConfig.cli) || manifest.worker.cli, delegateAgentConfig ? delegateAgentConfig.name : null);
+      await appendTranscript(manifest, {
+        kind: 'launch',
+        sessionKey: controllerSessionKey(),
+        backend: controllerBackend,
+        requestId: request.id,
+        loopIndex: loop.index,
+        controllerCli: manifest.controller.cli || 'codex',
+        agentId: workerMeta.agentId,
+        text: buildLaunchText(delegateMessage, true, delegateAgentId, workerMeta.workerCli, workerMeta.agentName),
+      });
+      await appendTranscript(manifest, {
+        kind: 'user_message',
+        sessionKey: workerMeta.sessionKey,
+        backend: 'user',
+        requestId: request.id,
+        loopIndex: loop.index,
+        agentId: workerMeta.agentId,
+        workerCli: workerMeta.workerCli,
+        text: delegateMessage,
+        payload: { role: 'user', content: delegateMessage },
+        display: false,
+      });
+      syncControllerTranscriptCursor(manifest);
 
-      const workerResult = await runWorker({
+      const workerResult = await runWorkerWithTracking(runWorker, {
         manifest, request, loop, workerRecord,
         prompt: delegateMessage,
         agentId: delegateAgentId,
@@ -706,10 +967,30 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
           if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
           if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
           await emitEvent(manifest, event, renderer);
+          await appendBackendTranscriptEvent(manifest, event, {
+            sessionKey: workerMeta.sessionKey,
+            backend: workerMeta.backend,
+            requestId: request.id,
+            loopIndex: loop.index,
+            agentId: workerMeta.agentId,
+            workerCli: workerMeta.workerCli,
+          });
         },
       });
 
-      await appendTranscript(manifest, { ts: nowIso(), role: 'claude', text: workerResult.resultText, requestId: request.id, loopIndex: loop.index });
+      if (workerMeta.workerCli !== 'api') {
+        await appendTranscript(manifest, {
+          kind: 'assistant_message',
+          sessionKey: workerMeta.sessionKey,
+          backend: workerMeta.backend,
+          requestId: request.id,
+          loopIndex: loop.index,
+          agentId: workerMeta.agentId,
+          workerCli: workerMeta.workerCli,
+          text: workerResult.resultText,
+          payload: { role: 'assistant', content: workerResult.resultText },
+        });
+      }
 
       request.latestWorkerResult = workerResult;
       loop.finishedAt = nowIso();

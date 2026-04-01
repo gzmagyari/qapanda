@@ -17,7 +17,7 @@ describe('Tab switching', () => {
   });
 
   it('other tabs are hidden by default', () => {
-    assert.ok(!wv.isVisible('#tab-tasks'), 'Tasks should be hidden');
+    assert.ok(!wv.isVisible('#tab-tasks'), 'Issues should be hidden');
     assert.ok(!wv.isVisible('#tab-agents'), 'Agents should be hidden');
     assert.ok(!wv.isVisible('#tab-mcp'), 'MCP should be hidden');
     assert.ok(!wv.isVisible('#tab-instances'), 'Instances should be hidden');
@@ -25,17 +25,18 @@ describe('Tab switching', () => {
     assert.ok(!wv.isVisible('#tab-browser'), 'Browser should be hidden');
   });
 
-  it('clicking Tasks tab shows Tasks, hides Agent', () => {
+  it('clicking Issues tab shows Issues, hides Agent', () => {
     wv.click('[data-tab="tasks"]');
-    assert.ok(wv.isVisible('#tab-tasks'), 'Tasks should be visible');
+    assert.ok(wv.isVisible('#tab-tasks'), 'Issues should be visible');
     assert.ok(!wv.isVisible('#tab-agent'), 'Agent should be hidden');
+    assert.equal(wv.document.querySelector('[data-tab="tasks"]').textContent.trim(), 'Issues');
   });
 
   it('clicking Agents tab shows Agents', () => {
     wv.click('[data-tab="agents"]');
     assert.ok(wv.isVisible('#tab-agents'), 'Agents should be visible');
     assert.ok(!wv.isVisible('#tab-agent'), 'Agent should be hidden');
-    assert.ok(!wv.isVisible('#tab-tasks'), 'Tasks should be hidden');
+    assert.ok(!wv.isVisible('#tab-tasks'), 'Issues should be hidden');
   });
 
   it('clicking MCP Servers tab shows MCP', () => {
@@ -64,7 +65,7 @@ describe('Tab switching', () => {
 
     wv.click('[data-tab="tasks"]');
     const tasksBtn = wv.document.querySelector('[data-tab="tasks"]');
-    assert.ok(tasksBtn.classList.contains('active'), 'Tasks button should be active after click');
+    assert.ok(tasksBtn.classList.contains('active'), 'Issues button should be active after click');
     assert.ok(!agentBtn.classList.contains('active'), 'Agent button should not be active');
   });
 

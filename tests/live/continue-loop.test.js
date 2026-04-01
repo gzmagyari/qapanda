@@ -9,6 +9,14 @@ const { runDirectWorkerTurn, runManagerLoop } = require('../../src/orchestrator'
 const { loadMergedAgents, enabledAgents, findResourcesDir, loadMergedModes } = require('../../src/config-loader');
 const { mcpServersForRole } = require('../../src/mcp-injector');
 
+function hasVisibleUserEntry(entry) {
+  return entry.role === 'user' || (entry.kind === 'user_message' && entry.display !== false);
+}
+
+function hasAssistantEntry(entry) {
+  return entry.role === 'claude' || entry.kind === 'assistant_message';
+}
+
 const resourcesDir = findResourcesDir();
 const agentsData = loadMergedAgents(PROJECT_ROOT, resourcesDir);
 const allAgents = enabledAgents(agentsData);
@@ -49,7 +57,7 @@ describe('Continue orchestration: controller delegates work tasks', { timeout: 1
     // Verify agent responded
     const transcript = fs.readFileSync(manifest.files.transcript, 'utf8').trim();
     const lines = transcript.split('\n').map(l => JSON.parse(l));
-    assert.ok(lines.some(l => l.role === 'claude'), 'agent should have responded');
+    assert.ok(lines.some(hasAssistantEntry), 'agent should have responded');
 
     // Step 2: Simulate Continue — controller should decide what to do next
     // Set a copilot-style controller prompt that instructs it to give work tasks
@@ -193,8 +201,8 @@ describe('Continue orchestration: transcript continuity', { timeout: 120000 }, (
     // Verify transcript has both user and agent entries
     const transcript1 = fs.readFileSync(manifest.files.transcript, 'utf8').trim();
     const lines1 = transcript1.split('\n').map(l => JSON.parse(l));
-    assert.ok(lines1.some(l => l.role === 'user'), 'should have user entry');
-    assert.ok(lines1.some(l => l.role === 'claude'), 'should have agent entry');
+    assert.ok(lines1.some(hasVisibleUserEntry), 'should have user entry');
+    assert.ok(lines1.some(hasAssistantEntry), 'should have agent entry');
 
     // Turn 2: Controller continue — should see previous transcript
     manifest.controllerSystemPrompt = `You are a copilot. The active agent is "dev".
@@ -214,7 +222,7 @@ Use agent_id: "dev". You MUST delegate.`;
     assert.ok(lines2.length > lines1.length, 'transcript should grow after controller continue');
 
     // The agent should have responded (possibly with "42" if session persisted)
-    const agentResponses = lines2.filter(l => l.role === 'claude');
+    const agentResponses = lines2.filter(hasAssistantEntry);
     assert.ok(agentResponses.length >= 2, 'should have multiple agent responses');
   });
 });

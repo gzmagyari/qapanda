@@ -117,4 +117,21 @@ describe('mcpServersForRole', () => {
     assert.ok(mcps['qa-desktop']);
     assert.ok(mcps['qa-desktop'].url.includes('54321'));
   });
+
+  it('injects builtin-tools for API workers', () => {
+    const mcps = mcpServersForRole('worker', {
+      repoRoot: PROJECT_ROOT,
+      workerCli: 'api',
+    });
+    assert.ok(mcps['builtin-tools'], 'should have builtin-tools');
+    assert.equal(mcps['builtin-tools'].command, 'node');
+  });
+
+  it('injects builtin-tools for API controllers', () => {
+    const mcps = mcpServersForRole('controller', {
+      repoRoot: PROJECT_ROOT,
+      controllerCli: 'api',
+    });
+    assert.ok(mcps['builtin-tools'], 'should have builtin-tools');
+  });
 });

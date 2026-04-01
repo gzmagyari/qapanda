@@ -157,6 +157,47 @@ test('plain-text start applies all config (parity with /new)', async () => {
   }
 });
 
+test('API config is restored from initialConfig and passed without persisting API keys', async () => {
+  const { session, captured, cleanup } = buildSession({
+    controllerCli: 'api',
+    workerCli: 'api',
+    controllerModel: 'gpt-4.1',
+    workerModel: 'gpt-4.1-mini',
+    controllerThinking: 'high',
+    workerThinking: 'medium',
+    apiProvider: 'openai',
+    apiBaseURL: 'http://localhost:9999/v1',
+  });
+  try {
+    const config = session._getConfig();
+    assert.equal(config.apiProvider, 'openai');
+    assert.equal(config.apiBaseURL, 'http://localhost:9999/v1');
+    assert.equal(config.apiKey, undefined);
+
+    await session.handleMessage({ type: 'userInput', text: '/new do api work' });
+    const opts = captured.prepareNewRunCalls[0].opts;
+    assert.deepEqual(opts.apiConfig, {
+      provider: 'openai',
+      baseURL: 'http://localhost:9999/v1',
+    });
+    assert.deepEqual(opts.controllerApiConfig, {
+      provider: 'openai',
+      baseURL: 'http://localhost:9999/v1',
+      model: 'gpt-4.1',
+      thinking: 'high',
+    });
+    assert.deepEqual(opts.workerApiConfig, {
+      provider: 'openai',
+      baseURL: 'http://localhost:9999/v1',
+      model: 'gpt-4.1-mini',
+      thinking: 'medium',
+    });
+    assert.equal(opts.apiConfig.apiKey, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 test('/new with all config matches plain-text start options', async () => {
   const origEnv = process.env.CLAUDE_CODE_EFFORT_LEVEL;
   const config = {

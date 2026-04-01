@@ -10,6 +10,8 @@ const CHAT_LOG_SKIP = new Set([
   'streamLine', 'flushStream', 'close', 'initConfig',
   'desktopReady', 'desktopGone', 'chromeReady', 'chromeFrame', 'chromeGone',
   'computerUseDetected', 'requestStarted', 'requestFinished',
+  'liveEntityCard', 'clearLiveEntityCard',
+  'liveQaReportCard', 'clearLiveQaReportCard',
 ]);
 
 class WebviewRenderer {

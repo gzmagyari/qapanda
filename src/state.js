@@ -16,6 +16,12 @@ function defaultStateRoot(cwd) {
   return path.join(cwd, '.qpanda');
 }
 
+function scrubApiConfig(apiConfig) {
+  if (!apiConfig || typeof apiConfig !== 'object') return apiConfig;
+  const { apiKey: _apiKey, ...rest } = apiConfig;
+  return rest;
+}
+
 /** Ensure .qpanda/ is in the repo's .gitignore. Called once per run. */
 function ensureGitignore(repoRoot) {
   if (!repoRoot) return;
@@ -132,10 +138,12 @@ function normalizeRunOptions(options = {}) {
       extraInstructions: options.controllerExtraInstructions || null,
       codexMode: options.controllerCodexMode || 'app-server',  // 'cli' or 'app-server'
       appServerThreadId: null,
+      apiConfig: options.controllerApiConfig || options.apiConfig || null,
     },
     worker: {
       cli: options.workerCli || 'codex',
       bin: options.workerCli || options.codexBin || 'codex',
+      apiConfig: options.workerApiConfig || options.apiConfig || null,
       model: options.workerModel || null,
       sessionId: options.workerSessionId || randomId(),
       allowedTools: options.workerAllowedTools || 'Bash,Read,Edit',
@@ -198,6 +206,7 @@ async function prepareNewRun(initialMessage, options = {}) {
       ...normalized.controller,
       sessionId: null,
       lastSeenChatLine: 0,
+      lastSeenTranscriptLine: 0,
       schemaFile: files.schema,
     },
     worker: {
@@ -214,6 +223,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     controllerSystemPrompt: normalized.controllerSystemPrompt || null,
     selfTesting: !!normalized.selfTesting,
     selfTestPrompts: normalized.selfTestPrompts || null,
+    apiConfig: normalized.controller.apiConfig || normalized.worker.apiConfig || null,
     counters: {
       request: 0,
       loop: 0,
@@ -237,7 +247,16 @@ async function saveManifest(manifest) {
   await ensureDir(manifest.runDir);
   // Strip non-serializable runtime objects (e.g. interactive PTY sessions)
   const { _interactiveSessions, ...workerClean } = manifest.worker || {};
-  const toSave = { ...manifest, worker: workerClean };
+  const controllerClean = manifest.controller
+    ? { ...manifest.controller, apiConfig: scrubApiConfig(manifest.controller.apiConfig) }
+    : manifest.controller;
+  const workerToSave = { ...workerClean, apiConfig: scrubApiConfig(workerClean.apiConfig) };
+  const toSave = {
+    ...manifest,
+    controller: controllerClean,
+    worker: workerToSave,
+    apiConfig: scrubApiConfig(manifest.apiConfig),
+  };
   await writeJson(manifest.files.manifest, toSave);
 }
 

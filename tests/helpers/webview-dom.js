@@ -57,6 +57,7 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
 
   // Mock state
   const messages = [];
+  const clipboardWrites = [];
   let savedState = options.savedState || null;
 
   const dom = new JSDOM(html, {
@@ -71,6 +72,14 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
         postMessage: (msg) => messages.push(msg),
         getState: () => savedState,
         setState: (s) => { savedState = s; },
+      });
+      Object.defineProperty(window.navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text) => {
+            clipboardWrites.push(String(text));
+          },
+        },
       });
 
       // Suppress console.error from debug logging in main.js
@@ -98,6 +107,7 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
     messagesOfType: (type) => messages.filter(m => m.type === type),
     /** Current saved state */
     getState: () => savedState,
+    clipboardWrites,
     /** Simulate extension host → webview message */
     postMessage(msg) {
       dom.window.dispatchEvent(
@@ -120,6 +130,9 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
     text(selector) {
       const el = dom.window.document.querySelector(selector);
       return el ? el.textContent.trim() : '';
+    },
+    async flush() {
+      await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
     },
     /** Clean up JSDOM */
     cleanup() {

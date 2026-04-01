@@ -1,25 +1,85 @@
+// ── Activation debug logger (writes to %TEMP%/cc-ext-activate-debug.log) ──
+const _activateLog = require('path').join(require('os').tmpdir(), 'cc-ext-activate-debug.log');
+function _aDbg(msg) {
+  try { require('fs').appendFileSync(_activateLog, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+
 const vscode = require('vscode');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { WebviewRenderer } = require('./webview-renderer');
-const { SessionManager } = require('./session-manager');
-const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store');
-const { loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store');
-const { findExistingDesktop } = require('./src/remote-desktop');
-const { globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers');
-const { startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http');
-const { startTestsMcpServer, stopTestsMcpServer } = require('./tests-mcp-http');
-const { startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server');
-const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require('./onboarding');
-const { loadSettings, saveSettings } = require('./settings-store');
-const { buildSelfTestingPrompt } = require('./src/prompts');
-const { loadFeatureFlags } = require('./src/feature-flags');
+
+let WebviewRenderer, SessionManager;
+let globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents;
+let loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile;
+let findExistingDesktop;
+let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
+let startTasksMcpServer, stopTasksMcpServer;
+let startTestsMcpServer, stopTestsMcpServer;
+let startQaDesktopMcpServer, stopQaDesktopMcpServer;
+let loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix;
+let loadSettings, saveSettings;
+let buildSelfTestingPrompt;
+let loadFeatureFlags;
+let exportQaReportPdf;
+
+try {
+  ({ WebviewRenderer } = require('./webview-renderer'));
+  _aDbg('require OK: webview-renderer');
+  ({ SessionManager } = require('./session-manager'));
+  _aDbg('require OK: session-manager');
+  ({ globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents } = require('./agents-store'));
+  _aDbg('require OK: agents-store');
+  ({ loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store'));
+  _aDbg('require OK: modes-store');
+  ({ findExistingDesktop } = require('./src/remote-desktop'));
+  _aDbg('require OK: remote-desktop');
+  ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
+  _aDbg('require OK: message-handlers');
+  ({ startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http'));
+  _aDbg('require OK: tasks-mcp-http');
+  ({ startTestsMcpServer, stopTestsMcpServer } = require('./tests-mcp-http'));
+  _aDbg('require OK: tests-mcp-http');
+  ({ startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server'));
+  _aDbg('require OK: qa-desktop-mcp-server');
+  ({ loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require('./onboarding'));
+  _aDbg('require OK: onboarding');
+  ({ loadSettings, saveSettings } = require('./settings-store'));
+  _aDbg('require OK: settings-store');
+  ({ buildSelfTestingPrompt } = require('./src/prompts'));
+  _aDbg('require OK: prompts');
+  ({ loadFeatureFlags } = require('./src/feature-flags'));
+  ({ exportQaReportPdf } = require('./qa-report-export'));
+  _aDbg('All top-level requires succeeded');
+} catch (e) {
+  _aDbg(`TOP-LEVEL REQUIRE FAILED: ${e.message}\n${e.stack}`);
+  throw e;
+}
 
 const activePanels = new Set();
 let _tasksMcpPort = null;
 let _testsMcpPort = null;
 let _qaDesktopMcpPort = null;
+
+async function handleQaReportExportMessage(msg, repoRoot) {
+  if (!msg || msg.type !== 'qaReportExportPdf') return false;
+  try {
+    const result = await exportQaReportPdf({
+      repoRoot,
+      label: msg.label || 'QA Report',
+      scope: msg.scope || 'run',
+      updatedAt: msg.updatedAt || '',
+      section: msg.section || {},
+    });
+    if (!result || result.canceled) {
+      return true;
+    }
+    await vscode.window.showInformationMessage(`QA report saved to ${result.filePath}`);
+  } catch (error) {
+    await vscode.window.showErrorMessage(`Failed to export QA report PDF: ${error && error.message ? error.message : String(error)}`);
+  }
+  return true;
+}
 
 
 // (Task/Test/Agent/Mode/Instance handlers moved to message-handlers.js)
@@ -55,6 +115,14 @@ function getRepoRoot(extensionUri) {
 }
 
 function activate(context) {
+  _aDbg('activate() called');
+  try { return _activateInner(context); } catch (e) {
+    _aDbg(`ACTIVATE CRASHED: ${e.message}\n${e.stack}`);
+    throw e;
+  }
+}
+
+function _activateInner(context) {
   // Ensure .qpanda/ is gitignored in the workspace
   try {
     const repoRoot = getRepoRoot(context.extensionUri);
@@ -69,17 +137,23 @@ function activate(context) {
     }
   } catch {}
 
+  _aDbg('checkpoint: gitignore done');
+
   // Start HTTP MCP servers (singletons shared across all panels)
+  _aDbg('checkpoint: starting MCP servers');
   const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tasks.json');
   startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
   const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
   startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
+  _aDbg('checkpoint: calling loadFeatureFlags');
   if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
     startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
   }
 
+  _aDbg('checkpoint: registering qapanda.open command');
   const openCommand = vscode.commands.registerCommand('qapanda.open', () => {
+    _aDbg('qapanda.open invoked');
     const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
     const panel = vscode.window.createWebviewPanel(
       'qapandaPanel',
@@ -225,6 +299,9 @@ function activate(context) {
           try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
           return;
         }
+        if (await handleQaReportExportMessage(msg, repoRoot)) {
+          return;
+        }
         // Task CRUD messages
         const taskReply = handleTaskMessage(msg, repoRoot);
         if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
@@ -289,11 +366,24 @@ function activate(context) {
     renderer.banner('Type /help for commands, or type a message to start.');
   });
 
+  _aDbg('checkpoint: command registered, pushing to subscriptions');
   context.subscriptions.push(openCommand);
 
   // Register serializer for panel restoration
+  _aDbg('checkpoint: registering deserializer');
   vscode.window.registerWebviewPanelSerializer('qapandaPanel', {
     async deserializeWebviewPanel(panel, state) {
+      _aDbg('deserializeWebviewPanel called');
+      try { return await _deserializeInner(panel, state, context); } catch (e) {
+        _aDbg(`DESERIALIZE CRASHED: ${e.message}\n${e.stack}`);
+        throw e;
+      }
+    },
+  });
+  _aDbg('activate() completed successfully');
+}
+
+async function _deserializeInner(panel, state, context) {
       panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
       const renderer = new WebviewRenderer(panel);
@@ -387,6 +477,9 @@ function activate(context) {
             const updated = saveSettings(msg.settings || {});
             session._selfTesting = !!updated.selfTesting;
             try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
+            return;
+          }
+          if (await handleQaReportExportMessage(msg, repoRoot)) {
             return;
           }
           // Task CRUD messages
@@ -484,8 +577,6 @@ function activate(context) {
         null,
         context.subscriptions
       );
-    },
-  });
 }
 
 function deactivate() {

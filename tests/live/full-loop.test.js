@@ -7,6 +7,17 @@ const { prepareNewRun } = require('../../src/state');
 const { runManagerLoop, runDirectWorkerTurn } = require('../../src/orchestrator');
 const { skipIfMissing, PROJECT_ROOT } = require('../helpers/live-test-utils');
 
+function hasVisibleUserEntry(entry) {
+  return entry.role === 'user' || (entry.kind === 'user_message' && entry.display !== false);
+}
+
+function assistantText(entry) {
+  if (!entry) return '';
+  if (entry.role === 'claude') return entry.text || '';
+  if (entry.kind === 'assistant_message') return entry.text || '';
+  return '';
+}
+
 let tmp;
 beforeEach(() => { tmp = createTempDir(); });
 afterEach(() => { tmp.cleanup(); });
@@ -41,7 +52,7 @@ describe('Full controller→worker loop with fake backends', { timeout: 30000 },
       const content = fs.readFileSync(updated.files.transcript, 'utf8').trim();
       if (content) {
         const lines = content.split('\n').map(l => JSON.parse(l));
-        assert.ok(lines.some(l => l.role === 'user'), 'transcript should have user entry');
+        assert.ok(lines.some(hasVisibleUserEntry), 'transcript should have user entry');
       }
     }
   });
@@ -71,9 +82,9 @@ describe('Direct worker turn', { timeout: 60000 }, () => {
     // Check transcript
     const content = fs.readFileSync(updated.files.transcript, 'utf8').trim();
     const lines = content.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    const workerLine = lines.find(l => l.role === 'claude');
+    const workerLine = lines.find(l => assistantText(l));
     assert.ok(workerLine, 'should have worker in transcript');
-    assert.ok(workerLine.text.includes('DIRECT_LOOP_OK'), 'worker should respond with requested text');
+    assert.ok(assistantText(workerLine).includes('DIRECT_LOOP_OK'), 'worker should respond with requested text');
   });
 
   it('manifest tracks request lifecycle correctly', async (t) => {

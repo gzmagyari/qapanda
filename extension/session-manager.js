@@ -16,6 +16,14 @@ const {
 } = require('./src/state');
 const { readText, summarizeError } = require('./src/utils');
 const { controllerLabelFor, workerLabelFor } = require('./src/render');
+const {
+  appendTranscriptRecord,
+  buildTranscriptDisplayMessages,
+  createTranscriptRecord,
+  readTranscriptEntries,
+  transcriptBackend,
+  workerSessionKey,
+} = require('./src/transcript');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 
@@ -76,6 +84,9 @@ class SessionManager {
     this._workerModel = init.workerModel || null;
     this._controllerThinking = init.controllerThinking || null;
     this._workerThinking = init.workerThinking || null;
+    this._apiProvider = init.apiProvider || 'openrouter';
+    this._apiBaseURL = init.apiBaseURL || '';
+    this._apiKey = '';
     this._waitDelay = init.waitDelay || '';
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
@@ -154,6 +165,41 @@ class SessionManager {
     return result;
   }
 
+  _anyAgentUsesApi() {
+    return Object.values(this._enabledAgents()).some((agent) => agent && agent.cli === 'api');
+  }
+
+  _sharedApiConfig() {
+    return {
+      provider: this._apiProvider || 'openrouter',
+      baseURL: this._apiBaseURL || '',
+    };
+  }
+
+  _syncActiveManifestApiConfig() {
+    if (!this._activeManifest) return;
+
+    const shared = this._sharedApiConfig();
+    const anyAgentUsesApi = this._anyAgentUsesApi();
+    const needsSharedApiConfig = this._controllerCli === 'api' || this._workerCli === 'api' || anyAgentUsesApi;
+
+    this._activeManifest.controller.model = this._controllerModel || null;
+    this._activeManifest.worker.model = this._workerModel || null;
+    this._activeManifest.apiConfig = needsSharedApiConfig ? shared : null;
+    this._activeManifest.controller.apiConfig = this._controllerCli === 'api'
+      ? { ...shared, model: this._controllerModel || '', thinking: this._controllerThinking || '' }
+      : null;
+    this._activeManifest.worker.apiConfig = (this._workerCli === 'api' || anyAgentUsesApi)
+      ? { ...shared, model: this._workerModel || '', thinking: this._workerThinking || '' }
+      : null;
+
+    this._activeManifest.controller.config = (this._activeManifest.controller.config || [])
+      .filter((entry) => !entry.startsWith('model_reasoning_effort='));
+    if (this._controllerCli !== 'api' && this._controllerThinking) {
+      this._activeManifest.controller.config.push(`model_reasoning_effort="${this._controllerThinking}"`);
+    }
+  }
+
   /** Return servers visible to a given role, stripped of the target field. */
   _mcpServersForRole(role, isRemote = false) {
     const result = {};
@@ -213,6 +259,20 @@ class SessionManager {
         args: [path.join(this._extensionPath, 'detached-command-mcp', 'dist', 'index.js')],
         env: { DETACHED_BASH_MCP_DATA_DIR: path.join(this._repoRoot, '.qpanda', '.detached-jobs') },
       };
+    }
+    // Auto-inject built-in coding tools MCP ONLY for API mode
+    // (codex/claude have their own built-in Read/Write/Edit/Bash tools)
+    if (this._extensionPath) {
+      const needsBuiltinTools = role === 'controller'
+        ? this._controllerCli === 'api'
+        : (this._workerCli === 'api' || this._anyAgentUsesApi());
+      if (needsBuiltinTools) {
+        result['builtin-tools'] = {
+          command: 'node',
+          args: [path.join(this._extensionPath, 'builtin-tools-mcp-server.js')],
+          env: { CWD: this._repoRoot },
+        };
+      }
     }
     return result;
   }
@@ -371,6 +431,23 @@ class SessionManager {
         this._syncConfig();
       }
     }
+    // API config
+    if (config.apiProvider !== undefined) this._apiProvider = config.apiProvider || 'openrouter';
+    if (config.apiKey !== undefined) this._apiKey = config.apiKey || '';  // resolved from settings by provider
+    if (config.apiBaseURL !== undefined) this._apiBaseURL = config.apiBaseURL || '';
+    if (this._activeManifest && (
+      config.controllerModel !== undefined ||
+      config.workerModel !== undefined ||
+      config.controllerThinking !== undefined ||
+      config.workerThinking !== undefined ||
+      config.controllerCli !== undefined ||
+      config.workerCli !== undefined ||
+      config.apiProvider !== undefined ||
+      config.apiBaseURL !== undefined
+    )) {
+      this._syncActiveManifestApiConfig();
+      saveManifest(this._activeManifest).catch(() => {});
+    }
     if (config.loopMode !== undefined) {
       this._loopMode = !!config.loopMode;
     }
@@ -442,53 +519,19 @@ class SessionManager {
   }
 
   /**
-   * Read the chat history file and send it to the webview for chat rebuild.
-   * Uses chat.jsonl (unified chat log) if available, falls back to transcript.jsonl (legacy).
+   * Read transcript history and send it to the webview for chat rebuild.
+   * Supports both transcript v2 and legacy role/text transcript entries.
    */
   async sendTranscript() {
     if (!this._activeManifest || !this._activeManifest.files) return;
     try {
-      // Prefer chat.jsonl (has full history including tool calls, delegations, etc.)
-      const chatLogFile = this._activeManifest.files.chatLog;
-      const transcriptFile = this._activeManifest.files.transcript;
-      const filePath = (chatLogFile && fs.existsSync(chatLogFile)) ? chatLogFile : transcriptFile;
+      const filePath = this._activeManifest.files.transcript;
       if (!filePath) return;
-
-      const raw = await readText(filePath, '');
-      if (!raw.trim()) return;
-      const entries = raw.trim().split('\n').map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      }).filter(Boolean);
+      const entries = await readTranscriptEntries(filePath);
       if (entries.length === 0) return;
-
-      let messages;
-      if (filePath === chatLogFile) {
-        // chat.jsonl: entries are already in webview message format {type, text, label, ...}
-        messages = entries.map(e => {
-          const { ts, ...msg } = e; // strip timestamp, keep the rest
-          return msg;
-        });
-      } else {
-        // Legacy transcript.jsonl: map roles to webview types
-        messages = [];
-        for (const entry of entries) {
-          if (entry.role === 'user') {
-            messages.push({ type: 'user', text: entry.text || '' });
-          } else if (entry.role === 'controller') {
-            const cli = entry.controllerCli
-              || (this._activeManifest.controller && this._activeManifest.controller.cli)
-              || 'codex';
-            const label = controllerLabelFor(cli);
-            if (entry.text === '[STOP]') {
-              messages.push({ type: 'stop', label });
-            } else {
-              messages.push({ type: 'controller', text: entry.text || '', label });
-            }
-          } else if (entry.role === 'claude') {
-            messages.push({ type: 'claude', text: (entry.text || '').trim(), label: this._renderer.workerLabel || 'Worker' });
-          }
-        }
-      }
+      const messages = buildTranscriptDisplayMessages(entries, this._activeManifest, {
+        fallbackWorkerLabel: this._renderer && this._renderer.workerLabel,
+      });
       if (messages.length > 0) {
         this._postMessage({ type: 'transcriptHistory', messages });
       }
@@ -709,6 +752,23 @@ class SessionManager {
           fs.appendFileSync(this._activeManifest.files.chatLog, JSON.stringify(entry) + '\n');
         } catch {}
       }
+      if (this._activeManifest && msg.entry && msg.entry.type) {
+        const agentId = this._chatTarget && this._chatTarget.startsWith('agent-')
+          ? this._chatTarget.slice('agent-'.length)
+          : null;
+        const agents = this._enabledAgents();
+        const agentConfig = agentId ? agents[agentId] : null;
+        const workerCli = (agentConfig && agentConfig.cli) || this._workerCli || (this._activeManifest.worker && this._activeManifest.worker.cli) || 'codex';
+        appendTranscriptRecord(this._activeManifest, createTranscriptRecord({
+          kind: 'ui_message',
+          sessionKey: workerSessionKey(agentId),
+          backend: transcriptBackend('worker', workerCli),
+          agentId,
+          workerCli,
+          payload: { ts: new Date().toISOString(), ...msg.entry },
+          display: true,
+        })).catch(() => {});
+      }
       return;
     }
 
@@ -730,6 +790,77 @@ class SessionManager {
     if (this._abortController) {
       this._abortController.abort();
     }
+  }
+
+  _latestRequestMeta() {
+    const requests = (this._activeManifest && this._activeManifest.requests) || [];
+    const request = requests[requests.length - 1] || null;
+    const loops = (request && request.loops) || [];
+    const loop = loops[loops.length - 1] || null;
+    return {
+      requestId: request && request.id ? request.id : null,
+      loopIndex: loop && loop.index != null ? loop.index : null,
+    };
+  }
+
+  async _compactCurrentSession() {
+    if (!this._activeManifest) {
+      this._renderer.banner('No run is attached.');
+      return;
+    }
+    this._syncActiveManifestApiConfig();
+
+    const {
+      compactApiSessionHistory,
+      currentApiSessionTarget,
+      describeCompactionResult,
+    } = require('./src/api-compaction');
+
+    let targetInfo = null;
+    if (!this._chatTarget || this._chatTarget === 'controller') {
+      targetInfo = currentApiSessionTarget({
+        manifest: this._activeManifest,
+        target: 'controller',
+        controllerCli: this._controllerCli,
+        workerCli: this._workerCli,
+      });
+    } else if (this._chatTarget === 'claude') {
+      targetInfo = currentApiSessionTarget({
+        manifest: this._activeManifest,
+        target: 'worker-default',
+        workerCli: this._workerCli,
+      });
+    } else if (this._chatTarget.startsWith('agent-')) {
+      targetInfo = currentApiSessionTarget({
+        manifest: this._activeManifest,
+        target: 'worker-agent',
+        directAgent: this._chatTarget.slice('agent-'.length),
+        workerCli: this._workerCli,
+      });
+    }
+
+    if (!targetInfo) {
+      this._renderer.banner('The current target is not using API mode.');
+      return;
+    }
+
+    const { requestId, loopIndex } = this._latestRequestMeta();
+    const label = !this._chatTarget || this._chatTarget === 'controller'
+      ? 'Controller session'
+      : 'Current agent session';
+    const result = await compactApiSessionHistory({
+      manifest: this._activeManifest,
+      sessionKey: targetInfo.sessionKey,
+      backend: targetInfo.backend,
+      requestId,
+      loopIndex,
+      provider: targetInfo.provider,
+      baseURL: targetInfo.baseURL,
+      model: targetInfo.model,
+      thinking: targetInfo.thinking,
+      force: true,
+    });
+    this._renderer.banner(describeCompactionResult(result, label));
   }
 
   async _handleInput(text) {
@@ -806,6 +937,7 @@ class SessionManager {
         '  /list                          List saved runs\n' +
         '  /logs [n]                      Show the last n event lines\n' +
         '  /clear                         Clear chat and start fresh\n' +
+        '  /compact                       Compact the current API session now\n' +
         '  /detach                        Detach from the current run\n' +
         '  /controller-model [name]       Set/show Codex model\n' +
         '  /worker-model [name]           Set/show Claude model\n' +
@@ -833,6 +965,11 @@ class SessionManager {
       this._renderer.banner('Session cleared.');
       // Re-prestart app-server so next message is fast
       this.prestart();
+      return;
+    }
+
+    if (command === '/compact') {
+      await this._compactCurrentSession();
       return;
     }
 
@@ -1171,6 +1308,20 @@ class SessionManager {
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
     const agents = this._enabledAgents();
     if (Object.keys(agents).length > 0) opts.agents = agents;
+    // API config (for BYOK mode) — always include if any agent or config uses API
+    const anyAgentUsesApi = Object.values(agents).some(a => a && a.cli === 'api');
+    if (this._controllerCli === 'api' || this._workerCli === 'api' || anyAgentUsesApi) {
+      opts.apiConfig = {
+        provider: this._apiProvider || 'openrouter',
+        baseURL: this._apiBaseURL || '',
+      };
+      if (this._controllerCli === 'api') {
+        opts.controllerApiConfig = { ...opts.apiConfig, model: this._controllerModel || '', thinking: this._controllerThinking || '' };
+      }
+      if (this._workerCli === 'api' || anyAgentUsesApi) {
+        opts.workerApiConfig = { ...opts.apiConfig, model: this._workerModel || '', thinking: this._workerThinking || '' };
+      }
+    }
     if (this._selfTesting) {
       opts.selfTesting = true;
       // Load custom prompts from settings
@@ -1213,6 +1364,8 @@ class SessionManager {
       controllerCli: this._controllerCli || 'codex',
       codexMode: this._codexMode || 'app-server',
       workerCli: this._workerCli || 'codex',
+      apiProvider: this._apiProvider || 'openrouter',
+      apiBaseURL: this._apiBaseURL || '',
     };
   }
 

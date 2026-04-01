@@ -54,12 +54,14 @@ Common options:
   --agent <id>                       Direct to specific agent (bypasses controller)
   --test-env <browser${_flags.enableRemoteDesktop ? '|computer' : ''}>      Test environment for modes
   --print                            One-shot: run single turn, print result, exit
-  --controller-cli <codex${_flags.enableClaudeCli ? '|claude' : ''}>    Controller CLI backend
+  --controller-cli <codex|api${_flags.enableClaudeCli ? '|claude' : ''}>    Controller CLI backend
   --controller-model <name>          Controller model
   --controller-thinking <level>      Controller thinking (minimal/low/medium/high/xhigh)
-  --worker-cli <codex${_flags.enableClaudeCli ? '|claude' : ''}>        Worker CLI backend
+  --worker-cli <codex|api${_flags.enableClaudeCli ? '|claude' : ''}>        Worker CLI backend
   --worker-model <name>              Worker model
   --worker-thinking <level>          Worker thinking (low/medium/high)
+  --api-provider <name>              API provider (openrouter/openai/anthropic/gemini/custom)
+  --api-base-url <url>               API base URL override
   --wait <delay>                     Auto-pass delay (1m, 5m, 1h, etc.)
   --no-mcp-inject                    Disable system MCP auto-injection
   --raw-events                       Show raw streaming events
@@ -96,6 +98,8 @@ const RUN_SPEC = {
   'worker-cli': { key: 'workerCli', kind: 'value' },
   'worker-model': { key: 'workerModel', kind: 'value' },
   'worker-thinking': { key: 'workerThinking', kind: 'value' },
+  'api-provider': { key: 'apiProvider', kind: 'value' },
+  'api-base-url': { key: 'apiBaseUrl', kind: 'value' },
   'worker-session-id': { key: 'workerSessionId', kind: 'value' },
   'worker-allowed-tools': { key: 'workerAllowedTools', kind: 'value' },
   'worker-tools': { key: 'workerTools', kind: 'value' },
@@ -175,6 +179,35 @@ function loadConfig(repoRoot) {
   return { agentsData, modesData, mcpData, allAgents, allModes, defaults, resourcesDir };
 }
 
+function applyApiConfigToOptions(options, agents) {
+  const anyAgentUsesApi = Object.values(agents || {}).some((agent) => agent && agent.cli === 'api');
+  const anyApi = options.controllerCli === 'api' || options.workerCli === 'api' || anyAgentUsesApi;
+  if (!anyApi) return;
+
+  const shared = {
+    provider: options.apiProvider || (options.apiConfig && options.apiConfig.provider) || 'openrouter',
+    baseURL: options.apiBaseUrl || (options.apiConfig && options.apiConfig.baseURL) || '',
+  };
+
+  options.apiConfig = { ...(options.apiConfig || {}), ...shared };
+
+  if (options.controllerCli === 'api') {
+    options.controllerApiConfig = {
+      ...shared,
+      model: options.controllerModel || '',
+      thinking: options.controllerThinking || '',
+    };
+  }
+
+  if (options.workerCli === 'api' || anyAgentUsesApi) {
+    options.workerApiConfig = {
+      ...shared,
+      model: options.workerModel || '',
+      thinking: options.workerThinking || '',
+    };
+  }
+}
+
 /**
  * Apply mode + agent + MCP injection to options before creating a run.
  */
@@ -214,6 +247,7 @@ function applyConfigToOptions(options, config) {
 
   // Load all agents into manifest
   options.agents = allAgents;
+  applyApiConfigToOptions(options, allAgents);
 
   // Auto-inject system MCPs (unless disabled)
   if (!options.noMcpInject) {
@@ -221,11 +255,17 @@ function applyConfigToOptions(options, config) {
       globalMcps: mcpData.global,
       projectMcps: mcpData.project,
       repoRoot: options.repoRoot,
+      controllerCli: options.controllerCli,
+      workerCli: options.workerCli,
+      agents: options.agents,
     });
     const controllerMcps = mcpServersForRole('controller', {
       globalMcps: mcpData.global,
       projectMcps: mcpData.project,
       repoRoot: options.repoRoot,
+      controllerCli: options.controllerCli,
+      workerCli: options.workerCli,
+      agents: options.agents,
     });
     options.workerMcpServers = workerMcps;
     options.controllerMcpServers = controllerMcps;
@@ -426,12 +466,14 @@ async function runOneShot(argv) {
   const { options: enriched, directAgent } = applyConfigToOptions(options, config);
 
   // Verify CLIs — only check binaries that are actually configured
+  const controllerIsCodex = !enriched.controllerCli || enriched.controllerCli === 'codex' || enriched.controllerCli === 'qa-remote-codex';
+  const controllerIsClaude = enriched.controllerCli === 'claude' || enriched.controllerCli === 'qa-remote-claude';
   const workerIsCodex = !enriched.workerCli || enriched.workerCli === 'codex' || enriched.workerCli === 'qa-remote-codex';
   const workerIsClaude = enriched.workerCli === 'claude' || enriched.workerCli === 'qa-remote-claude';
-  if (enriched.controllerCli !== 'claude' && !directAgent) {
+  if (controllerIsCodex && !directAgent) {
     await ensureBinaryAvailable(enriched.codexBin || 'codex');
   }
-  if (enriched.controllerCli === 'claude' || workerIsClaude) {
+  if (controllerIsClaude || workerIsClaude) {
     await ensureBinaryAvailable(enriched.claudeBin || 'claude');
   } else if (directAgent && workerIsCodex) {
     await ensureBinaryAvailable(enriched.codexBin || 'codex');

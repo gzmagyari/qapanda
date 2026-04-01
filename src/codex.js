@@ -6,6 +6,7 @@ const { parseJsonLine, mapAppServerNotification, summarizeCodexEvent } = require
 const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 const { getOrCreateConnection } = require('./codex-app-server');
+const { countTranscriptLinesSync } = require('./transcript');
 
 function buildCodexArgs(manifest, loop) {
   const args = ['exec'];
@@ -156,7 +157,9 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   loop.controller.exitCode = result.code;
   loop.controller.sessionId = discoveredSessionId;
   manifest.controller.sessionId = discoveredSessionId;
-  // Track how far the controller has seen in chat.jsonl for incremental transcript on resume
+  try {
+    manifest.controller.lastSeenTranscriptLine = countTranscriptLinesSync(manifest.files && manifest.files.transcript);
+  } catch {}
   try {
     const chatLogFile = manifest.files && manifest.files.chatLog;
     if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {
@@ -308,7 +311,9 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   loop.controller.sessionId = sessionId;
   manifest.controller.sessionId = sessionId;
 
-  // Track chat log position for incremental transcript on resume
+  try {
+    manifest.controller.lastSeenTranscriptLine = countTranscriptLinesSync(manifest.files && manifest.files.transcript);
+  } catch {}
   try {
     const chatLogFile = manifest.files && manifest.files.chatLog;
     if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {

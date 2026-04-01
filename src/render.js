@@ -89,11 +89,14 @@ const glyph = {
 };
 
 function controllerLabelFor(cli) {
-  return cli === 'claude' ? 'Orchestrator (Claude)' : 'Orchestrator (Codex)';
+  if (cli === 'claude') return 'Orchestrator (Claude)';
+  if (cli === 'api') return 'Orchestrator (API)';
+  return 'Orchestrator (Codex)';
 }
 
 function workerLabelFor(cli, agentName) {
   if (agentName) return agentName;
+  if (cli === 'api') return 'Worker (API)';
   if (cli === 'claude') return 'Worker (Claude)';
   if (!cli || cli === 'codex') return 'Worker (Codex)';
   return `Worker (${cli})`;
@@ -175,10 +178,11 @@ class Renderer {
       this._closeSection();
     }
     this._currentActor = label;
-    this._currentColor = labelColor;
+    const lc = labelColor || '';
+    this._currentColor = lc;
     this._hasContent = false;
     if (this.useColor) {
-      this.write(`${labelColor}${color.bold}${label}${color.reset}\n`);
+      this.write(`${lc}${color.bold}${label}${color.reset}\n`);
     } else {
       this.write(`${label}\n`);
     }

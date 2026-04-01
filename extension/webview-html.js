@@ -27,7 +27,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
   <div id="app">
     <div id="tab-bar">
       <button class="tab-btn active" data-tab="agent">Agent</button>
-      <button class="tab-btn" data-tab="tasks">Tasks</button>
+      <button class="tab-btn" data-tab="tasks">Issues</button>
       <button class="tab-btn" data-tab="tests">Tests</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
@@ -81,9 +81,11 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
       </div>
       <div id="messages"></div>
       <div id="suggestions"></div>
-      <div id="input-box">
-        <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
-        <div id="input-toolbar">
+      <div id="input-row">
+        <div id="panda-buddy" class="panda-buddy panda-buddy--idle" title="Click me!"></div>
+        <div id="input-box">
+          <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
+          <div id="input-toolbar">
           <div id="input-toolbar-left">
             <span class="toolbar-label">TARGET</span>
             <select id="cfg-chat-target">
@@ -109,12 +111,14 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
           </div>
         </div>
       </div>
+      </div><!-- /input-row -->
       <div id="config-bar">
       <div class="config-group cfg-controller-only">
         <label>Orchestrator CLI</label>
         <select id="cfg-controller-cli">
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
+          <option value="api">API (BYOK)</option>
         </select>
       </div>
       <div class="config-group cfg-controller-only cfg-codex-only">
@@ -129,6 +133,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <select id="cfg-controller-model">
           <option value="">Model: default</option>
         </select>
+        <input type="text" id="cfg-controller-custom-model" class="config-input cfg-custom-model" placeholder="model name" />
         <select id="cfg-controller-thinking">
           <option value="">Thinking: default</option>
         </select>
@@ -138,6 +143,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <select id="cfg-worker-cli">
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
+          <option value="api">API (BYOK)</option>
         </select>
       </div>
       <div class="config-group cfg-worker-only">
@@ -145,9 +151,27 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <select id="cfg-worker-model">
           <option value="">Model: default</option>
         </select>
+        <input type="text" id="cfg-worker-custom-model" class="config-input cfg-custom-model" placeholder="model name" />
         <select id="cfg-worker-thinking">
           <option value="">Thinking: default</option>
         </select>
+      </div>
+      <div class="config-group cfg-api-only">
+        <label>Provider</label>
+        <select id="cfg-api-provider">
+          <option value="openrouter">OpenRouter</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="config-group cfg-api-only">
+        <label>Base URL</label>
+        <input type="text" id="cfg-api-base-url" class="config-input" placeholder="https://example.com/v1" />
+      </div>
+      <div class="config-group cfg-api-only" id="cfg-api-key-warning-container">
+        <span class="api-key-warning" id="cfg-api-key-warning"></span>
       </div>
       <div class="config-group cfg-controller-only">
         <label>Wait</label>
@@ -279,6 +303,34 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
 
     <div id="tab-settings" class="tab-hidden">
       <div class="mcp-container">
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>API Keys</h3>
+            <span class="mcp-section-path">For direct LLM access (API mode). Stored locally, only sent to the selected provider.</span>
+          </div>
+          <div class="settings-list">
+            <div class="settings-item">
+              <div class="settings-item-info"><div class="settings-item-name">OpenAI</div><div class="settings-item-desc">For GPT-4.1, GPT-5, o3, o4 models</div></div>
+              <input type="password" class="settings-api-key-input" id="api-key-openai" placeholder="sk-proj-..." data-provider="openai" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info"><div class="settings-item-name">Anthropic</div><div class="settings-item-desc">For Claude Sonnet, Opus, Haiku models</div></div>
+              <input type="password" class="settings-api-key-input" id="api-key-anthropic" placeholder="sk-ant-..." data-provider="anthropic" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info"><div class="settings-item-name">OpenRouter</div><div class="settings-item-desc">Access all providers through one key</div></div>
+              <input type="password" class="settings-api-key-input" id="api-key-openrouter" placeholder="sk-or-..." data-provider="openrouter" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info"><div class="settings-item-name">Google Gemini</div><div class="settings-item-desc">For Gemini 3 Flash, Pro models</div></div>
+              <input type="password" class="settings-api-key-input" id="api-key-gemini" placeholder="AI..." data-provider="gemini" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info"><div class="settings-item-name">Custom</div><div class="settings-item-desc">For any OpenAI-compatible endpoint</div></div>
+              <input type="password" class="settings-api-key-input" id="api-key-custom" placeholder="API key" data-provider="custom" />
+            </div>
+          </div>
+        </div>
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>Developer Settings</h3>

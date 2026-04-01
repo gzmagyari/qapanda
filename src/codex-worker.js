@@ -110,7 +110,7 @@ function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
   return `${systemPrompt}\n\n---\n\n${prompt}`;
 }
 
-async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config and session
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -209,7 +209,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     stdinText,
     env: cleanEnv,
     abortSignal: localAbort.signal,
-    onStdoutLine: (line) => {
+    onStdoutLine: async (line) => {
       const raw = parseJsonLine(line);
       Promise.resolve(emitEvent({
         ts: new Date().toISOString(),
@@ -267,6 +267,10 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
           if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
           const { renderCompleteCard } = require('./mcp-cards');
           const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
+          if (turnTracker) {
+            turnTracker.noteRenderedToolCard(tool, inp, workerLabel);
+            await turnTracker.noteToolCompletion(tool, inp, out, workerLabel);
+          }
           if (suppress) return;
         }
       }
@@ -353,7 +357,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
  * Run a Codex worker turn using the app-server protocol.
  * Uses a persistent connection instead of spawning a new CLI process per turn.
  */
-async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId }) {
+async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -417,7 +421,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   let agentMessageText = '';
   let turnCompleted = false;
 
-  conn.onNotification((notification) => {
+  conn.onNotification(async (notification) => {
     const mapped = mapAppServerNotification(notification);
     if (!mapped) return;
 
@@ -477,6 +481,10 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
         if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
         const { renderCompleteCard } = require('./mcp-cards');
         const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
+        if (turnTracker) {
+          turnTracker.noteRenderedToolCard(tool, inp, workerLabel);
+          await turnTracker.noteToolCompletion(tool, inp, out, workerLabel);
+        }
         if (suppress) return;
       }
     }

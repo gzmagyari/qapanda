@@ -12,6 +12,7 @@ const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
+const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ function stubRenderer() {
 const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
+const origCompaction = require(compactionPath);
 
 function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
   const posted = [];
@@ -84,6 +86,7 @@ function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
+    require.cache[compactionPath] = { id: compactionPath, filename: compactionPath, loaded: true, exports: origCompaction };
   };
 
   return { session, posted, renderer, cleanup };
@@ -152,6 +155,79 @@ test('/clear posts clearRunId to webview', async () => {
     assert.ok(clearMsg, '/clear should post clearRunId');
     const clearUI = posted.find(m => m.type === 'clear');
     assert.ok(clearUI, '/clear should post clear');
+  } finally {
+    cleanup();
+  }
+});
+
+test('/compact compacts the current API agent session locally', async () => {
+  let captured = null;
+  require.cache[compactionPath] = {
+    id: compactionPath,
+    filename: compactionPath,
+    loaded: true,
+    exports: {
+      ...origCompaction,
+      compactApiSessionHistory: async (opts) => {
+        captured = opts;
+        return { performed: true, replayMessageCountBefore: 520, replayMessageCountAfter: 80 };
+      },
+      describeCompactionResult: () => 'Current agent session compacted successfully.',
+    },
+  };
+
+  const manifest = {
+    runId: 'existing-run-42',
+    apiConfig: { provider: 'openrouter', model: 'openai/gpt-4.1' },
+    controller: { cli: 'codex', model: null, config: [], apiConfig: null },
+    worker: { cli: 'api', model: null, apiConfig: { provider: 'openrouter', model: 'openai/gpt-4.1' } },
+    agents: {
+      'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'api' },
+    },
+    requests: [{ id: 'req-1', loops: [{ index: 3 }] }],
+  };
+  const { session, cleanup } = buildSession({
+    runExists: true,
+    manifest,
+    config: { chatTarget: 'agent-QA-Browser', workerCli: 'api' },
+  });
+  try {
+    await session.reattachRun('existing-run-42');
+    await session.handleMessage({ type: 'userInput', text: '/compact' });
+    assert.ok(captured, 'should invoke local compaction');
+    assert.equal(captured.sessionKey, 'worker:agent:QA-Browser');
+    assert.equal(captured.backend, 'worker:api');
+    assert.equal(captured.force, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test('/compact no-ops with a banner when current target is not API', async () => {
+  let called = false;
+  require.cache[compactionPath] = {
+    id: compactionPath,
+    filename: compactionPath,
+    loaded: true,
+    exports: {
+      ...origCompaction,
+      compactApiSessionHistory: async () => {
+        called = true;
+        return { performed: true };
+      },
+    },
+  };
+
+  const manifest = {
+    runId: 'existing-run-42',
+    controller: { cli: 'codex', model: null, config: [] },
+    worker: { cli: 'codex', model: null },
+  };
+  const { session, cleanup } = buildSession({ runExists: true, manifest });
+  try {
+    await session.reattachRun('existing-run-42');
+    await session.handleMessage({ type: 'userInput', text: '/compact' });
+    assert.equal(called, false, 'should not compact non-API targets');
   } finally {
     cleanup();
   }
@@ -227,7 +303,7 @@ test('reattach then /clear then new run gives correct runId', async () => {
 
 // ── Transcript rehydration tests ─────────────────────────────────────────────
 
-function buildTranscriptSession(transcriptLines) {
+function buildTranscriptSession(transcriptLines, manifestOverrides = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-'));
   const transcriptFile = path.join(tmpDir, 'transcript.jsonl');
   fs.writeFileSync(transcriptFile, transcriptLines.map(l => JSON.stringify(l)).join('\n') + '\n');
@@ -246,6 +322,7 @@ function buildTranscriptSession(transcriptLines) {
     waitDelay: null,
     nextWakeAt: null,
     errorRetry: false,
+    ...manifestOverrides,
   };
 
   delete require.cache[smPath];
@@ -290,7 +367,18 @@ test('sendTranscript posts transcriptHistory with mapped message types', async (
     { ts: '2025-01-01T00:00:01Z', role: 'controller', text: 'Delegating to Claude', requestId: 'req-0001' },
     { ts: '2025-01-01T00:00:02Z', role: 'claude', text: 'Done editing file.js', requestId: 'req-0001' },
     { ts: '2025-01-01T00:00:03Z', role: 'controller', text: '[STOP]', requestId: 'req-0001' },
-  ]);
+  ], {
+    worker: {
+      model: null,
+      cli: 'api',
+      agentSessions: {
+        'QA-Browser': { hasStarted: true },
+      },
+    },
+    agents: {
+      'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'api' },
+    },
+  });
   try {
     await session.reattachRun('transcript-run');
     posted.length = 0;
@@ -300,8 +388,139 @@ test('sendTranscript posts transcriptHistory with mapped message types', async (
     assert.equal(hist.messages.length, 4);
     assert.deepEqual(hist.messages[0], { type: 'user', text: 'Hello' });
     assert.deepEqual(hist.messages[1], { type: 'controller', text: 'Delegating to Claude', label: 'Orchestrator (Codex)' });
-    assert.deepEqual(hist.messages[2], { type: 'claude', text: 'Done editing file.js' });
+    assert.deepEqual(hist.messages[2], { type: 'claude', text: 'Done editing file.js', label: 'QA Engineer (Browser)' });
     assert.deepEqual(hist.messages[3], { type: 'stop', label: 'Orchestrator (Codex)' });
+  } finally {
+    cleanup();
+  }
+});
+
+test('sendTranscript restores transcript v2 tool calls and screenshots', async () => {
+  const { session, posted, cleanup } = buildTranscriptSession([
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:00Z',
+      kind: 'controller_message',
+      sessionKey: 'controller:main',
+      backend: 'controller:codex',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      text: 'Delegating to the browser agent',
+    },
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:01Z',
+      kind: 'tool_call',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      toolCallId: 'shot-1',
+      toolName: 'chrome_devtools__take_screenshot',
+      input: {},
+      payload: {
+        id: 'shot-1',
+        type: 'function',
+        function: { name: 'chrome_devtools__take_screenshot', arguments: '{}' },
+      },
+    },
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:02Z',
+      kind: 'tool_result',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      toolCallId: 'shot-1',
+      toolName: 'chrome_devtools__take_screenshot',
+      result: {
+        content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],
+      },
+    },
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:03Z',
+      kind: 'assistant_message',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      text: 'The page shows a consent modal.',
+      payload: { role: 'assistant', content: 'The page shows a consent modal.' },
+    },
+  ]);
+  try {
+    await session.reattachRun('transcript-run');
+    posted.length = 0;
+    await session.sendTranscript();
+    const hist = posted.find(m => m.type === 'transcriptHistory');
+    assert.ok(hist, 'should post transcriptHistory');
+    assert.ok(hist.messages.some(m => m.type === 'controller'));
+    assert.ok(hist.messages.some(m => m.type === 'chatScreenshot'));
+    assert.ok(hist.messages.some(m => m.type === 'claude' && m.text === 'The page shows a consent modal.'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('sendTranscript does not duplicate v2 tool cards or mirrored screenshots', async () => {
+  const { session, posted, cleanup } = buildTranscriptSession([
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:01Z',
+      kind: 'tool_call',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      toolCallId: 'shot-1',
+      toolName: 'chrome_devtools__take_screenshot',
+      input: {},
+      payload: {
+        id: 'shot-1',
+        type: 'function',
+        function: { name: 'chrome_devtools__take_screenshot', arguments: '{}' },
+      },
+    },
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:02Z',
+      kind: 'tool_result',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      toolCallId: 'shot-1',
+      toolName: 'chrome_devtools__take_screenshot',
+      result: {
+        content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],
+      },
+    },
+    {
+      v: 2,
+      ts: '2025-01-01T00:00:02.500Z',
+      kind: 'ui_message',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      payload: {
+        type: 'chatScreenshot',
+        data: 'data:image/jpeg;base64,anBlZw==',
+        alt: 'Browser screenshot',
+      },
+    },
+  ]);
+  try {
+    await session.reattachRun('transcript-run');
+    posted.length = 0;
+    await session.sendTranscript();
+    const hist = posted.find(m => m.type === 'transcriptHistory');
+    assert.ok(hist, 'should post transcriptHistory');
+    assert.equal(hist.messages.filter(m => m.type === 'mcpCardStart').length, 1);
+    assert.equal(hist.messages.filter(m => m.type === 'mcpCardComplete').length, 1);
+    assert.equal(hist.messages.filter(m => m.type === 'chatScreenshot').length, 1);
   } finally {
     cleanup();
   }

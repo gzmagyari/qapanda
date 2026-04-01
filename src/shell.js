@@ -33,6 +33,8 @@ const {
   writeJsonFile,
 } = require('./config-loader');
 const { mcpServersForRole } = require('./mcp-injector');
+const { PROVIDERS } = require('./llm-client');
+const { compactApiSessionHistory, currentApiSessionTarget, describeCompactionResult } = require('./api-compaction');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000;
 
@@ -46,6 +48,12 @@ function parseCommand(line) {
   const space = trimmed.indexOf(' ');
   if (space === -1) return { command: trimmed, rest: '' };
   return { command: trimmed.slice(0, space), rest: trimmed.slice(space + 1).trim() };
+}
+
+function resolveInitialDirectAgent(options = {}) {
+  if (options.agent) return options.agent;
+  if (options.mode) return null;
+  return 'QA-Browser';
 }
 
 function printHelp(renderer) {
@@ -63,6 +71,7 @@ Commands:
   /workflow [name]     List or run a workflow
   /detach              Detach from the current run
   /clear               Clear chat, detach, start fresh
+  /compact             Compact the current API session now
   /quit                Exit the shell
 
 Config:
@@ -71,12 +80,14 @@ Config:
   /modes               List all available modes
   /agent [id]          Show or switch to a direct agent
   /agents              List all available agents
-  /controller-cli [c]  Show or set controller CLI${_flags.enableClaudeCli ? ' (codex/claude)' : ' (codex)'}
-  /worker-cli [c]      Show or set worker CLI${_flags.enableClaudeCli ? ' (codex/claude)' : ' (codex)'}
+  /controller-cli [c]  Show or set controller CLI${_flags.enableClaudeCli ? ' (codex/api/claude)' : ' (codex/api)'}
+  /worker-cli [c]      Show or set worker CLI${_flags.enableClaudeCli ? ' (codex/api/claude)' : ' (codex/api)'}
   /controller-model [m] Show or set controller model
   /worker-model [m]    Show or set worker model
   /controller-thinking [l] Show or set controller thinking level
   /worker-thinking [l] Show or set worker thinking level
+  /api-provider [p]    Show or set API provider
+  /api-base-url [u]    Show or set API base URL
 
 Tasks:
   /tasks               List tasks from .qpanda/tasks.json
@@ -92,6 +103,17 @@ Plain text:
   - If no run is attached, plain text starts a new run.
   - If a run is attached, plain text becomes the next user message.
 `);
+}
+
+function latestRequestMeta(manifest) {
+  const requests = (manifest && manifest.requests) || [];
+  const request = requests[requests.length - 1] || null;
+  const loops = (request && request.loops) || [];
+  const loop = loops[loops.length - 1] || null;
+  return {
+    requestId: request && request.id ? request.id : null,
+    loopIndex: loop && loop.index != null ? loop.index : null,
+  };
 }
 
 async function runInteractiveShell(options = {}) {
@@ -116,9 +138,11 @@ async function runInteractiveShell(options = {}) {
   let workerModel = options.workerModel || null;
   let controllerThinking = options.controllerThinking || null;
   let workerThinking = options.workerThinking || null;
+  let apiProvider = options.apiProvider || 'openrouter';
+  let apiBaseURL = options.apiBaseUrl || '';
   let currentMode = options.mode || null;
   let currentTestEnv = options.testEnv || null;
-  let directAgent = options.agent || null;
+  let directAgent = resolveInitialDirectAgent(options);
   let loopMode = false;
 
   let activeManifest = null;
@@ -126,6 +150,32 @@ async function runInteractiveShell(options = {}) {
   let waitTimer = null;
   let chromePort = null;
   let chromePanelId = null;
+
+  function anyAgentUsesApi() {
+    return Object.values(allAgents || {}).some((agent) => agent && agent.cli === 'api');
+  }
+
+  function syncActiveManifestApiConfig() {
+    if (!activeManifest) return;
+    const shared = { provider: apiProvider || 'openrouter', baseURL: apiBaseURL || '' };
+    const needsSharedApiConfig = controllerCli === 'api' || workerCli === 'api' || anyAgentUsesApi();
+
+    activeManifest.controller.model = controllerModel || null;
+    activeManifest.worker.model = workerModel || null;
+    activeManifest.apiConfig = needsSharedApiConfig ? shared : null;
+    activeManifest.controller.apiConfig = controllerCli === 'api'
+      ? { ...shared, model: controllerModel || '', thinking: controllerThinking || '' }
+      : null;
+    activeManifest.worker.apiConfig = (workerCli === 'api' || anyAgentUsesApi())
+      ? { ...shared, model: workerModel || '', thinking: workerThinking || '' }
+      : null;
+  }
+
+  async function persistActiveManifestConfig() {
+    if (!activeManifest) return;
+    syncActiveManifestApiConfig();
+    await saveManifest(activeManifest);
+  }
 
   // ── Build run options from current config ──────────────────────
   function buildRunOptions() {
@@ -139,6 +189,25 @@ async function runInteractiveShell(options = {}) {
       workerModel,
       agents: allAgents,
     };
+
+    const sharedApiConfig = { provider: apiProvider || 'openrouter', baseURL: apiBaseURL || '' };
+    if (controllerCli === 'api' || workerCli === 'api' || anyAgentUsesApi()) {
+      runOpts.apiConfig = sharedApiConfig;
+      if (controllerCli === 'api') {
+        runOpts.controllerApiConfig = {
+          ...sharedApiConfig,
+          model: controllerModel || '',
+          thinking: controllerThinking || '',
+        };
+      }
+      if (workerCli === 'api' || anyAgentUsesApi()) {
+        runOpts.workerApiConfig = {
+          ...sharedApiConfig,
+          model: workerModel || '',
+          thinking: workerThinking || '',
+        };
+      }
+    }
 
     // Apply thinking via env var
     if (workerThinking) process.env.CLAUDE_CODE_EFFORT_LEVEL = workerThinking;
@@ -156,8 +225,22 @@ async function runInteractiveShell(options = {}) {
 
     // Auto-inject MCPs
     if (!options.noMcpInject) {
-      runOpts.workerMcpServers = mcpServersForRole('worker', { globalMcps: mcpData.global, projectMcps: mcpData.project, repoRoot: cwd });
-      runOpts.controllerMcpServers = mcpServersForRole('controller', { globalMcps: mcpData.global, projectMcps: mcpData.project, repoRoot: cwd });
+      runOpts.workerMcpServers = mcpServersForRole('worker', {
+        globalMcps: mcpData.global,
+        projectMcps: mcpData.project,
+        repoRoot: cwd,
+        controllerCli,
+        workerCli,
+        agents: allAgents,
+      });
+      runOpts.controllerMcpServers = mcpServersForRole('controller', {
+        globalMcps: mcpData.global,
+        projectMcps: mcpData.project,
+        repoRoot: cwd,
+        controllerCli,
+        workerCli,
+        agents: allAgents,
+      });
     }
 
     return runOpts;
@@ -378,6 +461,45 @@ async function runInteractiveShell(options = {}) {
           continue;
         }
 
+        if (command === '/compact') {
+          if (!activeManifest) {
+            renderer.banner('No run is attached.');
+            continue;
+          }
+          const targetInfo = directAgent
+            ? currentApiSessionTarget({
+                manifest: activeManifest,
+                target: directAgent === 'default' ? 'worker-default' : 'worker-agent',
+                directAgent: directAgent === 'default' ? null : directAgent,
+                workerCli,
+              })
+            : currentApiSessionTarget({
+                manifest: activeManifest,
+                target: 'controller',
+                controllerCli,
+                workerCli,
+              });
+          if (!targetInfo) {
+            renderer.banner('The current target is not using API mode.');
+            continue;
+          }
+          const { requestId, loopIndex } = latestRequestMeta(activeManifest);
+          const result = await compactApiSessionHistory({
+            manifest: activeManifest,
+            sessionKey: targetInfo.sessionKey,
+            backend: targetInfo.backend,
+            requestId,
+            loopIndex,
+            provider: targetInfo.provider,
+            baseURL: targetInfo.baseURL,
+            model: targetInfo.model,
+            thinking: targetInfo.thinking,
+            force: true,
+          });
+          renderer.banner(describeCompactionResult(result, directAgent ? 'Current agent session' : 'Controller session'));
+          continue;
+        }
+
         if (command === '/detach') {
           clearWaitTimer();
           activeManifest = null;
@@ -449,6 +571,8 @@ async function runInteractiveShell(options = {}) {
             `Worker CLI: ${workerCli}`,
             `Worker model: ${workerModel || 'default'}`,
             `Worker thinking: ${workerThinking || 'default'}`,
+            `API provider: ${apiProvider || 'openrouter'}`,
+            `API base URL: ${apiBaseURL || '(default)'}`,
             `Wait delay: ${waitDelay || 'none'}`,
             `Run attached: ${activeManifest ? activeManifest.runId : 'no'}`,
           ];
@@ -528,6 +652,7 @@ async function runInteractiveShell(options = {}) {
           }
           controllerCli = rest;
           if (activeManifest) { activeManifest.controller.cli = rest; activeManifest.controller.sessionId = null; }
+          await persistActiveManifestConfig();
           renderer.banner(`Controller CLI set to: ${rest}`);
           continue;
         }
@@ -541,7 +666,28 @@ async function runInteractiveShell(options = {}) {
             renderer.banner('Remote desktop is not enabled.'); continue;
           }
           workerCli = rest;
+          await persistActiveManifestConfig();
           renderer.banner(`Worker CLI set to: ${rest}`);
+          continue;
+        }
+
+        if (command === '/api-provider') {
+          if (!rest) { renderer.banner(`API provider: ${apiProvider}`); continue; }
+          if (!Object.prototype.hasOwnProperty.call(PROVIDERS, rest)) {
+            renderer.banner(`Unknown API provider: ${rest}`);
+            continue;
+          }
+          apiProvider = rest;
+          await persistActiveManifestConfig();
+          renderer.banner(`API provider set to: ${apiProvider}`);
+          continue;
+        }
+
+        if (command === '/api-base-url') {
+          if (!rest) { renderer.banner(`API base URL: ${apiBaseURL || '(default)'}`); continue; }
+          apiBaseURL = (rest === 'default' || rest === 'none') ? '' : rest;
+          await persistActiveManifestConfig();
+          renderer.banner(`API base URL set to: ${apiBaseURL || '(default)'}`);
           continue;
         }
 
@@ -549,6 +695,7 @@ async function runInteractiveShell(options = {}) {
           if (!rest) { renderer.banner(`Controller model: ${controllerModel || 'default'}`); continue; }
           controllerModel = rest === 'default' ? null : rest;
           if (activeManifest) activeManifest.controller.model = controllerModel;
+          await persistActiveManifestConfig();
           renderer.banner(`Controller model set to: ${controllerModel || 'default'}`);
           continue;
         }
@@ -557,6 +704,7 @@ async function runInteractiveShell(options = {}) {
           if (!rest) { renderer.banner(`Worker model: ${workerModel || 'default'}`); continue; }
           workerModel = rest === 'default' ? null : rest;
           if (activeManifest) activeManifest.worker.model = workerModel;
+          await persistActiveManifestConfig();
           renderer.banner(`Worker model set to: ${workerModel || 'default'}`);
           continue;
         }
@@ -564,6 +712,7 @@ async function runInteractiveShell(options = {}) {
         if (command === '/controller-thinking') {
           if (!rest) { renderer.banner(`Controller thinking: ${controllerThinking || 'default'}`); continue; }
           controllerThinking = rest === 'default' ? null : rest;
+          await persistActiveManifestConfig();
           renderer.banner(`Controller thinking set to: ${controllerThinking || 'default'}`);
           continue;
         }
@@ -573,6 +722,7 @@ async function runInteractiveShell(options = {}) {
           workerThinking = rest === 'default' ? null : rest;
           if (workerThinking) process.env.CLAUDE_CODE_EFFORT_LEVEL = workerThinking;
           else delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+          await persistActiveManifestConfig();
           renderer.banner(`Worker thinking set to: ${workerThinking || 'default'}`);
           continue;
         }
@@ -798,4 +948,4 @@ async function runInteractiveShell(options = {}) {
   }
 }
 
-module.exports = { runInteractiveShell };
+module.exports = { runInteractiveShell, resolveInitialDirectAgent };

@@ -21,6 +21,8 @@ const RUN_SPEC = {
   'worker-cli': { key: 'workerCli', kind: 'value' },
   'worker-model': { key: 'workerModel', kind: 'value' },
   'worker-thinking': { key: 'workerThinking', kind: 'value' },
+  'api-provider': { key: 'apiProvider', kind: 'value' },
+  'api-base-url': { key: 'apiBaseUrl', kind: 'value' },
   'wait': { key: 'wait', kind: 'value' },
   'raw-events': { key: 'rawEvents', kind: 'boolean' },
   'quiet': { key: 'quiet', kind: 'boolean' },
@@ -60,6 +62,12 @@ describe('CLI flag parsing', () => {
   it('parses --worker-thinking flag', () => {
     const { options } = parseArgs(['--worker-thinking', 'medium'], RUN_SPEC);
     assert.equal(options.workerThinking, 'medium');
+  });
+
+  it('parses shared API flags', () => {
+    const { options } = parseArgs(['--api-provider', 'openai', '--api-base-url', 'http://localhost:9999/v1'], RUN_SPEC);
+    assert.equal(options.apiProvider, 'openai');
+    assert.equal(options.apiBaseUrl, 'http://localhost:9999/v1');
   });
 
   it('parses --wait flag', () => {
@@ -164,6 +172,24 @@ describe('applyConfigToOptions', () => {
     const { options: enriched } = applyConfigToOptions(options, config);
     assert.ok(enriched.agents.dev, 'manifest should have dev agent');
     assert.ok(enriched.agents.QA, 'manifest should have QA agent');
+  });
+
+  it('builds API configs and injects builtin-tools for API mode', () => {
+    const config = loadConfig(PROJECT_ROOT);
+    const options = {
+      repoRoot: PROJECT_ROOT,
+      workerCli: 'api',
+      workerModel: 'gpt-4.1',
+      workerThinking: 'high',
+      apiProvider: 'openai',
+      apiBaseUrl: 'http://localhost:9999/v1',
+    };
+    const { options: enriched } = applyConfigToOptions(options, config);
+    assert.equal(enriched.apiConfig.provider, 'openai');
+    assert.equal(enriched.apiConfig.baseURL, 'http://localhost:9999/v1');
+    assert.equal(enriched.workerApiConfig.model, 'gpt-4.1');
+    assert.equal(enriched.workerApiConfig.thinking, 'high');
+    assert.ok(enriched.workerMcpServers['builtin-tools'], 'API workers should get builtin-tools');
   });
 
   it('throws on unknown mode', () => {

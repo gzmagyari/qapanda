@@ -66,6 +66,35 @@ describe('Chat messages', () => {
     assert.ok(msgs.innerHTML.includes('Thanks'));
   });
 
+  it('transcriptHistory keeps screenshots in order within the active section', () => {
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [
+        { type: 'claude', text: 'First observation', label: 'QA Engineer (Browser)' },
+        { type: 'chatScreenshot', data: 'data:image/png;base64,ZmFrZQ==', alt: 'Tool screenshot' },
+        { type: 'claude', text: 'Second observation', label: 'QA Engineer (Browser)' },
+      ],
+    });
+
+    const section = wv.document.querySelector('.section');
+    assert.ok(section, 'should render a section for the worker');
+
+    const img = section.querySelector('.chat-screenshot');
+    assert.ok(img, 'should render screenshot inside the active section');
+
+    const entries = section.querySelectorAll('.entry');
+    assert.equal(entries.length, 2);
+    assert.ok(entries[0].textContent.includes('First observation'));
+    assert.ok(entries[1].textContent.includes('Second observation'));
+
+    const childClasses = Array.from(section.children).map((node) => node.className || node.tagName);
+    const firstEntryIndex = childClasses.findIndex((name) => String(name).includes('entry'));
+    const imageIndex = childClasses.findIndex((name) => String(name).includes('chat-screenshot'));
+    const secondEntryIndex = childClasses.findIndex((name, index) => index > firstEntryIndex && String(name).includes('entry'));
+    assert.ok(firstEntryIndex >= 0 && imageIndex > firstEntryIndex, 'screenshot should follow the first message');
+    assert.ok(secondEntryIndex > imageIndex, 'second message should remain after the screenshot');
+  });
+
   it('banner message renders', () => {
     wv.postMessage({ type: 'banner', text: 'Reattached to run abc' });
     const msgs = wv.document.getElementById('messages');

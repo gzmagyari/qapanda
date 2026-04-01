@@ -137,6 +137,17 @@
     });
   }
 
+  // API key auto-save on change
+  document.querySelectorAll('.settings-api-key-input').forEach(el => {
+    el.addEventListener('change', () => {
+      const provider = el.dataset.provider;
+      if (!provider) return;
+      _apiKeys[provider] = el.value;
+      vscode.postMessage({ type: 'settingsSave', settings: { apiKeys: _apiKeys } });
+      updateControllerDropdowns(); // refresh warning
+    });
+  });
+
   // ── MCP Server Management ─────────────────────────────────────────
   let mcpGlobal = {};
   let mcpProject = {};
@@ -502,13 +513,14 @@
       ? JSON.stringify(existing.mcps, null, 2) : '';
 
     const existingCli = existing ? (existing.cli || '') : '';
+    const existingProvider = existing ? (existing.provider || 'openrouter') : 'openrouter';
     const existingModel = existing ? (existing.model || '') : '';
     const existingThinking = existing ? (existing.thinking || '') : '';
     const existingRunMode = existing ? (existing.runMode || '') : '';
     const existingCodexMode = existing ? (existing.codexMode || '') : '';
 
-    let cliOptions = ['', 'claude', 'codex', 'qa-remote-claude', 'qa-remote-codex'];
-    const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
+    let cliOptions = ['', 'claude', 'codex', 'api', 'qa-remote-claude', 'qa-remote-codex'];
+    const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'api': 'API (BYOK)', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
     if (!_featureFlags.enableClaudeCli) cliOptions = cliOptions.filter(v => v !== 'claude' && v !== 'qa-remote-claude');
     if (!_featureFlags.enableRemoteDesktop) cliOptions = cliOptions.filter(v => v !== 'qa-remote-claude' && v !== 'qa-remote-codex');
     const cliSelectHtml = '<select class="mcp-input" id="agent-f-cli">' +
@@ -520,7 +532,14 @@
       '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="agent-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
       '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
+      '<div class="agent-form-row" id="agent-f-provider-row"><label>Provider</label><select class="mcp-input" id="agent-f-provider">' +
+        '<option value="openrouter"' + (existingProvider === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>' +
+        '<option value="openai"' + (existingProvider === 'openai' ? ' selected' : '') + '>OpenAI</option>' +
+        '<option value="anthropic"' + (existingProvider === 'anthropic' ? ' selected' : '') + '>Anthropic</option>' +
+        '<option value="gemini"' + (existingProvider === 'gemini' ? ' selected' : '') + '>Google Gemini</option>' +
+      '</select></div>' +
       '<div class="agent-form-row"><label>Model</label><select class="mcp-input" id="agent-f-model"><option value="">Default</option></select>' +
+      '<input type="text" class="mcp-input cfg-custom-model" id="agent-f-custom-model" placeholder="custom model name" value="' + escapeHtml(existing && existing.model && !['', '_custom'].includes(existing.model) ? '' : (existing ? existing.model || '' : '')) + '" />' +
       '<select class="mcp-input" id="agent-f-thinking"><option value="">Thinking: default</option></select></div>' +
       '<div class="agent-form-row" id="agent-f-runmode-row"><label>Run Mode</label><select class="mcp-input" id="agent-f-runmode">' +
       '<option value=""' + (existingRunMode === '' ? ' selected' : '') + '>Default (stream-json)</option>' +
@@ -537,7 +556,10 @@
 
     setTimeout(() => {
       const cliEl = document.getElementById('agent-f-cli');
+      const providerEl = document.getElementById('agent-f-provider');
+      const providerRow = document.getElementById('agent-f-provider-row');
       const modelEl = document.getElementById('agent-f-model');
+      const customModelEl = document.getElementById('agent-f-custom-model');
       const thinkingEl = document.getElementById('agent-f-thinking');
 
       function isCodexCli(v) { return v === 'codex' || v === 'qa-remote-codex'; }
@@ -545,12 +567,31 @@
       function updateAgentModelOptions() {
         const cli = cliEl ? cliEl.value : '';
         const useCodex = isCodexCli(cli);
-        const models = useCodex ? CODEX_MODELS : CLAUDE_MODELS;
-        const thinkings = useCodex ? CODEX_THINKING : CLAUDE_THINKING;
+        const useApi = cli === 'api';
+        var models, thinkings;
+        if (useApi) {
+          var prov = providerEl ? providerEl.value : 'openrouter';
+          models = API_PROVIDER_MODELS[prov] || API_PROVIDER_MODELS.openrouter;
+          thinkings = API_PROVIDER_THINKING[prov] || API_PROVIDER_THINKING.openrouter;
+        } else if (useCodex) {
+          models = CODEX_MODELS;
+          thinkings = CODEX_THINKING;
+        } else {
+          models = CLAUDE_MODELS;
+          thinkings = CLAUDE_THINKING;
+        }
         repopulateSelect(modelEl, models, modelEl ? modelEl.value : '');
         repopulateSelect(thinkingEl, thinkings, thinkingEl ? thinkingEl.value : '');
-        if (modelEl) modelEl.options[0].text = 'Model: default';
-        if (thinkingEl) thinkingEl.options[0].text = 'Thinking: default';
+        if (!useApi) {
+          if (modelEl && modelEl.options[0]) modelEl.options[0].text = 'Model: default';
+          if (thinkingEl && thinkingEl.options[0]) thinkingEl.options[0].text = 'Thinking: default';
+        }
+        // Custom model input visible when _custom selected
+        if (customModelEl) {
+          customModelEl.classList.toggle('visible', modelEl && modelEl.value === '_custom');
+        }
+        // Provider row only visible for API CLI
+        if (providerRow) providerRow.style.display = useApi ? '' : 'none';
         // Run Mode only applies to claude CLI
         const runModeRow = document.getElementById('agent-f-runmode-row');
         if (runModeRow) {
@@ -570,6 +611,11 @@
       if (thinkingEl) thinkingEl.value = existingThinking;
 
       if (cliEl) cliEl.addEventListener('change', updateAgentModelOptions);
+      if (providerEl) providerEl.addEventListener('change', updateAgentModelOptions);
+      if (modelEl) modelEl.addEventListener('change', function() {
+        // Only toggle custom model input — don't repopulate the dropdown
+        if (customModelEl) customModelEl.classList.toggle('visible', modelEl.value === '_custom');
+      });
       document.getElementById('agent-f-save').addEventListener('click', () => saveAgentForm(scope, editId));
       document.getElementById('agent-f-cancel').addEventListener('click', () => { agentEditingForm = null; renderAgentList(scope); });
     }, 0);
@@ -584,7 +630,12 @@
     const name = (document.getElementById('agent-f-name').value || '').trim();
     const description = (document.getElementById('agent-f-desc').value || '').trim();
     const cli = (document.getElementById('agent-f-cli') ? document.getElementById('agent-f-cli').value : '') || null;
-    const model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
+    const provider = (document.getElementById('agent-f-provider') ? document.getElementById('agent-f-provider').value : '') || null;
+    let model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
+    if (model === '_custom') {
+      const customModel = (document.getElementById('agent-f-custom-model') ? document.getElementById('agent-f-custom-model').value : '').trim();
+      model = customModel || null;
+    }
     const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
     const runMode = (document.getElementById('agent-f-runmode') ? document.getElementById('agent-f-runmode').value : '') || null;
     const codexMode = (document.getElementById('agent-f-codexmode') ? document.getElementById('agent-f-codexmode').value : '') || null;
@@ -608,6 +659,7 @@
     const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
     const agentData = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
     if (cli) agentData.cli = cli;
+    if (cli === 'api' && provider) agentData.provider = provider;
     if (model) agentData.model = model;
     if (thinking) agentData.thinking = thinking;
     if (runMode) agentData.runMode = runMode;
@@ -696,14 +748,29 @@
         const tags = (test.tags || []).map(t => `<span class="test-tag">${escapeHtml(t)}</span>`).join(' ');
         const lastTested = test.lastTestedAt ? new Date(test.lastTestedAt).toLocaleDateString() : 'Never';
 
-        card.innerHTML = `
-          <div class="kanban-card-title">${envBadge} ${escapeHtml(test.title)}</div>
-          <div class="test-card-meta">
+        card.innerHTML =
+          renderArtifactHeaderHtml('test', test.id, test.title, { icon: envBadge }) +
+          `<div class="test-card-meta">
             <span class="test-steps-count">${stepsPassing}/${stepsTotal} steps passing</span>
             <span class="test-last-tested">Last: ${lastTested}</span>
-          </div>
-          ${tags ? '<div class="test-tags">' + tags + '</div>' : ''}
-        `;
+          </div>` +
+          (tags ? '<div class="test-tags">' + tags + '</div>' : '');
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'kanban-card-copy';
+        copyBtn.textContent = 'Copy';
+        copyBtn.title = 'Copy test';
+        copyBtn.draggable = false;
+        copyBtn.addEventListener('mousedown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        copyBtn.addEventListener('dragstart', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        wireCopyButton(copyBtn, () => formatTestCopyText(test));
+        card.appendChild(copyBtn);
 
         card.addEventListener('click', () => showTestForm(test));
         colEl.appendChild(card);
@@ -750,9 +817,9 @@
 
       // Linked tasks
       if (editTest.linkedTaskIds && editTest.linkedTaskIds.length > 0) {
-        html += `<h4>Linked Bug Tickets</h4><div class="test-linked-tasks">`;
+        html += `<h4>Linked Issues</h4><div class="test-linked-tasks">`;
         for (const taskId of editTest.linkedTaskIds) {
-          html += `<span class="test-linked-task">${escapeHtml(taskId)}</span> `;
+          html += `<span class="test-linked-task">${escapeHtml(formatArtifactReference(taskId))}</span> `;
         }
         html += `</div>`;
       }
@@ -1579,7 +1646,7 @@
   }
 
 
-  // ── Tasks / Kanban ───────────────────────────────────────────────────
+  // ── Issues / Kanban ──────────────────────────────────────────────────
   const TASK_COLUMNS = [
     { key: 'backlog', label: 'Backlog' },
     { key: 'todo', label: 'To Do' },
@@ -1598,12 +1665,12 @@
     kanbanBoard.style.display = '';
     taskDetail.style.display = 'none';
 
-    // New task button row
+    // New issue button row
     const toolbar = document.createElement('div');
     toolbar.className = 'kanban-toolbar';
     const addBtn = document.createElement('button');
     addBtn.className = 'mcp-btn mcp-btn-primary';
-    addBtn.textContent = '+ New Task';
+    addBtn.textContent = '+ New Issue';
     addBtn.addEventListener('click', () => showTaskForm(null));
     toolbar.appendChild(addBtn);
     kanbanBoard.appendChild(toolbar);
@@ -1660,9 +1727,25 @@
           document.querySelectorAll('.kanban-column-dragover').forEach(el => el.classList.remove('kanban-column-dragover'));
         });
 
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'kanban-card-copy';
+        copyBtn.textContent = 'Copy';
+        copyBtn.title = 'Copy issue';
+        copyBtn.draggable = false;
+        copyBtn.addEventListener('mousedown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        copyBtn.addEventListener('dragstart', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        wireCopyButton(copyBtn, () => formatTaskCopyText(task));
+
         const title = document.createElement('div');
         title.className = 'kanban-card-title';
-        title.textContent = task.title;
+        title.innerHTML = renderArtifactHeaderHtml('task', task.id, task.title);
 
         const desc = document.createElement('div');
         desc.className = 'kanban-card-desc';
@@ -1675,6 +1758,7 @@
         if (cc) meta.innerHTML += '<span>' + cc + ' comment' + (cc > 1 ? 's' : '') + '</span>';
         if (pc) meta.innerHTML += '<span>' + pc + ' update' + (pc > 1 ? 's' : '') + '</span>';
 
+        card.appendChild(copyBtn);
         card.appendChild(title);
         if (task.description) card.appendChild(desc);
         if (cc || pc) card.appendChild(meta);
@@ -1710,9 +1794,9 @@
         '<div class="mcp-form-row"><label>Status</label><select class="mcp-input" id="task-f-status">' +
           TASK_COLUMNS.map(c => '<option value="' + c.key + '"' + (c.key === t.status ? ' selected' : '') + '>' + escapeHtml(c.label) + '</option>').join('') +
         '</select></div>' +
-        '<div class="mcp-form-row"><label>Description</label><input class="mcp-input" id="task-f-desc" value="' + escapeHtml(t.description || '') + '" placeholder="Short summary"></div>' +
+        '<div class="mcp-form-row"><label>Description</label><textarea class="mcp-input mcp-textarea" id="task-f-desc" rows="3" placeholder="Short summary">' + escapeHtml(t.description || '') + '</textarea></div>' +
         '<div class="mcp-form-row"><label>Details</label><textarea class="mcp-input mcp-textarea" id="task-f-detail" placeholder="Detailed notes / acceptance criteria">' + escapeHtml(t.detail_text || '') + '</textarea></div>' +
-        '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="task-f-save">' + (isEdit ? 'Save Changes' : 'Create Task') + '</button></div>' +
+        '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="task-f-save">' + (isEdit ? 'Save Changes' : 'Create Issue') + '</button></div>' +
       '</div>';
 
     // Comments & progress (edit mode only)
@@ -1751,7 +1835,7 @@
       const delBtn = document.getElementById('task-delete');
       if (delBtn) {
         delBtn.addEventListener('click', () => {
-          if (confirm('Delete this task?')) {
+          if (confirm('Delete this issue?')) {
             vscode.postMessage({ type: 'taskDelete', task_id: t.id });
           }
         });
@@ -2558,7 +2642,7 @@
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
     // chat history survives reloads via transcript.jsonl on disk.
-    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory'];
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard'];
     if (skipped.includes(msg.type)) return;
     messageLog.push(msg);
   }
@@ -2602,8 +2686,8 @@
 
   function getConfig() {
     return {
-      controllerModel: cfgControllerModel.value,
-      workerModel: cfgWorkerModel.value,
+      controllerModel: cfgControllerModel.value === '_custom' && cfgControllerCustomModel ? cfgControllerCustomModel.value : cfgControllerModel.value,
+      workerModel: cfgWorkerModel.value === '_custom' && cfgWorkerCustomModel ? cfgWorkerCustomModel.value : cfgWorkerModel.value,
       controllerThinking: cfgControllerThinking.value,
       workerThinking: cfgWorkerThinking.value,
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
@@ -2611,7 +2695,25 @@
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
       codexMode: cfgCodexMode ? cfgCodexMode.value : 'app-server',
       workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'codex',
+      apiProvider: cfgApiProvider ? cfgApiProvider.value : 'openrouter',
+      apiBaseURL: cfgApiBaseURL ? cfgApiBaseURL.value.trim() : '',
     };
+  }
+
+  function setSelectWithCustomValue(selectEl, customInputEl, value) {
+    if (!selectEl || value === undefined) return;
+    const hasExactOption = Array.from(selectEl.options || []).some((option) => option.value === value);
+    const hasCustomOption = Array.from(selectEl.options || []).some((option) => option.value === '_custom');
+
+    if (value && !hasExactOption && hasCustomOption && customInputEl) {
+      selectEl.value = '_custom';
+      customInputEl.value = value;
+      customInputEl.classList.toggle('visible', true);
+      return;
+    }
+
+    selectEl.value = value;
+    if (customInputEl && selectEl.value !== '_custom') customInputEl.classList.toggle('visible', false);
   }
 
   function setConfig(config) {
@@ -2620,11 +2722,14 @@
     if (config.controllerCli !== undefined && cfgControllerCli) cfgControllerCli.value = config.controllerCli;
     if (config.codexMode !== undefined && cfgCodexMode) cfgCodexMode.value = config.codexMode;
     if (config.workerCli !== undefined && cfgWorkerCli) cfgWorkerCli.value = config.workerCli;
+    // Set API fields before repopulating dropdowns (provider affects model list)
+    if (config.apiProvider !== undefined && cfgApiProvider) cfgApiProvider.value = config.apiProvider;
+    if (config.apiBaseURL !== undefined && cfgApiBaseURL) cfgApiBaseURL.value = config.apiBaseURL || '';
     // Repopulate model/thinking options based on selected CLIs, preserving current values where possible
     updateControllerDropdowns();
     // Now set the model/thinking values (options exist after repopulate)
-    if (config.controllerModel !== undefined) cfgControllerModel.value = config.controllerModel;
-    if (config.workerModel !== undefined) cfgWorkerModel.value = config.workerModel;
+    if (config.controllerModel !== undefined) setSelectWithCustomValue(cfgControllerModel, cfgControllerCustomModel, config.controllerModel);
+    if (config.workerModel !== undefined) setSelectWithCustomValue(cfgWorkerModel, cfgWorkerCustomModel, config.workerModel);
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
@@ -2662,35 +2767,126 @@
     { value: 'high', label: 'High' },
   ];
 
+  // API provider model/thinking lists (loaded from llm-client.js exports via initConfig)
+  var API_PROVIDER_MODELS = {
+    openai: [
+      { value: 'gpt-4.1', label: 'GPT-4.1' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano' },
+      { value: 'gpt-5', label: 'GPT-5' },
+      { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+      { value: 'o3', label: 'o3' },
+      { value: 'o4-mini', label: 'o4 Mini' },
+    ],
+    anthropic: [
+      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+      { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    ],
+    openrouter: [
+      { value: 'openai/gpt-4.1', label: 'GPT-4.1' },
+      { value: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { value: 'openai/gpt-5', label: 'GPT-5' },
+      { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+      { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+      { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
+      { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash' },
+      { value: 'x-ai/grok-code-fast-1', label: 'Grok Code Fast' },
+    ],
+    gemini: [
+      { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+      { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+    ],
+    custom: [
+      { value: '_custom', label: 'Custom...' },
+    ],
+  };
+  // Add _custom to all provider model lists
+  for (var _pk of Object.keys(API_PROVIDER_MODELS)) {
+    var _list = API_PROVIDER_MODELS[_pk];
+    if (!_list.some(function(m) { return m.value === '_custom'; })) _list.push({ value: '_custom', label: 'Custom...' });
+  }
+  var API_PROVIDER_THINKING = {
+    openai: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
+    anthropic: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low (4K)' }, { value: 'medium', label: 'Medium (10K)' }, { value: 'high', label: 'High (20K)' }, { value: 'xhigh', label: 'XHigh (50K)' }],
+    openrouter: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
+    gemini: [{ value: '', label: 'Thinking: off' }, { value: 'minimal', label: 'Minimal' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
+    custom: [{ value: '', label: 'Thinking: off' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
+  };
+
+  var cfgApiProvider = document.getElementById('cfg-api-provider');
+  var cfgApiBaseURL = document.getElementById('cfg-api-base-url');
+  var cfgControllerCustomModel = document.getElementById('cfg-controller-custom-model');
+  var cfgWorkerCustomModel = document.getElementById('cfg-worker-custom-model');
+  var cfgApiKeyWarning = document.getElementById('cfg-api-key-warning');
+  var _apiKeys = {};  // { openai: '...', anthropic: '...', ... } loaded from settings
+
   function repopulateSelect(el, options, currentValue) {
     if (!el) return;
     el.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
-    // Restore previous value if it still exists, otherwise default to ''
+    // Restore previous value if it still exists, otherwise select first option
     if (currentValue && options.some(o => o.value === currentValue)) {
       el.value = currentValue;
-    } else {
-      el.value = '';
+    } else if (options.length > 0) {
+      el.value = options[0].value;
     }
+  }
+
+  function _modelsForCli(cli) {
+    if (cli === 'api') {
+      var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
+      return API_PROVIDER_MODELS[provider] || API_PROVIDER_MODELS.openrouter;
+    }
+    return cli === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
+  }
+  function _thinkingForCli(cli) {
+    if (cli === 'api') {
+      var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
+      return API_PROVIDER_THINKING[provider] || API_PROVIDER_THINKING.openrouter;
+    }
+    return cli === 'claude' ? CLAUDE_THINKING : CODEX_THINKING;
   }
 
   function updateControllerDropdowns() {
     const controllerCli = cfgControllerCli ? cfgControllerCli.value : 'codex';
-    const workerCli = cfgWorkerCli ? cfgWorkerCli.value : 'claude';
+    const workerCli = cfgWorkerCli ? cfgWorkerCli.value : 'codex';
 
-    const controllerModels = controllerCli === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
-    const controllerThinking = controllerCli === 'claude' ? CLAUDE_THINKING : CODEX_THINKING;
-    const workerModels = workerCli === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
-    const workerThinking = workerCli === 'codex' ? CODEX_THINKING : CLAUDE_THINKING;
-
-    repopulateSelect(cfgControllerModel, controllerModels, cfgControllerModel ? cfgControllerModel.value : '');
-    repopulateSelect(cfgControllerThinking, controllerThinking, cfgControllerThinking ? cfgControllerThinking.value : '');
-    repopulateSelect(cfgWorkerModel, workerModels, cfgWorkerModel ? cfgWorkerModel.value : '');
-    repopulateSelect(cfgWorkerThinking, workerThinking, cfgWorkerThinking ? cfgWorkerThinking.value : '');
+    repopulateSelect(cfgControllerModel, _modelsForCli(controllerCli), cfgControllerModel ? cfgControllerModel.value : '');
+    repopulateSelect(cfgControllerThinking, _thinkingForCli(controllerCli), cfgControllerThinking ? cfgControllerThinking.value : '');
+    repopulateSelect(cfgWorkerModel, _modelsForCli(workerCli), cfgWorkerModel ? cfgWorkerModel.value : '');
+    repopulateSelect(cfgWorkerThinking, _thinkingForCli(workerCli), cfgWorkerThinking ? cfgWorkerThinking.value : '');
 
     // Show/hide Codex Mode dropdown based on controller CLI
     document.querySelectorAll('.cfg-codex-only').forEach(el => {
       el.classList.toggle('tab-hidden', controllerCli !== 'codex');
     });
+    // Show/hide API config fields
+    var useApi = controllerCli === 'api' || workerCli === 'api';
+    document.querySelectorAll('.cfg-api-only').forEach(el => {
+      el.classList.toggle('tab-hidden', !useApi);
+    });
+    // Show/hide custom model text inputs
+    if (cfgControllerCustomModel) {
+      cfgControllerCustomModel.classList.toggle('visible', cfgControllerModel && cfgControllerModel.value === '_custom');
+    }
+    if (cfgWorkerCustomModel) {
+      cfgWorkerCustomModel.classList.toggle('visible', cfgWorkerModel && cfgWorkerModel.value === '_custom');
+    }
+    // Show warning if no API key for selected provider
+    if (cfgApiKeyWarning) {
+      var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
+      var providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter', gemini: 'Google Gemini', custom: 'Custom' };
+      if (useApi && provider === 'custom' && !(cfgApiBaseURL && cfgApiBaseURL.value.trim())) {
+        cfgApiKeyWarning.textContent = '\u26A0\uFE0F Custom provider requires a Base URL.';
+        cfgApiKeyWarning.style.display = '';
+      } else if (useApi && !_apiKeys[provider]) {
+        cfgApiKeyWarning.textContent = '\u26A0\uFE0F No API key for ' + (providerNames[provider] || provider) + '. Set it in Settings \u2192 API Keys.';
+        cfgApiKeyWarning.style.display = '';
+      } else {
+        cfgApiKeyWarning.style.display = 'none';
+      }
+    }
   }
 
   function labelForTarget(target) {
@@ -2755,10 +2951,25 @@
     saveState();
   }
 
-  cfgControllerModel.addEventListener('change', onConfigChange);
+  cfgControllerModel.addEventListener('change', function() {
+    if (cfgControllerCustomModel) cfgControllerCustomModel.classList.toggle('visible', cfgControllerModel.value === '_custom');
+    // Don't call onConfigChange (which repopulates) — just send config directly
+    var config = getConfig();
+    vscode.postMessage({ type: 'configChanged', config: config });
+    saveState();
+  });
   cfgControllerThinking.addEventListener('change', onConfigChange);
-  cfgWorkerModel.addEventListener('change', onConfigChange);
+  cfgWorkerModel.addEventListener('change', function() {
+    if (cfgWorkerCustomModel) cfgWorkerCustomModel.classList.toggle('visible', cfgWorkerModel.value === '_custom');
+    var config = getConfig();
+    vscode.postMessage({ type: 'configChanged', config: config });
+    saveState();
+  });
   cfgWorkerThinking.addEventListener('change', onConfigChange);
+  if (cfgApiProvider) cfgApiProvider.addEventListener('change', onConfigChange);
+  if (cfgApiBaseURL) cfgApiBaseURL.addEventListener('change', onConfigChange);
+  if (cfgControllerCustomModel) cfgControllerCustomModel.addEventListener('change', onConfigChange);
+  if (cfgWorkerCustomModel) cfgWorkerCustomModel.addEventListener('change', onConfigChange);
   if (cfgWaitDelay) cfgWaitDelay.addEventListener('change', onConfigChange);
   if (cfgChatTarget) {
     let prevTarget = cfgChatTarget.value;
@@ -2795,6 +3006,10 @@
   let streamingEntry = null;
   let isRunning = false;
   var lastPendingCard = null;
+  let activeLiveEntitySlot = null;
+  let activeLiveQaReportSlot = null;
+  let qaReportOverlay = null;
+  let suppressUiLog = false;
 
   // ── Thinking indicator ────────────────────────────────────────────
   const pandaMessages = [
@@ -2817,17 +3032,23 @@
   let thinkingTick = 0;
   let thinkingMsgIndex = 0;
   let thinkingDots = 0;
+  let pandaMascotEl = null;
+  let pandaIdleTicks = 0;
+  let lastRunOutcome = null;
 
   function showThinking() {
     hideThinking();
     thinkingEl = document.createElement('div');
     thinkingEl.className = 'thinking-standalone';
+    pandaMascotEl = createPandaMascot('thinking');
+    thinkingEl.appendChild(pandaMascotEl);
     const content = document.createElement('div');
     content.className = 'thinking-content';
     thinkingEl.appendChild(content);
     const target = splitVncLeft || splitChromeLeft || messagesEl;
     target.appendChild(thinkingEl);
     thinkingTick = 0;
+    pandaIdleTicks = 0;
     thinkingMsgIndex = Math.floor(Math.random() * pandaMessages.length);
     thinkingDots = 0;
     updateThinkingText(content);
@@ -2842,8 +3063,14 @@
     el.textContent = spinner + ' ' + msg + dots;
     thinkingTick++;
     thinkingDots++;
+    pandaIdleTicks++;
     if (thinkingTick % 8 === 0) {
       thinkingMsgIndex++;
+    }
+    // Switch to sleeping panda after ~30s with no external messages
+    if (pandaIdleTicks >= 150 && pandaMascotEl &&
+        !pandaMascotEl.classList.contains('panda-mascot--idle')) {
+      setPandaMascotState(pandaMascotEl, 'idle');
     }
   }
 
@@ -2856,12 +3083,133 @@
       thinkingEl.parentNode.removeChild(thinkingEl);
     }
     thinkingEl = null;
+    pandaMascotEl = null;
+    pandaIdleTicks = 0;
+  }
+
+  function createPandaMascot(state) {
+    var el = document.createElement('span');
+    el.className = 'panda-mascot';
+    setPandaMascotState(el, state || 'thinking');
+    return el;
+  }
+
+  function setPandaMascotState(el, state) {
+    if (!el) return;
+    el.classList.remove('panda-mascot--thinking', 'panda-mascot--happy',
+                         'panda-mascot--sad', 'panda-mascot--idle');
+    switch (state) {
+      case 'happy':
+        el.innerHTML = PANDA_HAPPY;
+        el.classList.add('panda-mascot--happy');
+        break;
+      case 'sad':
+        el.innerHTML = PANDA_SAD;
+        el.classList.add('panda-mascot--sad');
+        break;
+      case 'idle':
+        el.innerHTML = PANDA_SLEEPING;
+        el.classList.add('panda-mascot--idle');
+        break;
+      case 'thinking':
+      default:
+        el.innerHTML = PANDA_THINKING;
+        el.classList.add('panda-mascot--thinking');
+        break;
+    }
+  }
+
+  function flashPandaMascot(state) {
+    var container = document.createElement('div');
+    container.className = 'panda-flash';
+    var mascot = createPandaMascot(state);
+    container.appendChild(mascot);
+    var target = splitVncLeft || splitChromeLeft || messagesEl;
+    target.appendChild(container);
+    autoScroll();
+    setTimeout(function() { container.classList.add('fade-out'); }, 1200);
+    setTimeout(function() { if (container.parentNode) container.parentNode.removeChild(container); }, 1700);
   }
 
   function maybeShowThinking() {
     if (isRunning) {
       showThinking();
     }
+  }
+
+  // ── Persistent panda buddy ──────────────────────────────────────────
+  var pandaBuddyEl = null;
+  var buddyState = 'idle';
+  var buddyIdleTimer = null;
+
+  function initPandaBuddy() {
+    pandaBuddyEl = document.getElementById('panda-buddy');
+    if (!pandaBuddyEl) return;
+    setBuddyState('idle');
+    pandaBuddyEl.addEventListener('click', petPanda);
+  }
+
+  function setBuddyState(state) {
+    if (!pandaBuddyEl) return;
+    buddyState = state;
+    pandaBuddyEl.className = 'panda-buddy panda-buddy--' + state;
+    var svgs = {
+      idle: BUDDY_IDLE, thinking: BUDDY_THINKING,
+      working: BUDDY_WORKING, happy: BUDDY_HAPPY,
+      sad: BUDDY_SAD, sleeping: BUDDY_SLEEPING
+    };
+    pandaBuddyEl.innerHTML = svgs[state] || svgs.idle;
+    clearTimeout(buddyIdleTimer);
+    if (state === 'idle') {
+      startBuddyAmbient();
+      buddyIdleTimer = setTimeout(function() { setBuddyState('sleeping'); }, 60000);
+    } else {
+      stopBuddyAmbient();
+      if (state !== 'sleeping') {
+        buddyIdleTimer = setTimeout(function() { setBuddyState('idle'); }, 60000);
+      }
+    }
+  }
+
+  function petPanda() {
+    var prev = buddyState;
+    stopBuddyAmbient();
+    pandaBuddyEl.className = 'panda-buddy panda-buddy--pet';
+    pandaBuddyEl.innerHTML = BUDDY_HAPPY;
+    clearTimeout(buddyIdleTimer);
+    setTimeout(function() { setBuddyState(prev === 'pet' ? 'idle' : prev); }, 1500);
+  }
+
+  // ── Ambient idle behaviors ──────────────────────────────────────────
+  var buddyAmbientTimer = null;
+
+  function startBuddyAmbient() {
+    stopBuddyAmbient();
+    scheduleNextAmbient();
+  }
+
+  function stopBuddyAmbient() {
+    clearTimeout(buddyAmbientTimer);
+    buddyAmbientTimer = null;
+  }
+
+  function scheduleNextAmbient() {
+    var delay = 3000 + Math.random() * 5000;
+    buddyAmbientTimer = setTimeout(doAmbientAction, delay);
+  }
+
+  function doAmbientAction() {
+    if (!pandaBuddyEl || (buddyState !== 'idle' && buddyState !== 'sleeping')) return;
+    var actions = ['look', 'blink', 'hop', 'wave'];
+    var action = actions[Math.floor(Math.random() * actions.length)];
+    var durations = { look: 2000, blink: 400, hop: 500, wave: 1200 };
+    pandaBuddyEl.className = 'panda-buddy panda-buddy--' + action;
+    setTimeout(function() {
+      if (pandaBuddyEl && (buddyState === 'idle' || buddyState === 'sleeping')) {
+        pandaBuddyEl.className = 'panda-buddy panda-buddy--' + buddyState;
+      }
+      scheduleNextAmbient();
+    }, durations[action] || 1000);
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────
@@ -2979,6 +3327,158 @@
     '<ellipse cx="20" cy="62" rx="1.5" ry="3" fill="#569cd6" opacity="0.3"/>' +
     '<ellipse cx="60" cy="62" rx="1.5" ry="3" fill="#569cd6" opacity="0.3"/>' +
     '</svg>';
+
+  var PANDA_SLEEPING = '<svg viewBox="0 0 80 100" xmlns="http://www.w3.org/2000/svg">' +
+    '<circle cx="20" cy="15" r="12" fill="#7B8EC8"/><circle cx="60" cy="15" r="12" fill="#7B8EC8"/>' +
+    '<ellipse cx="40" cy="50" rx="30" ry="28" fill="white"/>' +
+    '<ellipse cx="28" cy="42" rx="9" ry="7" fill="#7B8EC8"/><ellipse cx="52" cy="42" rx="9" ry="7" fill="#7B8EC8"/>' +
+    '<line x1="24" y1="42" x2="32" y2="42" stroke="white" stroke-width="2" stroke-linecap="round"/>' +
+    '<line x1="48" y1="42" x2="56" y2="42" stroke="white" stroke-width="2" stroke-linecap="round"/>' +
+    '<ellipse cx="40" cy="55" rx="5" ry="3" fill="#7B8EC8"/>' +
+    '<path d="M34 62 Q40 66 46 62" stroke="#7B8EC8" stroke-width="1.5" fill="none"/>' +
+    '<text x="62" y="28" font-size="7" fill="#888" font-weight="bold">z</text>' +
+    '<text x="67" y="22" font-size="9" fill="#888" font-weight="bold">z</text>' +
+    '<text x="73" y="15" font-size="11" fill="#888" font-weight="bold">z</text>' +
+    '</svg>';
+
+      // ── Standing buddy panda SVGs (viewBox 0 0 100 120) ────
+  // Panda is standing bipedal, facing slightly right or forward, looking very cute.
+
+  var BUDDY_BASE_DEFS = '<defs><radialGradient id="pd-blsh" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#ff9999" stop-opacity="0.6"/><stop offset="100%" stop-color="#ff9999" stop-opacity="0"/></radialGradient></defs>';
+
+  var BUDDY_IDLE = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' + BUDDY_BASE_DEFS +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<path d="M 35 110 C 35 115, 25 118, 25 110 C 25 90, 40 85, 45 90 Z" fill="#7B8EC8"/>' +
+    '<path d="M 65 110 C 65 115, 75 118, 75 110 C 75 90, 60 85, 55 90 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="85" rx="32" ry="28" fill="#fff"/>' +
+    '<path d="M 18 70 C 50 85, 82 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 25 60 C 15 75, 10 90, 20 95 C 28 98, 30 80, 32 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 60 C 85 75, 90 90, 80 95 C 72 98, 70 80, 68 70 Z" fill="#7B8EC8"/>' +
+    '<circle cx="20" cy="30" r="14" fill="#7B8EC8"/><circle cx="80" cy="30" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 50 C 10 15, 90 15, 90 50 C 90 75, 70 85, 50 85 C 30 85, 10 75, 10 50 Z" fill="#fff"/>' +
+    '<path d="M 25 40 C 15 55, 25 65, 38 60 C 48 56, 45 35, 35 32 C 30 30, 28 30, 25 40 Z" fill="#7B8EC8" transform="rotate(-15 32 46)"/>' +
+    '<path d="M 75 40 C 85 55, 75 65, 62 60 C 52 56, 55 35, 65 32 C 70 30, 72 30, 75 40 Z" fill="#7B8EC8" transform="rotate(15 68 46)"/>' +
+    '<circle cx="33" cy="50" r="6" fill="#fff"/><circle cx="67" cy="50" r="6" fill="#fff"/>' +
+    '<circle cx="34" cy="50" r="3.5" fill="#3B4A7A"/><circle cx="66" cy="50" r="3.5" fill="#3B4A7A"/>' +
+    '<circle cx="35" cy="48" r="1.5" fill="#fff"/><circle cx="65" cy="48" r="1.5" fill="#fff"/>' +
+    '<path d="M 46 60 Q 50 57, 54 60 Q 55 62, 50 64 Q 45 62, 46 60 Z" fill="#3B4A7A"/>' +
+    '<path d="M 50 64 L 50 69" stroke="#3B4A7A" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<path d="M 45 69 Q 50 73, 55 69" stroke="#3B4A7A" stroke-width="1.5" fill="none" stroke-linecap="round"/>' +
+    '<circle cx="20" cy="62" r="8" fill="url(#pd-blsh)"/><circle cx="80" cy="62" r="8" fill="url(#pd-blsh)"/>' +
+    '</svg>';
+
+  var BUDDY_THINKING = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' + BUDDY_BASE_DEFS +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<path d="M 35 110 C 35 115, 25 118, 25 110 C 25 90, 40 85, 45 90 Z" fill="#7B8EC8"/>' +
+    '<path d="M 65 110 C 65 115, 75 118, 75 110 C 75 90, 60 85, 55 90 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="85" rx="32" ry="28" fill="#fff"/>' +
+    '<path d="M 18 70 C 50 85, 82 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 25 60 C 15 75, 10 90, 20 95 C 28 98, 30 80, 32 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 60 C 85 70, 80 50, 72 50 C 68 50, 65 55, 62 65 Z" fill="#7B8EC8"/>' +
+    '<circle cx="20" cy="30" r="14" fill="#7B8EC8"/><circle cx="80" cy="30" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 50 C 10 15, 90 15, 90 50 C 90 75, 70 85, 50 85 C 30 85, 10 75, 10 50 Z" fill="#fff"/>' +
+    '<path d="M 25 40 C 15 55, 25 65, 38 60 C 48 56, 45 35, 35 32 C 30 30, 28 30, 25 40 Z" fill="#7B8EC8" transform="rotate(-15 32 46)"/>' +
+    '<path d="M 75 40 C 85 55, 75 65, 62 60 C 52 56, 55 35, 65 32 C 70 30, 72 30, 75 40 Z" fill="#7B8EC8" transform="rotate(15 68 46)"/>' +
+    '<circle cx="33" cy="50" r="6" fill="#fff"/><circle cx="67" cy="50" r="6" fill="#fff"/>' +
+    '<circle cx="36" cy="46" r="3.5" fill="#3B4A7A"/><circle cx="70" cy="46" r="3.5" fill="#3B4A7A"/>' +
+    '<circle cx="37" cy="44" r="1.5" fill="#fff"/><circle cx="71" cy="44" r="1.5" fill="#fff"/>' +
+    '<path d="M 46 60 Q 50 57, 54 60 Q 55 62, 50 64 Q 45 62, 46 60 Z" fill="#3B4A7A"/>' +
+    '<path d="M 50 64 L 50 67" stroke="#3B4A7A" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<circle cx="20" cy="62" r="8" fill="url(#pd-blsh)"/><circle cx="80" cy="62" r="8" fill="url(#pd-blsh)"/>' +
+    '<circle cx="88" cy="20" r="3" fill="#888" opacity="0.4"/>' +
+    '<circle cx="95" cy="14" r="2" fill="#888" opacity="0.3"/>' +
+    '<text x="82" y="10" font-size="20" fill="#888" font-family="sans-serif" opacity="0.6">?</text>' +
+    '</svg>';
+
+  var BUDDY_WORKING = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' + BUDDY_BASE_DEFS +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<path d="M 35 110 C 35 115, 25 118, 25 110 C 25 90, 40 85, 45 90 Z" fill="#7B8EC8"/>' +
+    '<path d="M 65 110 C 65 115, 75 118, 75 110 C 75 90, 60 85, 55 90 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="85" rx="32" ry="28" fill="#fff"/>' +
+    '<path d="M 18 70 C 50 85, 82 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 25 60 C 10 70, 20 85, 38 82 C 32 75, 25 70, 28 65 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 60 C 90 70, 80 85, 62 82 C 68 75, 75 70, 72 65 Z" fill="#7B8EC8"/>' +
+    '<rect x="30" y="80" width="40" height="10" rx="3" fill="#4a5568"/>' +
+    '<rect x="33" y="82" width="34" height="6" rx="1" fill="#a0aec0"/>' +
+    '<circle cx="20" cy="30" r="14" fill="#7B8EC8"/><circle cx="80" cy="30" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 50 C 10 15, 90 15, 90 50 C 90 75, 70 85, 50 85 C 30 85, 10 75, 10 50 Z" fill="#fff"/>' +
+    '<path d="M 25 40 C 15 55, 25 65, 38 60 C 48 56, 45 35, 35 32 C 30 30, 28 30, 25 40 Z" fill="#7B8EC8" transform="rotate(-15 32 46)"/>' +
+    '<path d="M 75 40 C 85 55, 75 65, 62 60 C 52 56, 55 35, 65 32 C 70 30, 72 30, 75 40 Z" fill="#7B8EC8" transform="rotate(15 68 46)"/>' +
+    '<rect x="23" y="42" width="22" height="16" rx="6" fill="#fff" stroke="#3B4A7A" stroke-width="2.5"/>' +
+    '<rect x="55" y="42" width="22" height="16" rx="6" fill="#fff" stroke="#3B4A7A" stroke-width="2.5"/>' +
+    '<path d="M 45 50 L 55 50" stroke="#3B4A7A" stroke-width="2.5"/>' +
+    '<circle cx="34" cy="50" r="3.5" fill="#3B4A7A"/><circle cx="66" cy="50" r="3.5" fill="#3B4A7A"/>' +
+    '<circle cx="35" cy="48" r="1.5" fill="#fff"/><circle cx="67" cy="48" r="1.5" fill="#fff"/>' +
+    '<path d="M 46 60 Q 50 57, 54 60 Q 55 62, 50 64 Q 45 62, 46 60 Z" fill="#3B4A7A"/>' +
+    '<path d="M 50 64 L 50 67" stroke="#3B4A7A" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<path d="M 45 67 Q 50 71, 55 67" stroke="#3B4A7A" stroke-width="1.5" fill="none" stroke-linecap="round"/>' +
+    '<circle cx="20" cy="62" r="8" fill="url(#pd-blsh)"/><circle cx="80" cy="62" r="8" fill="url(#pd-blsh)"/>' +
+    '<path d="M 20 80 L 25 75 M 80 80 L 75 75 M 25 90 L 20 95 M 75 90 L 80 95" stroke="#3498db" stroke-width="2" stroke-linecap="round"/>' +
+    '</svg>';
+
+  var BUDDY_HAPPY = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' + BUDDY_BASE_DEFS +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<g transform="translate(0, -5)">' +
+    '<path d="M 35 110 C 35 115, 25 118, 25 110 C 25 90, 40 85, 45 90 Z" fill="#7B8EC8"/>' +
+    '<path d="M 65 110 C 65 115, 75 118, 75 110 C 75 90, 60 85, 55 90 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="85" rx="32" ry="28" fill="#fff"/>' +
+    '<path d="M 18 70 C 50 85, 82 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 25 55 C 10 35, 5 20, 20 20 C 30 20, 35 45, 30 55 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 55 C 90 35, 95 20, 80 20 C 70 20, 65 45, 70 55 Z" fill="#7B8EC8"/>' +
+    '<circle cx="20" cy="30" r="14" fill="#7B8EC8"/><circle cx="80" cy="30" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 50 C 10 15, 90 15, 90 50 C 90 75, 70 85, 50 85 C 30 85, 10 75, 10 50 Z" fill="#fff"/>' +
+    '<path d="M 25 40 C 15 55, 25 65, 38 60 C 48 56, 45 35, 35 32 C 30 30, 28 30, 25 40 Z" fill="#7B8EC8" transform="rotate(-15 32 46)"/>' +
+    '<path d="M 75 40 C 85 55, 75 65, 62 60 C 52 56, 55 35, 65 32 C 70 30, 72 30, 75 40 Z" fill="#7B8EC8" transform="rotate(15 68 46)"/>' +
+    '<path d="M 28 50 Q 33 42, 38 50" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 62 50 Q 67 42, 72 50" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 45 61 Q 50 78, 55 61 Z" fill="#ff7675"/>' +
+    '<circle cx="20" cy="60" r="10" fill="url(#pd-blsh)"/><circle cx="80" cy="60" r="10" fill="url(#pd-blsh)"/>' +
+    '</g>' +
+    '<path d="M 15 35 L 20 40 M 85 35 L 80 40 M 15 20 L 25 25 M 85 20 L 75 25" stroke="#f1c40f" stroke-width="2" stroke-linecap="round"/>' +
+    '</svg>';
+
+  var BUDDY_SAD = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<path d="M 35 110 C 35 115, 25 118, 25 110 C 25 90, 40 85, 45 90 Z" fill="#7B8EC8"/>' +
+    '<path d="M 65 110 C 65 115, 75 118, 75 110 C 75 90, 60 85, 55 90 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="85" rx="32" ry="28" fill="#fff"/>' +
+    '<path d="M 18 70 C 50 85, 82 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 25 60 C 15 75, 15 95, 20 100 C 28 100, 30 80, 28 70 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 60 C 85 75, 85 95, 80 100 C 72 100, 70 80, 72 70 Z" fill="#7B8EC8"/>' +
+    '<circle cx="15" cy="45" r="14" fill="#7B8EC8"/><circle cx="85" cy="45" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 50 C 10 15, 90 15, 90 50 C 90 75, 70 85, 50 85 C 30 85, 10 75, 10 50 Z" fill="#fff"/>' +
+    '<path d="M 25 40 C 15 55, 25 65, 38 60 C 48 56, 45 35, 35 32 C 30 30, 28 30, 25 40 Z" fill="#7B8EC8" transform="rotate(-15 32 46)"/>' +
+    '<path d="M 75 40 C 85 55, 75 65, 62 60 C 52 56, 55 35, 65 32 C 70 30, 72 30, 75 40 Z" fill="#7B8EC8" transform="rotate(15 68 46)"/>' +
+    '<path d="M 28 48 Q 33 43, 38 52" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 62 52 Q 67 43, 72 48" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 33 55 Q 36 62, 33 65 Q 30 62, 33 55 Z" fill="#74b9ff"/>' +
+    '<path d="M 46 62 Q 50 59, 54 62 Q 55 64, 50 66 Q 45 64, 46 62 Z" fill="#3B4A7A"/>' +
+    '<path d="M 50 66 L 50 69" stroke="#3B4A7A" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<path d="M 45 73 Q 50 69, 55 73" stroke="#3B4A7A" stroke-width="1.5" fill="none" stroke-linecap="round"/>' +
+    '</svg>';
+
+  var BUDDY_SLEEPING = '<svg viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">' + BUDDY_BASE_DEFS +
+    '<ellipse cx="50" cy="115" rx="35" ry="5" fill="#000" opacity="0.1"/>' +
+    '<g transform="translate(0, 15)">' +
+    '<path d="M 25 100 C 15 100, 15 90, 25 85 C 40 85, 45 95, 35 100 Z" fill="#7B8EC8"/>' +
+    '<path d="M 75 100 C 85 100, 85 90, 75 85 C 60 85, 55 95, 65 100 Z" fill="#7B8EC8"/>' +
+    '<ellipse cx="50" cy="75" rx="36" ry="28" fill="#fff"/>' +
+    '<path d="M 12 70 C 50 95, 88 70, 80 50 C 50 60, 20 50, 20 70 Z" fill="#7B8EC8"/>' +
+    '<circle cx="20" cy="40" r="14" fill="#7B8EC8"/><circle cx="80" cy="40" r="14" fill="#7B8EC8"/>' +
+    '<path d="M 10 55 C 10 25, 90 25, 90 55 C 90 80, 70 85, 50 85 C 30 85, 10 80, 10 55 Z" fill="#fff"/>' +
+    '<path d="M 25 45 C 15 60, 25 70, 38 65 C 48 61, 45 40, 35 37 C 30 35, 28 35, 25 45 Z" fill="#7B8EC8" transform="rotate(-20 32 51)"/>' +
+    '<path d="M 75 45 C 85 60, 75 70, 62 65 C 52 61, 55 40, 65 37 C 70 35, 72 35, 75 45 Z" fill="#7B8EC8" transform="rotate(20 68 51)"/>' +
+    '<path d="M 28 55 Q 33 60, 38 55" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 62 55 Q 67 60, 72 55" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>' +
+    '<path d="M 46 64 Q 50 61, 54 64 Q 55 66, 50 68 Q 45 66, 46 64 Z" fill="#3B4A7A"/>' +
+    '<path d="M 50 68 L 50 71" stroke="#3B4A7A" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<circle cx="56" cy="74" r="5" fill="#81ecec" opacity="0.6"/>' +
+    '<circle cx="20" cy="65" r="8" fill="url(#pd-blsh)"/><circle cx="80" cy="65" r="8" fill="url(#pd-blsh)"/>' +
+    '</g>' +
+    '<text x="82" y="30" font-size="16" fill="#888" font-family="sans-serif" font-weight="bold">Z</text>' +
+    '<text x="92" y="15" font-size="12" fill="#888" font-family="sans-serif" font-weight="bold">z</text>' +
+    '</svg>\n\n'
+
 
   function triggerConfetti() {
     var canvas = document.createElement('canvas');
@@ -3144,6 +3644,646 @@
     return out.join('\n');
   }
 
+  function normalizeTaskCopySource(data) {
+    const id = data && (data.task_id || data.id);
+    const boardTask = id ? (kanbanTasks || []).find((task) => task.id === id) : null;
+    const source = boardTask ? { ...boardTask, ...data } : (data || {});
+    return {
+      id: source.task_id || source.id || '',
+      title: source.title || '',
+      status: source.status || '',
+      description: source.description || '',
+      detail_text: source.detail_text || '',
+      comments: Array.isArray(source.comments) ? source.comments : [],
+      progress_updates: Array.isArray(source.progress_updates) ? source.progress_updates : [],
+      comments_count: source.comments_count != null ? source.comments_count : ((source.comments || []).length || 0),
+      progress_updates_count: source.progress_updates_count != null ? source.progress_updates_count : ((source.progress_updates || []).length || 0),
+    };
+  }
+
+  function normalizeTestCopySource(data) {
+    const id = data && (data.test_id || data.id);
+    const boardTest = id ? (testBoardData || []).find((test) => test.id === id) : null;
+    const source = boardTest ? { ...boardTest, ...data } : (data || {});
+    const steps = Array.isArray(source.steps) ? source.steps : [];
+    return {
+      id: source.test_id || source.id || '',
+      title: source.title || '',
+      environment: source.environment || '',
+      status: source.status || '',
+      description: source.description || '',
+      linkedTaskIds: Array.isArray(source.linkedTaskIds) ? source.linkedTaskIds : [],
+      steps: steps.map((step) => ({
+        description: step.description || step.name || '',
+        expectedResult: step.expectedResult || '',
+        actualResult: step.actualResult || '',
+        status: step.status || '',
+      })),
+    };
+  }
+
+  function artifactRawId(value) {
+    return String(value || '').trim();
+  }
+
+  function artifactNumericSuffix(value) {
+    const match = artifactRawId(value).match(/(\d+)(?!.*\d)/);
+    return match ? match[1] : '';
+  }
+
+  function artifactShortBadge(value) {
+    const raw = artifactRawId(value);
+    if (!raw) return '';
+    const suffix = artifactNumericSuffix(raw);
+    return suffix ? `#${suffix}` : raw;
+  }
+
+  function artifactKindLabel(kind) {
+    return kind === 'test' ? 'Test' : 'Issue';
+  }
+
+  function artifactKindPluralLabel(kind) {
+    return kind === 'test' ? 'Tests' : 'Issues';
+  }
+
+  function artifactItemTypeLabel(itemType) {
+    return itemType === 'bug' ? 'bug' : 'issue';
+  }
+
+  function formatArtifactReference(value) {
+    const raw = artifactRawId(value);
+    if (!raw) return '';
+    const badge = artifactShortBadge(raw);
+    return badge && badge !== raw ? `${badge} (${raw})` : raw;
+  }
+
+  function formatArtifactHeader(kind, id, title, fallbackTitle) {
+    const raw = artifactRawId(id);
+    const badge = artifactShortBadge(raw);
+    const label = artifactKindLabel(kind);
+    const heading = title || fallbackTitle || `untitled ${label.toLowerCase()}`;
+    if (raw && badge && badge !== raw) return `[${label} ${badge} | ${raw}] ${heading}`;
+    if (raw) return `[${label}: ${raw}] ${heading}`;
+    return `[${label}] ${heading}`;
+  }
+
+  function renderArtifactBadgeHtml(value, extraClass) {
+    const badge = artifactShortBadge(value);
+    if (!badge) return '';
+    return '<span class="artifact-id-badge' + (extraClass ? ' ' + extraClass : '') + '">' + escapeHtml(badge) + '</span>';
+  }
+
+  function renderArtifactHeaderHtml(kind, id, title, options) {
+    const raw = artifactRawId(id);
+    const opts = options || {};
+    const extraMeta = opts.extraMeta ? String(opts.extraMeta) : '';
+    let html = '<div class="artifact-title-row">';
+    html += renderArtifactBadgeHtml(raw);
+    if (opts.icon) html += '<span class="artifact-title-icon">' + escapeHtml(opts.icon) + '</span>';
+    html += '<span class="artifact-title-text">' + escapeHtml(title || artifactKindLabel(kind)) + '</span>';
+    html += '</div>';
+    if (raw || extraMeta) {
+      html += '<div class="artifact-id-raw">';
+      if (raw) html += escapeHtml(raw);
+      if (raw && extraMeta) html += ' · ';
+      if (extraMeta) html += escapeHtml(extraMeta);
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function formatTaskCopyText(data) {
+    const task = normalizeTaskCopySource(data);
+    const lines = [
+      formatArtifactHeader('task', task.id || 'unknown', task.title, '(untitled issue)'),
+      `Status: ${task.status || 'unknown'}`,
+      `Description: ${task.description || '(none)'}`,
+      `Details: ${task.detail_text || '(none)'}`,
+      `Comments: ${task.comments_count || 0}`,
+      `Progress Updates: ${task.progress_updates_count || 0}`,
+    ];
+    return lines.join('\n');
+  }
+
+  function formatTestCopyText(data) {
+    const test = normalizeTestCopySource(data);
+    const lines = [
+      formatArtifactHeader('test', test.id || 'unknown', test.title, '(untitled test)'),
+      `Environment: ${test.environment || 'unknown'}`,
+      `Status: ${test.status || 'unknown'}`,
+      `Description: ${test.description || '(none)'}`,
+    ];
+    if (test.linkedTaskIds.length) {
+      lines.push(`Linked Issues: ${test.linkedTaskIds.map(formatArtifactReference).join(', ')}`);
+    }
+    lines.push('Steps:');
+    if (!test.steps.length) {
+      lines.push('  (none)');
+    } else {
+      test.steps.forEach((step, index) => {
+        lines.push(`  ${index + 1}. ${step.description || '(unnamed step)'}`);
+        lines.push(`     Expected: ${step.expectedResult || '(none)'}`);
+        lines.push(`     Actual: ${step.actualResult || '(none)'}`);
+        lines.push(`     Status: ${step.status || 'unknown'}`);
+      });
+    }
+    return lines.join('\n');
+  }
+
+  function formatBugCopyText(data) {
+    const task = data && data.task_id ? (kanbanTasks || []).find((item) => item.id === data.task_id) : null;
+    const lines = [
+      formatArtifactHeader('task', data && data.task_id, (data && data.title) || '(untitled bug)', '(untitled bug)').replace('[Issue', '[Bug'),
+      `Severity: ${(data && data.severity) || 'unknown'}`,
+      `Description: ${(data && data.description) || '(none)'}`,
+    ];
+    if (task) {
+      lines.push(`Issue Status: ${task.status || 'unknown'}`);
+      lines.push(`Issue Details: ${task.detail_text || '(none)'}`);
+    }
+    return lines.join('\n');
+  }
+
+  function copyTextToClipboard(text, button) {
+    const value = text == null ? '' : String(text);
+    function markCopied() {
+      if (!button) return;
+      const original = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = original; }, 1200);
+    }
+    function fallbackCopy() {
+      const area = document.createElement('textarea');
+      area.value = value;
+      area.setAttribute('readonly', 'readonly');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(area);
+      markCopied();
+      return Promise.resolve();
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard.writeText(value).then(() => {
+        markCopied();
+      }).catch(fallbackCopy);
+    }
+    return fallbackCopy();
+  }
+
+  function wireCopyButton(button, getText) {
+    if (!button) return;
+    button.addEventListener('click', function(event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      copyTextToClipboard(getText(), button);
+    });
+  }
+
+  function renderEntityToolbar(options) {
+    const showCopy = options && options.includeCopy;
+    const live = options && options.live;
+    if (!showCopy && !live) return '';
+    let html = '<div class="entity-card-toolbar">';
+    if (live) html += '<span class="entity-live-badge">Live</span>';
+    if (showCopy) html += '<button type="button" class="entity-card-copy">Copy</button>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderTestCardHtml(data, options) {
+    const d = data || {};
+    const opts = options || {};
+    const testId = d.test_id || d.id;
+    var passed = d.passed || 0;
+    var failed = d.failed || 0;
+    var skipped = d.skipped || 0;
+    var total = passed + failed + skipped;
+    var panda = (failed === 0 && total > 0) ? '\uD83D\uDC3C\u2728'
+      : (failed <= 1 && passed > 0) ? '\uD83D\uDC3C\uD83D\uDE0A'
+      : (passed > failed) ? '\uD83D\uDC3C\uD83E\uDD14'
+      : '\uD83D\uDC3C\uD83D\uDE1F';
+    var allPassMsgs = ['All tests passing! The panda is proud \uD83C\uDF8B', 'Perfect score! Time for bamboo \uD83C\uDF8D', 'Clean sweep! The panda approves \u2728', 'Flawless! Ship it! \uD83D\uDE80'];
+    var someFailMsgs = ['Almost there \u2014 just a few fixes to go!', 'Getting closer! Keep pushing \uD83D\uDCAA', 'Good progress \u2014 the panda believes in you!'];
+    var mostlyFailMsgs = ["Don't worry \u2014 every bug fixed is progress!", 'The panda is rooting for you \uD83D\uDC3C', "One step at a time \u2014 you've got this!"];
+    var encourageMsg = '';
+    if (total > 0) {
+      if (failed === 0) encourageMsg = allPassMsgs[Math.floor(Math.random() * allPassMsgs.length)];
+      else if (passed >= failed) encourageMsg = someFailMsgs[Math.floor(Math.random() * someFailMsgs.length)];
+      else encourageMsg = mostlyFailMsgs[Math.floor(Math.random() * mostlyFailMsgs.length)];
+    }
+    var pandaSvg = (failed === 0 && total > 0) ? PANDA_HAPPY
+      : (passed > failed) ? PANDA_THINKING
+      : (passed > 0) ? PANDA_SAD
+      : PANDA_CRYING;
+
+    let html = '<div class="test-result-card' + (opts.live ? ' live-entity-card' : '') + '">';
+    html += renderEntityToolbar(opts);
+    html += '<div class="test-card-time">' + (opts.live ? 'Updating now' : new Date().toLocaleTimeString()) + '</div>';
+    html += '<div class="test-card-title">' + renderArtifactHeaderHtml('test', testId, d.title || 'Test Results', { icon: panda }) + '</div>';
+    if (d.steps && d.steps.length) {
+      for (const s of d.steps) {
+        const st = (s.status || '').toLowerCase();
+        const isPassed = st === 'pass' || st === 'passed' || st === 'passing';
+        const isFailed = st === 'fail' || st === 'failed' || st === 'failing';
+        const icon = isPassed ? '\u2705' : isFailed ? '\u274C' : '\u2B1C';
+        const cls = isPassed ? 'pass' : isFailed ? 'fail' : 'skip';
+        html += '<div class="test-step ' + cls + '">' + icon + ' ' + escapeHtml(s.name || s.description || '') + '</div>';
+      }
+    }
+    html += '<div class="test-card-summary">';
+    if (d.passed != null) html += '<span class="pass">' + d.passed + ' passed</span> ';
+    if (d.failed != null) html += '<span class="fail">' + d.failed + ' failed</span> ';
+    if (d.skipped != null) html += '<span class="skip">' + d.skipped + ' skipped</span>';
+    html += '</div>';
+    if (encourageMsg) html += '<div class="test-card-encourage">' + encourageMsg + '</div>';
+    html += '<div class="test-card-panda-svg">' + pandaSvg + '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderBugCardHtml(data, options) {
+    const d = data || {};
+    const opts = options || {};
+    const severityColors = { critical: '#f44336', high: '#ff5722', medium: '#ff9800', low: '#ffc107' };
+    const color = severityColors[d.severity] || '#f44336';
+    let html = '<div class="bug-card' + (opts.live ? ' live-entity-card' : '') + '" style="border-left-color:' + color + '">';
+    html += renderEntityToolbar(opts);
+    html += '<div class="bug-card-header">' + renderArtifactHeaderHtml('task', d.task_id || d.id, d.title || 'Bug Report', { icon: '\uD83D\uDC1B' }) + '</div>';
+    if (d.description) html += '<div class="bug-card-body">' + escapeHtml(d.description) + '</div>';
+    if (d.severity) html += '<div class="bug-card-severity" style="color:' + color + '">' + escapeHtml(d.severity.toUpperCase()) + '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderTaskCardHtml(data, options) {
+    const d = data || {};
+    const opts = options || {};
+    const statusColors = { todo: '#569cd6', in_progress: '#e5a04b', review: '#c586c0', testing: '#d9a0d4', done: '#4caf50', backlog: '#888' };
+    const color = statusColors[d.status] || '#569cd6';
+    let html = '<div class="task-card' + (opts.live ? ' live-entity-card' : '') + '" style="border-left-color:' + color + '">';
+    html += renderEntityToolbar(opts);
+    html += '<div class="task-card-header">' + renderArtifactHeaderHtml('task', d.task_id || d.id, d.title || 'Issue', { icon: '\uD83D\uDCCB' }) + '</div>';
+    if (d.status) html += '<div class="task-card-status" style="color:' + color + '">' + escapeHtml(d.status.toUpperCase().replace(/_/g, ' ')) + '</div>';
+    if (d.description) html += '<div class="task-card-body">' + escapeHtml(d.description) + '</div>';
+    if (d.detail_text) html += '<div class="task-card-body task-card-detail">' + escapeHtml(d.detail_text) + '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function escapeAttr(str) {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+  }
+
+  function qaReportStatusTone(status) {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'pass' || normalized === 'passed' || normalized === 'passing' || normalized === 'done') return 'pass';
+    if (normalized === 'fail' || normalized === 'failed' || normalized === 'failing' || normalized === 'review') return 'fail';
+    if (normalized === 'in_progress' || normalized === 'partial' || normalized === 'running' || normalized === 'testing') return 'progress';
+    return 'neutral';
+  }
+
+  function formatQaTimestamp(value) {
+    if (!value) return '';
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return '';
+    }
+  }
+
+  const QA_REPORT_COPY_SEPARATOR = '\n\n==========\n\n';
+
+  function getQaReportSection(payload, scope) {
+    return scope === 'session'
+      ? ((payload && payload.session) || {})
+      : ((payload && payload.run) || {});
+  }
+
+  function isQaReportFailingTest(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (typeof item.failed === 'number') return item.failed > 0;
+    const normalized = String(item.status || '').toLowerCase();
+    return normalized === 'fail' || normalized === 'failed' || normalized === 'failing';
+  }
+
+  function formatQaReportCollection(items, kind, options) {
+    const opts = options || {};
+    const list = Array.isArray(items) ? items : [];
+    let filtered = list;
+    if (kind === 'test' && opts.failingOnly) {
+      filtered = filtered.filter(isQaReportFailingTest);
+    }
+    const formatter = kind === 'task' ? formatTaskCopyText : formatTestCopyText;
+    return filtered.map((item) => formatter(item && (item.detail || item))).join(QA_REPORT_COPY_SEPARATOR);
+  }
+
+  function renderQaReportActionsHtml() {
+    return (
+      '<div class="qa-report-actions">' +
+        '<button type="button" class="entity-card-copy qa-report-action" data-qa-action="copy-all-tests">Copy all tests</button>' +
+        '<button type="button" class="entity-card-copy qa-report-action" data-qa-action="copy-failing-tests">Copy failing tests</button>' +
+        '<button type="button" class="entity-card-copy qa-report-action" data-qa-action="copy-all-tasks">Copy all issues</button>' +
+        '<button type="button" class="entity-card-copy qa-report-action" data-qa-action="download-pdf">Export PDF</button>' +
+      '</div>'
+    );
+  }
+
+  function renderQaReportRows(items, scope, kind) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return '<div class="qa-report-empty">None yet.</div>';
+    }
+    return items.map((item) => {
+      const tone = qaReportStatusTone(item && item.status);
+      if (kind === 'test') {
+        const passed = item && item.passed ? item.passed : 0;
+        const failed = item && item.failed ? item.failed : 0;
+        const skipped = item && item.skipped ? item.skipped : 0;
+        return (
+          '<div class="qa-report-row" data-qa-kind="test" data-qa-scope="' + escapeAttr(scope) + '" data-qa-id="' + escapeAttr(item && item.id) + '">' +
+            '<span class="qa-report-row-main">' +
+              renderArtifactHeaderHtml('test', item && item.id, item && item.title || 'Test', { extraMeta: item && item.environment ? item.environment : '' }) +
+            '</span>' +
+            '<span class="qa-report-row-side">' +
+              '<span class="qa-report-pill tone-' + tone + '">' + escapeHtml(String((item && item.status) || 'untested').replace(/_/g, ' ')) + '</span>' +
+              '<span class="qa-report-counts">' + passed + ' passed · ' + failed + ' failed · ' + skipped + ' skipped</span>' +
+            '</span>' +
+            '<button type="button" class="entity-card-copy qa-report-row-copy" data-qa-copy-kind="test" data-qa-copy-scope="' + escapeAttr(scope) + '" data-qa-copy-id="' + escapeAttr(item && item.id) + '">Copy</button>' +
+          '</div>'
+        );
+      }
+      return (
+        '<div class="qa-report-row" data-qa-kind="task" data-qa-scope="' + escapeAttr(scope) + '" data-qa-id="' + escapeAttr(item && item.id) + '">' +
+          '<span class="qa-report-row-main">' +
+            renderArtifactHeaderHtml('task', item && item.id, item && item.title || 'Issue') +
+          '</span>' +
+          '<span class="qa-report-row-side">' +
+            '<span class="qa-report-pill type-' + escapeAttr(item && item.itemType || 'task') + '">' + escapeHtml(artifactItemTypeLabel(item && item.itemType)) + '</span>' +
+            '<span class="qa-report-pill tone-' + tone + '">' + escapeHtml(String((item && item.status) || 'todo').replace(/_/g, ' ')) + '</span>' +
+          '</span>' +
+          '<button type="button" class="entity-card-copy qa-report-row-copy" data-qa-copy-kind="task" data-qa-copy-scope="' + escapeAttr(scope) + '" data-qa-copy-id="' + escapeAttr(item && item.id) + '">Copy</button>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderQaReportSectionHtml(section, scope) {
+    const tests = (section && section.tests) || [];
+    const tasks = (section && section.tasks) || [];
+    return (
+      '<div class="qa-report-summary-grid">' +
+        '<div class="qa-report-summary-box"><span class="qa-report-summary-count">' + tests.length + '</span><span class="qa-report-summary-label">Tests</span></div>' +
+        '<div class="qa-report-summary-box"><span class="qa-report-summary-count">' + tasks.length + '</span><span class="qa-report-summary-label">Issues</span></div>' +
+      '</div>' +
+      '<div class="qa-report-group">' +
+        '<div class="qa-report-group-title">Tests</div>' +
+        renderQaReportRows(tests, scope, 'test') +
+      '</div>' +
+      '<div class="qa-report-group">' +
+        '<div class="qa-report-group-title">Issues</div>' +
+        renderQaReportRows(tasks, scope, 'task') +
+      '</div>'
+    );
+  }
+
+  function renderQaReportCardHtml(data, options) {
+    const d = data || {};
+    const opts = options || {};
+    const updatedAt = formatQaTimestamp(d.updatedAt);
+    return (
+      '<div class="qa-report-card' + (opts.live ? ' qa-report-card-live' : '') + '">' +
+        renderEntityToolbar({ live: opts.live }) +
+        '<div class="qa-report-card-header">' +
+          '<div>' +
+            '<div class="qa-report-card-title">QA Report</div>' +
+            '<div class="qa-report-card-subtitle">' + (updatedAt ? 'Updated ' + escapeHtml(updatedAt) : 'Summary of tests and issues in this chat') + '</div>' +
+          '</div>' +
+          renderQaReportActionsHtml() +
+        '</div>' +
+        '<div class="qa-report-tabs">' +
+          '<button type="button" class="qa-report-tab is-active" data-qa-tab="run">This Run</button>' +
+          '<button type="button" class="qa-report-tab" data-qa-tab="session">This Session</button>' +
+        '</div>' +
+        '<div class="qa-report-panel is-active" data-qa-panel="run">' + renderQaReportSectionHtml(d.run || {}, 'run') + '</div>' +
+        '<div class="qa-report-panel" data-qa-panel="session">' + renderQaReportSectionHtml(d.session || {}, 'session') + '</div>' +
+      '</div>'
+    );
+  }
+
+  function findQaReportItem(payload, scope, kind, id) {
+    const section = scope === 'session' ? payload && payload.session : payload && payload.run;
+    const items = kind === 'task' ? ((section && section.tasks) || []) : ((section && section.tests) || []);
+    return items.find((item) => item && String(item.id) === String(id)) || null;
+  }
+
+  function renderReadonlyTestDetailHtml(item) {
+    const detail = normalizeTestCopySource(item && (item.detail || item));
+    const raw = item && item.detail ? item.detail : {};
+    const tags = Array.isArray(raw.tags) ? raw.tags : [];
+    const runs = Array.isArray(raw.runs) ? raw.runs : [];
+    let html = '<div class="agent-report-detail agent-report-detail-test">';
+    html += '<div class="agent-report-detail-header"><div class="agent-report-detail-heading">' + renderArtifactHeaderHtml('test', detail.id, detail.title || 'Test') + '</div><div class="agent-report-detail-actions"><button type="button" class="entity-card-copy agent-report-overlay-copy">Copy</button><button type="button" class="agent-report-overlay-close">×</button></div></div>';
+    html += '<div class="agent-report-detail-meta">';
+    if (detail.environment) html += '<span class="qa-report-pill tone-progress">' + escapeHtml(detail.environment) + '</span>';
+    if (detail.status) html += '<span class="qa-report-pill tone-' + qaReportStatusTone(detail.status) + '">' + escapeHtml(String(detail.status).replace(/_/g, ' ')) + '</span>';
+    html += '</div>';
+    if (detail.description) html += '<div class="agent-report-detail-body">' + escapeHtml(detail.description) + '</div>';
+    if (tags.length) {
+      html += '<div class="test-tags">' + tags.map((tag) => '<span class="test-tag">' + escapeHtml(tag) + '</span>').join(' ') + '</div>';
+    }
+    if (detail.linkedTaskIds.length) {
+      html += '<h4>Linked Issues</h4><div class="test-linked-tasks">' + detail.linkedTaskIds.map((taskId) => '<span class="test-linked-task">' + escapeHtml(formatArtifactReference(taskId)) + '</span>').join(' ') + '</div>';
+    }
+    html += '<h4>Steps</h4>';
+    if (!detail.steps.length) {
+      html += '<div class="qa-report-empty">No steps recorded.</div>';
+    } else {
+      for (const step of detail.steps) {
+        const icon = step.status === 'pass' ? '✅' : step.status === 'fail' ? '❌' : '⬜';
+        html += '<div class="test-step-item">';
+        html += '<span class="test-step-icon">' + icon + '</span>';
+        html += '<div class="test-step-body">';
+        html += '<div class="test-step-desc">' + escapeHtml(step.description || '(unnamed step)') + '</div>';
+        html += '<div class="test-step-expected">Expected: ' + escapeHtml(step.expectedResult || '(none)') + '</div>';
+        html += '<div class="test-step-actual">Actual: ' + escapeHtml(step.actualResult || '(none)') + '</div>';
+        html += '<div class="test-step-expected">Status: ' + escapeHtml(step.status || 'unknown') + '</div>';
+        html += '</div></div>';
+      }
+    }
+    if (runs.length) {
+      html += '<h4>Recent Runs</h4><div class="test-run-history">';
+      for (const run of runs.slice(-5).reverse()) {
+        html += '<div class="test-run-item">' +
+          escapeHtml(String(run.status || 'unknown')) +
+          (run.date ? ' — ' + escapeHtml(formatQaTimestamp(run.date)) : '') +
+          (run.agent ? ' — ' + escapeHtml(run.agent) : '') +
+          (run.notes ? ' — ' + escapeHtml(run.notes) : '') +
+          '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderReadonlyTaskDetailHtml(item) {
+    const detail = normalizeTaskCopySource(item && (item.detail || item));
+    const comments = Array.isArray(detail.comments) ? detail.comments : [];
+    const progressUpdates = Array.isArray(detail.progress_updates) ? detail.progress_updates : [];
+    let html = '<div class="agent-report-detail agent-report-detail-task">';
+    html += '<div class="agent-report-detail-header"><div class="agent-report-detail-heading">' + renderArtifactHeaderHtml('task', detail.id, detail.title || 'Issue') + '</div><div class="agent-report-detail-actions"><button type="button" class="entity-card-copy agent-report-overlay-copy">Copy</button><button type="button" class="agent-report-overlay-close">×</button></div></div>';
+    html += '<div class="agent-report-detail-meta">';
+    if (detail.status) html += '<span class="qa-report-pill tone-' + qaReportStatusTone(detail.status) + '">' + escapeHtml(String(detail.status).replace(/_/g, ' ')) + '</span>';
+    html += '</div>';
+    if (detail.description) html += '<div class="agent-report-detail-body">' + escapeHtml(detail.description) + '</div>';
+    if (detail.detail_text) html += '<div class="agent-report-detail-body agent-report-detail-pre">' + escapeHtml(detail.detail_text) + '</div>';
+    html += '<h4>Comments</h4>';
+    if (!comments.length) {
+      html += '<div class="qa-report-empty">No comments.</div>';
+    } else {
+      html += '<div class="task-entry-list">';
+      for (const comment of comments) {
+        html += '<div class="task-entry"><div class="task-entry-meta"><strong>' + escapeHtml(comment.author || 'Agent') + '</strong>' + (comment.created_at ? ' · ' + escapeHtml(formatQaTimestamp(comment.created_at)) : '') + '</div><div class="task-entry-text">' + escapeHtml(comment.text || '') + '</div></div>';
+      }
+      html += '</div>';
+    }
+    html += '<h4>Progress Updates</h4>';
+    if (!progressUpdates.length) {
+      html += '<div class="qa-report-empty">No progress updates.</div>';
+    } else {
+      html += '<div class="task-entry-list">';
+      for (const update of progressUpdates) {
+        html += '<div class="task-entry"><div class="task-entry-meta"><strong>' + escapeHtml(update.author || 'Agent') + '</strong>' + (update.created_at ? ' · ' + escapeHtml(formatQaTimestamp(update.created_at)) : '') + '</div><div class="task-entry-text">' + escapeHtml(update.text || '') + '</div></div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function closeQaReportOverlay() {
+    if (qaReportOverlay && qaReportOverlay.parentNode) {
+      qaReportOverlay.parentNode.removeChild(qaReportOverlay);
+    }
+    qaReportOverlay = null;
+  }
+
+  function ensureQaReportOverlay() {
+    if (qaReportOverlay && qaReportOverlay.parentNode) return qaReportOverlay;
+    const overlay = document.createElement('div');
+    overlay.className = 'agent-report-overlay';
+    overlay.innerHTML = '<div class="agent-report-overlay-backdrop"></div><div class="agent-report-overlay-panel"></div>';
+    overlay.querySelector('.agent-report-overlay-backdrop').addEventListener('click', closeQaReportOverlay);
+    document.body.appendChild(overlay);
+    qaReportOverlay = overlay;
+    return overlay;
+  }
+
+  function openQaReportItemOverlay(kind, item) {
+    if (!item) return;
+    const overlay = ensureQaReportOverlay();
+    const panel = overlay.querySelector('.agent-report-overlay-panel');
+    if (!panel) return;
+    panel.innerHTML = kind === 'task'
+      ? renderReadonlyTaskDetailHtml(item)
+      : renderReadonlyTestDetailHtml(item);
+    const closeBtn = panel.querySelector('.agent-report-overlay-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeQaReportOverlay);
+    const copyBtn = panel.querySelector('.agent-report-overlay-copy');
+    if (copyBtn) {
+      wireCopyButton(copyBtn, () => kind === 'task'
+        ? formatTaskCopyText(item && (item.detail || item))
+        : formatTestCopyText(item && (item.detail || item)));
+    }
+  }
+
+  function updateQaReportActionState(container, payload, scope) {
+    if (!container) return;
+    const section = getQaReportSection(payload, scope);
+    const tests = Array.isArray(section.tests) ? section.tests : [];
+    const tasks = Array.isArray(section.tasks) ? section.tasks : [];
+    const failingTests = tests.filter(isQaReportFailingTest);
+    const setDisabled = (selector, disabled) => {
+      const button = container.querySelector(selector);
+      if (button) button.disabled = !!disabled;
+    };
+    setDisabled('.qa-report-action[data-qa-action="copy-all-tests"]', tests.length === 0);
+    setDisabled('.qa-report-action[data-qa-action="copy-failing-tests"]', failingTests.length === 0);
+    setDisabled('.qa-report-action[data-qa-action="copy-all-tasks"]', tasks.length === 0);
+  }
+
+  function activeQaReportScope(container) {
+    const activeTab = container && container.querySelector('.qa-report-tab.is-active');
+    return (activeTab && activeTab.dataset.qaTab) || 'run';
+  }
+
+  function wireQaReportCard(container, payload) {
+    if (!container) return;
+    updateQaReportActionState(container, payload, activeQaReportScope(container));
+    container.querySelectorAll('.qa-report-tab').forEach((tab) => {
+      tab.addEventListener('click', (event) => {
+        event.preventDefault();
+        const target = tab.dataset.qaTab || 'run';
+        container.querySelectorAll('.qa-report-tab').forEach((node) => node.classList.toggle('is-active', node === tab));
+        container.querySelectorAll('.qa-report-panel').forEach((panel) => {
+          panel.classList.toggle('is-active', panel.dataset.qaPanel === target);
+        });
+        updateQaReportActionState(container, payload, target);
+      });
+    });
+    container.querySelectorAll('.qa-report-row').forEach((row) => {
+      row.addEventListener('click', (event) => {
+        event.preventDefault();
+        const kind = row.dataset.qaKind || 'test';
+        const scope = row.dataset.qaScope || 'run';
+        const id = row.dataset.qaId || '';
+        const item = findQaReportItem(payload, scope, kind, id);
+        openQaReportItemOverlay(kind, item);
+      });
+    });
+    container.querySelectorAll('.qa-report-row-copy').forEach((button) => {
+      wireCopyButton(button, () => {
+        const kind = button.dataset.qaCopyKind || 'test';
+        const scope = button.dataset.qaCopyScope || 'run';
+        const id = button.dataset.qaCopyId || '';
+        const item = findQaReportItem(payload, scope, kind, id);
+        return kind === 'task'
+          ? formatTaskCopyText(item && (item.detail || item))
+          : formatTestCopyText(item && (item.detail || item));
+      });
+    });
+    container.querySelectorAll('.qa-report-action').forEach((button) => {
+      const action = button.dataset.qaAction || '';
+      if (action === 'download-pdf') {
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const scope = activeQaReportScope(container);
+          vscode.postMessage({
+            type: 'qaReportExportPdf',
+            label: payload && payload.label ? payload.label : '',
+            scope,
+            updatedAt: payload && payload.updatedAt ? payload.updatedAt : '',
+            section: getQaReportSection(payload, scope),
+          });
+        });
+        return;
+      }
+      wireCopyButton(button, () => {
+        const scope = activeQaReportScope(container);
+        const section = getQaReportSection(payload, scope);
+        if (action === 'copy-all-tests') return formatQaReportCollection(section.tests, 'test');
+        if (action === 'copy-failing-tests') return formatQaReportCollection(section.tests, 'test', { failingOnly: true });
+        if (action === 'copy-all-tasks') return formatQaReportCollection(section.tasks, 'task');
+        return '';
+      });
+    });
+  }
+
   // ── Section / Entry management ──────────────────────────────────────
 
   function closeSection() {
@@ -3196,7 +4336,87 @@
     }
   }
 
-  function addEntry(role, html, extraClass) {
+  function setEntryRawText(entry, rawText) {
+    if (!entry) return;
+    if (rawText == null) {
+      delete entry.dataset.rawText;
+      return;
+    }
+    entry.dataset.rawText = String(rawText);
+  }
+
+  function appendEntryRawText(entry, rawText) {
+    if (!entry || rawText == null) return;
+    const value = String(rawText);
+    if (!value) return;
+    const current = entry.dataset.rawText || '';
+    entry.dataset.rawText = current ? `${current}\n${value}` : value;
+  }
+
+  function removeLiveEntityCardSlot() {
+    if (activeLiveEntitySlot && activeLiveEntitySlot.parentNode) {
+      activeLiveEntitySlot.parentNode.removeChild(activeLiveEntitySlot);
+    }
+    activeLiveEntitySlot = null;
+  }
+
+  function removeLiveQaReportCardSlot() {
+    if (activeLiveQaReportSlot && activeLiveQaReportSlot.parentNode) {
+      activeLiveQaReportSlot.parentNode.removeChild(activeLiveQaReportSlot);
+    }
+    activeLiveQaReportSlot = null;
+  }
+
+  function ensureLiveEntitySlot(role) {
+    ensureSection(role);
+    if (
+      activeLiveEntitySlot &&
+      activeLiveEntitySlot.parentNode === currentSection &&
+      activeLiveEntitySlot.dataset.role === role
+    ) {
+      currentSection.appendChild(activeLiveEntitySlot);
+      if (
+        activeLiveQaReportSlot &&
+        activeLiveQaReportSlot.parentNode === currentSection &&
+        activeLiveQaReportSlot.dataset.role === role
+      ) {
+        currentSection.appendChild(activeLiveQaReportSlot);
+      }
+      return activeLiveEntitySlot;
+    }
+    removeLiveEntityCardSlot();
+    const slot = document.createElement('div');
+    slot.className = 'section-live-slot';
+    slot.dataset.role = role;
+    if (currentSection) {
+      currentSection.appendChild(slot);
+    }
+    activeLiveEntitySlot = slot;
+    return slot;
+  }
+
+  function ensureLiveQaReportSlot(role) {
+    ensureSection(role);
+    if (
+      activeLiveQaReportSlot &&
+      activeLiveQaReportSlot.parentNode === currentSection &&
+      activeLiveQaReportSlot.dataset.role === role
+    ) {
+      currentSection.appendChild(activeLiveQaReportSlot);
+      return activeLiveQaReportSlot;
+    }
+    removeLiveQaReportCardSlot();
+    const slot = document.createElement('div');
+    slot.className = 'section-live-slot section-live-qa-slot';
+    slot.dataset.role = role;
+    if (currentSection) {
+      currentSection.appendChild(slot);
+    }
+    activeLiveQaReportSlot = slot;
+    return slot;
+  }
+
+  function addEntry(role, html, extraClass, rawText) {
     stopPendingCard();
     clearWelcome();
     hideThinking();
@@ -3211,17 +4431,15 @@
     const content = document.createElement('div');
     content.className = 'entry-content';
     content.innerHTML = html;
+    setEntryRawText(entry, rawText);
 
     // Copy button (hidden, shows on hover)
     var copyBtn = document.createElement('button');
     copyBtn.className = 'entry-copy';
     copyBtn.textContent = '\uD83D\uDCCB';
     copyBtn.title = 'Copy';
-    copyBtn.addEventListener('click', function() {
-      navigator.clipboard.writeText(content.textContent).then(function() {
-        copyBtn.textContent = '\u2713';
-        setTimeout(function() { copyBtn.textContent = '\uD83D\uDCCB'; }, 1500);
-      });
+    wireCopyButton(copyBtn, function() {
+      return entry.dataset.rawText || content.textContent;
     });
 
     entry.appendChild(content);
@@ -3253,7 +4471,7 @@
       // First streamed line — create a new entry (skip maybeShowThinking via addEntry)
       const savedRunning = isRunning;
       isRunning = false;
-      streamingEntry = addEntry(role, renderInlineMarkdown(text));
+      streamingEntry = addEntry(role, renderInlineMarkdown(text), '', text);
       isRunning = savedRunning;
     } else {
       // Append to existing streaming entry
@@ -3261,6 +4479,7 @@
       if (content) {
         content.innerHTML += '\n' + renderInlineMarkdown(text);
       }
+      appendEntryRawText(streamingEntry, text);
     }
     autoScroll();
     maybeShowThinking();
@@ -3309,44 +4528,47 @@
   const handlers = {
     user(msg) {
       streamingEntry = null;
-      addEntry('User', escapeHtml(msg.text));
+      addEntry('User', escapeHtml(msg.text), '', msg.text);
     },
 
     controller(msg) {
       streamingEntry = null;
+      setBuddyState('thinking');
       const text = msg.text || '';
       const label = msg.label || 'Orchestrator';
       // Parse JSON decisions into a formatted card
       if (text.startsWith('{') && text.includes('"action"')) {
         try {
           const d = JSON.parse(text);
-          addEntry(label, renderDecisionCard(d), 'decision-card');
+          addEntry(label, renderDecisionCard(d), 'decision-card', text);
           return;
         } catch {}
       }
       // Dim status/progress lines
       const statusPatterns = ['Started controller session', 'Thinking about', 'Finished the current controller'];
       if (statusPatterns.some(p => text.startsWith(p))) {
-        addEntry(label, escapeHtml(text), 'status-line');
+        addEntry(label, escapeHtml(text), 'status-line', text);
         return;
       }
-      addEntry(label, renderInlineMarkdown(text));
+      addEntry(label, renderInlineMarkdown(text), '', text);
     },
 
     claude(msg) {
       streamingEntry = null;
-      addEntry(msg.label || 'Worker', renderInlineMarkdown(msg.text));
+      addEntry(msg.label || 'Worker', renderInlineMarkdown(msg.text), '', msg.text);
       maybeShowThinking();
     },
 
     shell(msg) {
       streamingEntry = null;
-      addEntry('Shell', renderInlineMarkdown(msg.text));
+      addEntry('Shell', renderInlineMarkdown(msg.text), '', msg.text);
     },
 
     error(msg) {
       streamingEntry = null;
-      addEntry(msg.label || 'Error', escapeHtml(msg.text), 'role-error');
+      lastRunOutcome = 'error';
+      setBuddyState('sad');
+      addEntry(msg.label || 'Error', escapeHtml(msg.text), 'role-error', msg.text);
     },
 
     banner(msg) {
@@ -3356,12 +4578,12 @@
 
     line(msg) {
       streamingEntry = null;
-      addEntry(msg.label, renderInlineMarkdown(msg.text));
+      addEntry(msg.label, renderInlineMarkdown(msg.text), '', msg.text);
     },
 
     mdLine(msg) {
       streamingEntry = null;
-      addEntry(msg.label, renderMarkdown(msg.text));
+      addEntry(msg.label, renderMarkdown(msg.text), '', msg.text);
     },
 
     streamLine(msg) {
@@ -3375,7 +4597,7 @@
 
     toolCall(msg) {
       streamingEntry = null;
-      addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call');
+      addEntry(msg.label || 'Worker', escapeHtml(msg.text), 'tool-call', msg.text);
       // Show the correct widget based on the active agent's CLI backend
       if (msg.isComputerUse || msg.isChromeDevtools) {
         if (_isCurrentAgentRemote() && novncPort && !splitVncWrapper) {
@@ -3390,86 +4612,89 @@
     testCard(msg) {
       streamingEntry = null;
       const d = msg.data || {};
-      var passed = d.passed || 0;
-      var failed = d.failed || 0;
-      var skipped = d.skipped || 0;
-      var total = passed + failed + skipped;
-
-      // Panda reaction based on results
-      var panda = (failed === 0 && total > 0) ? '\uD83D\uDC3C\u2728'
-        : (failed <= 1 && passed > 0) ? '\uD83D\uDC3C\uD83D\uDE0A'
-        : (passed > failed) ? '\uD83D\uDC3C\uD83E\uDD14'
-        : '\uD83D\uDC3C\uD83D\uDE1F';
-
-      // Encouraging message
-      var allPassMsgs = ['All tests passing! The panda is proud \uD83C\uDF8B', 'Perfect score! Time for bamboo \uD83C\uDF8D', 'Clean sweep! The panda approves \u2728', 'Flawless! Ship it! \uD83D\uDE80'];
-      var someFailMsgs = ['Almost there \u2014 just a few fixes to go!', 'Getting closer! Keep pushing \uD83D\uDCAA', 'Good progress \u2014 the panda believes in you!'];
-      var mostlyFailMsgs = ["Don't worry \u2014 every bug fixed is progress!", 'The panda is rooting for you \uD83D\uDC3C', "One step at a time \u2014 you've got this!"];
-      var encourageMsg = '';
-      if (total > 0) {
-        if (failed === 0) encourageMsg = allPassMsgs[Math.floor(Math.random() * allPassMsgs.length)];
-        else if (passed >= failed) encourageMsg = someFailMsgs[Math.floor(Math.random() * someFailMsgs.length)];
-        else encourageMsg = mostlyFailMsgs[Math.floor(Math.random() * mostlyFailMsgs.length)];
+      const entry = addEntry(msg.label || 'QA', renderTestCardHtml(d, { includeCopy: true }), 'test-card-entry');
+      const copyBtn = entry.querySelector('.entity-card-copy');
+      if (copyBtn) wireCopyButton(copyBtn, () => formatTestCopyText(d));
+      if (!suppressUiLog) {
+        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'testCard', label: msg.label || 'QA', data: d } });
       }
-
-      let html = '<div class="test-result-card">';
-      html += '<div class="test-card-time">' + new Date().toLocaleTimeString() + '</div>';
-      html += '<div class="test-card-title">' + panda + ' ' + escapeHtml(d.title || 'Test Results') + '</div>';
-      if (d.steps && d.steps.length) {
-        for (const s of d.steps) {
-          const st = (s.status || '').toLowerCase();
-          const isPassed = st === 'pass' || st === 'passed' || st === 'passing';
-          const isFailed = st === 'fail' || st === 'failed' || st === 'failing';
-          const icon = isPassed ? '\u2705' : isFailed ? '\u274C' : '\u2B1C';
-          const cls = isPassed ? 'pass' : isFailed ? 'fail' : 'skip';
-          html += '<div class="test-step ' + cls + '">' + icon + ' ' + escapeHtml(s.name || '') + '</div>';
-        }
-      }
-      html += '<div class="test-card-summary">';
-      if (d.passed != null) html += '<span class="pass">' + d.passed + ' passed</span> ';
-      if (d.failed != null) html += '<span class="fail">' + d.failed + ' failed</span> ';
-      if (d.skipped != null) html += '<span class="skip">' + d.skipped + ' skipped</span>';
-      html += '</div>';
-      if (encourageMsg) html += '<div class="test-card-encourage">' + encourageMsg + '</div>';
-      // Expressive panda SVG based on results
-      var pandaSvg = (failed === 0 && total > 0) ? PANDA_HAPPY
-        : (passed > failed) ? PANDA_THINKING
-        : (passed > 0) ? PANDA_SAD
-        : PANDA_CRYING;
-      html += '<div class="test-card-panda-svg">' + pandaSvg + '</div>';
-      html += '</div>';
-      addEntry(msg.label || 'QA', html, 'test-card-entry');
 
       // Confetti on all-pass!
+      var passed = d.passed || 0;
+      var failed = d.failed || 0;
       if (failed === 0 && passed > 0) triggerConfetti();
     },
 
     bugCard(msg) {
       streamingEntry = null;
       const d = msg.data || {};
-      const severityColors = { critical: '#f44336', high: '#ff5722', medium: '#ff9800', low: '#ffc107' };
-      const color = severityColors[d.severity] || '#f44336';
-      let html = '<div class="bug-card" style="border-left-color:' + color + '">';
-      html += '<div class="bug-card-header">\uD83D\uDC1B ' + escapeHtml(d.title || 'Bug Report') + '</div>';
-      if (d.task_id) html += '<div class="bug-card-id">' + escapeHtml(d.task_id) + '</div>';
-      if (d.description) html += '<div class="bug-card-body">' + escapeHtml(d.description) + '</div>';
-      if (d.severity) html += '<div class="bug-card-severity" style="color:' + color + '">' + escapeHtml(d.severity.toUpperCase()) + '</div>';
-      html += '</div>';
-      addEntry(msg.label || 'QA', html, 'bug-card-entry');
+      const entry = addEntry(msg.label || 'QA', renderBugCardHtml(d, { includeCopy: true }), 'bug-card-entry');
+      const copyBtn = entry.querySelector('.entity-card-copy');
+      if (copyBtn) wireCopyButton(copyBtn, () => formatBugCopyText(d));
+      if (!suppressUiLog) {
+        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'bugCard', label: msg.label || 'QA', data: d } });
+      }
     },
 
     taskCard(msg) {
       streamingEntry = null;
       const d = msg.data || {};
-      const statusColors = { todo: '#569cd6', in_progress: '#e5a04b', review: '#c586c0', testing: '#d9a0d4', done: '#4caf50', backlog: '#888' };
-      const color = statusColors[d.status] || '#569cd6';
-      let html = '<div class="task-card" style="border-left-color:' + color + '">';
-      html += '<div class="task-card-header">\uD83D\uDCCB ' + escapeHtml(d.title || 'Task') + '</div>';
-      if (d.task_id) html += '<div class="task-card-id">' + escapeHtml(d.task_id) + '</div>';
-      if (d.status) html += '<div class="task-card-status" style="color:' + color + '">' + escapeHtml(d.status.toUpperCase().replace(/_/g, ' ')) + '</div>';
-      if (d.description) html += '<div class="task-card-body">' + escapeHtml(d.description) + '</div>';
-      html += '</div>';
-      addEntry(msg.label || 'Worker', html, 'task-card-entry');
+      const entry = addEntry(msg.label || 'Worker', renderTaskCardHtml(d, { includeCopy: true }), 'task-card-entry');
+      const copyBtn = entry.querySelector('.entity-card-copy');
+      if (copyBtn) wireCopyButton(copyBtn, () => formatTaskCopyText(d));
+      if (!suppressUiLog) {
+        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'taskCard', label: msg.label || 'Worker', data: d } });
+      }
+    },
+
+    liveEntityCard(msg) {
+      streamingEntry = null;
+      const role = msg.label || 'Worker';
+      const slot = ensureLiveEntitySlot(role);
+      const entityType = msg.entityType || 'task';
+      const data = msg.data || {};
+      slot.innerHTML = entityType === 'test'
+        ? renderTestCardHtml(data, { live: true, includeCopy: true })
+        : renderTaskCardHtml(data, { live: true, includeCopy: true });
+      const copyBtn = slot.querySelector('.entity-card-copy');
+      if (copyBtn) {
+        wireCopyButton(copyBtn, () => (
+          entityType === 'test'
+            ? formatTestCopyText(data)
+            : formatTaskCopyText(data)
+        ));
+      }
+      autoScroll();
+    },
+
+    clearLiveEntityCard() {
+      removeLiveEntityCardSlot();
+    },
+
+    liveQaReportCard(msg) {
+      streamingEntry = null;
+      const role = msg.label || 'QA';
+      const slot = ensureLiveQaReportSlot(role);
+      const data = msg.data || {};
+      const payload = { ...data, label: msg.label || 'QA' };
+      slot.innerHTML = renderQaReportCardHtml(payload, { live: true });
+      wireQaReportCard(slot, payload);
+      autoScroll();
+    },
+
+    clearLiveQaReportCard() {
+      removeLiveQaReportCardSlot();
+    },
+
+    qaReportCard(msg) {
+      streamingEntry = null;
+      const data = msg.data || {};
+      const payload = { ...data, label: msg.label || 'QA' };
+      const entry = addEntry(msg.label || 'QA', renderQaReportCardHtml(payload, {}), 'qa-report-card-entry');
+      wireQaReportCard(entry, payload);
+      if (!suppressUiLog) {
+        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'qaReportCard', label: msg.label || 'QA', data } });
+      }
     },
 
     mcpCardStart(msg) {
@@ -3483,6 +4708,13 @@
       }
       html += '</div>';
       addEntry(msg.label || 'Worker', html, 'mcp-card-entry');
+      if (msg.isComputerUse || msg.isChromeDevtools) {
+        if (_isCurrentAgentRemote() && novncPort && !splitVncWrapper) {
+          showSplitVnc();
+        } else if (!_isCurrentAgentRemote() && chromePort && !splitChromeWrapper) {
+          showSplitChrome();
+        }
+      }
       // Track this as the last pending card — next addEntry will stop it
       var newCard = d.id ? document.getElementById(d.id) : null;
       if (!newCard) { var pending = messagesEl.querySelectorAll('.mcp-card-pending'); newCard = pending[pending.length - 1]; }
@@ -3551,28 +4783,38 @@
 
     stop(msg) {
       streamingEntry = null;
-      addEntry((msg && msg.label) || 'Controller', 'STOP');
+      addEntry((msg && msg.label) || 'Controller', 'STOP', '', 'STOP');
     },
 
     chatScreenshot(msg) {
       // Inline screenshot thumbnail (from Chrome/VNC teardown or restored from chat.jsonl)
       if (msg.data && msg.data.startsWith('data:')) {
+        clearWelcome();
+        hideThinking();
         const thumb = document.createElement('img');
         thumb.src = msg.data;
         thumb.className = 'chat-screenshot';
         thumb.alt = msg.alt || 'Screenshot';
-        messagesEl.appendChild(thumb);
+        const target = currentSection || messagesEl;
+        target.appendChild(thumb);
+        if (currentSection) {
+          hasContent = true;
+        }
         autoScroll();
       }
     },
 
     requestStarted(msg) {
       streamingEntry = null;
+      setBuddyState('working');
+      removeLiveQaReportCardSlot();
+      closeQaReportOverlay();
       addBanner(`Attached run ${msg.runId}`);
     },
 
     requestFinished(msg) {
       streamingEntry = null;
+      setBuddyState('happy');
       if (msg.message) {
         addBanner(msg.message);
       }
@@ -3581,6 +4823,9 @@
     clear() {
       teardownSplitVnc(false);
       streamingEntry = null;
+      removeLiveEntityCardSlot();
+      removeLiveQaReportCardSlot();
+      closeQaReportOverlay();
       closeSection();
       messagesEl.innerHTML = '';
       messageLog = [];
@@ -3591,12 +4836,17 @@
 
     close() {
       streamingEntry = null;
+      removeLiveEntityCardSlot();
+      removeLiveQaReportCardSlot();
+      closeQaReportOverlay();
       closeSection();
     },
 
     running(msg) {
       if (msg.value) {
         isRunning = true;
+        lastRunOutcome = null;
+        setBuddyState('working');
         btnSend.style.display = 'none';
         if (btnContinue) btnContinue.style.display = 'none';
         if (btnOrchestrate) btnOrchestrate.style.display = 'none';
@@ -3606,6 +4856,9 @@
       } else {
         isRunning = false;
         hideThinking();
+        flashPandaMascot(lastRunOutcome === 'error' ? 'sad' : 'happy');
+        setBuddyState(lastRunOutcome === 'error' ? 'sad' : 'happy');
+        lastRunOutcome = null;
         // Split VNC is torn down by ensureSection() when the actor changes.
         // As a fallback, teardown here too in case no new section was created.
         if (splitVncWrapper) teardownSplitVnc(true);
@@ -3820,6 +5073,7 @@
 
     clearRunId() {
       currentRunId = null;
+      removeLiveQaReportCardSlot();
       hideProgressBubble();
       saveState();
     },
@@ -3837,17 +5091,25 @@
       // Do NOT call saveState() here: the transcript is authoritative on disk,
       // so there is nothing to persist back into webview state.
       streamingEntry = null;
+      removeLiveEntityCardSlot();
+      removeLiveQaReportCardSlot();
+      closeQaReportOverlay();
       closeSection();
       messagesEl.innerHTML = '';
       messageLog = [];
 
       if (Array.isArray(msg.messages)) {
-        for (const entry of msg.messages) {
-          const handler = handlers[entry.type];
-          if (handler) {
-            handler(entry);
-            messageLog.push(entry);
+        suppressUiLog = true;
+        try {
+          for (const entry of msg.messages) {
+            const handler = handlers[entry.type];
+            if (handler) {
+              handler(entry);
+              messageLog.push(entry);
+            }
           }
+        } finally {
+          suppressUiLog = false;
         }
       }
     },
@@ -3998,6 +5260,15 @@
         settingPromptAgent.value = msg.settings.selfTestPromptAgent || defaults.agent || '';
       }
       updatePromptsVisibility();
+      // Populate API keys
+      _apiKeys = (msg.settings && msg.settings.apiKeys) || {};
+      document.querySelectorAll('.settings-api-key-input').forEach(el => {
+        const provider = el.dataset.provider;
+        if (provider && _apiKeys[provider]) el.value = _apiKeys[provider];
+        else el.value = '';
+      });
+      // Re-evaluate warnings
+      updateControllerDropdowns();
     },
 
     dependencyMissing(msg) {
@@ -4014,6 +5285,15 @@
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (!msg || !msg.type) return;
+    // Reset panda idle counter on any incoming message
+    pandaIdleTicks = 0;
+    if (pandaMascotEl && pandaMascotEl.classList.contains('panda-mascot--idle')) {
+      setPandaMascotState(pandaMascotEl, 'thinking');
+    }
+    // Wake up buddy panda if sleeping
+    if (pandaBuddyEl && buddyState === 'sleeping') {
+      setBuddyState('idle');
+    }
     _dbg('MSG received: type=' + msg.type + ' hasHandler=' + !!handlers[msg.type]);
     const handler = handlers[msg.type];
     if (handler) {
@@ -4062,6 +5342,7 @@
     { cmd: '/list', desc: 'List saved runs' },
     { cmd: '/logs', desc: 'Show recent events' },
     { cmd: '/clear', desc: 'Clear chat and start fresh' },
+    { cmd: '/compact', desc: 'Compact the current API session' },
     { cmd: '/detach', desc: 'Detach from current run' },
     { cmd: '/controller-model', desc: 'Set Codex model' },
     { cmd: '/worker-model', desc: 'Set Claude model' },
@@ -4262,6 +5543,9 @@
       vscode.postMessage({ type: 'abort' });
     }
   });
+
+  // Initialize panda buddy
+  initPandaBuddy();
 
   // Focus input on load
   textarea.focus();

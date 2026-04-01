@@ -12,6 +12,8 @@
  *   suppress   — true to suppress normal "Calling/Finished" text entirely
  */
 
+const { normalizeToolResultOutput } = require('./tool-result-normalizer');
+
 const CARD_MAP = {
   // ── cc-tests ──────────────────────────────
   create_test:          { icon: '\uD83D\uDC3C\uD83E\uDDEA', text: 'Test Created', startText: 'Creating test', field: 'title' },
@@ -110,7 +112,7 @@ const CARD_MAP = {
  * Post a pending (started) card for a tool call.
  * @returns {boolean} true if the normal "Calling X" text should be suppressed
  */
-function renderStartCard(tool, input, renderer, label, cardId) {
+function renderStartCard(tool, input, renderer, label, cardId, meta = null) {
   if (!renderer || !renderer._post) return false;
   const cfg = CARD_MAP[tool];
   if (!cfg) return false;
@@ -120,14 +122,15 @@ function renderStartCard(tool, input, renderer, label, cardId) {
   const detail = fieldVal ? String(fieldVal) : '';
   const text = cfg.startText || cfg.text || tool;
   const icon = cfg.icon || '';
+  const extra = meta && typeof meta === 'object' ? meta : {};
 
   // For command template, show the command text
   if (cfg.template === 'command') {
-    renderer._post({ type: 'mcpCardStart', id: cardId, label, icon: icon, text: text, detail: (input && input[cfg.field]) || '', template: 'command' });
+    renderer._post({ type: 'mcpCardStart', id: cardId, label, icon: icon, text: text, detail: (input && input[cfg.field]) || '', template: 'command', ...extra });
     return true;
   }
 
-  renderer._post({ type: 'mcpCardStart', id: cardId, label, icon: icon, text: text, detail: detail });
+  renderer._post({ type: 'mcpCardStart', id: cardId, label, icon: icon, text: text, detail: detail, ...extra });
   return true;
 }
 
@@ -135,21 +138,26 @@ function renderStartCard(tool, input, renderer, label, cardId) {
  * Post a completed card for a tool call (updates the pending card).
  * @returns {boolean} true if the normal "Finished X" text should be suppressed
  */
-function renderCompleteCard(tool, input, output, renderer, label, cardId) {
+function renderCompleteCard(tool, input, output, renderer, label, cardId, meta = null) {
   if (!renderer || !renderer._post) return false;
   const cfg = CARD_MAP[tool];
   if (!cfg) return false;
+  const normalizedOutput = normalizeToolResultOutput(output);
+  const extra = meta && typeof meta === 'object' ? meta : {};
 
   // Special templates that render full cards
   if (cfg.template === 'testCard') {
-    if (output && output._testCard) {
-      renderer._post({ type: 'testCard', label, data: output._testCard });
+    // Mutation tools expose _testCard for in-flight progress. Keep that as a
+    // transient live card only; the permanent summary card should still come
+    // from display_test_summary or the end-of-turn tracker fallback.
+    if (normalizedOutput && normalizedOutput._testCard) {
+      renderer._post({ type: 'liveEntityCard', label, entityType: 'test', data: normalizedOutput._testCard });
     }
-    // Still update the pending card to completed
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: '' });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: '', ...extra });
     return true;
   }
   if (cfg.template === 'displayTestSummary') {
+    renderer._post({ type: 'clearLiveEntityCard' });
     renderer._post({ type: 'testCard', label, data: input });
     return true;
   }
@@ -162,18 +170,18 @@ function renderCompleteCard(tool, input, output, renderer, label, cardId) {
     return true;
   }
   if (cfg.template === 'testSuite') {
-    renderer._post({ type: 'mcpCard', label, card: 'testSuite', data: output || {} });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
+    renderer._post({ type: 'mcpCard', label, card: 'testSuite', data: normalizedOutput || {} });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true, ...extra });
     return true;
   }
   if (cfg.template === 'comment') {
-    renderer._post({ type: 'mcpCard', label, card: 'taskComment', data: { author: (output && output.author) || 'agent', text: (input && input.text) || '' } });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
+    renderer._post({ type: 'mcpCard', label, card: 'taskComment', data: { author: (normalizedOutput && normalizedOutput.author) || 'agent', text: (input && input.text) || '' } });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true, ...extra });
     return true;
   }
   if (cfg.template === 'statusChange') {
     renderer._post({ type: 'mcpCard', label, card: 'taskStatus', data: { title: (input && input.task_id) || '', status: (input && input.status) || '' } });
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, remove: true, ...extra });
     return true;
   }
 
@@ -181,9 +189,9 @@ function renderCompleteCard(tool, input, output, renderer, label, cardId) {
   const fieldVal = cfg.field && input ? input[cfg.field] : null;
   const detail = fieldVal ? String(fieldVal) : '';
   if (cfg.template === 'command') {
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: (input && input[cfg.field]) || '', template: 'command' });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: (input && input[cfg.field]) || '', template: 'command', ...extra });
   } else {
-    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: detail });
+    renderer._post({ type: 'mcpCardComplete', id: cardId, label, icon: cfg.icon || '', text: cfg.text || tool, detail: detail, ...extra });
   }
   return true;
 }

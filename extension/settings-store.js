@@ -11,6 +11,7 @@ const DEFAULTS = {
   selfTestPromptController: '',
   selfTestPromptQaBrowser: '',
   selfTestPromptAgent: '',
+  apiKeys: {},  // { openai: 'sk-...', anthropic: 'sk-ant-...', openrouter: 'sk-or-...', gemini: '...', custom: '...' }
 };
 
 function settingsPath() {

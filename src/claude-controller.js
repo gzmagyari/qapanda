@@ -3,6 +3,7 @@ const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
+const { countTranscriptLinesSync } = require('./transcript');
 
 function buildClaudeControllerArgs(manifest, loop) {
   const args = [
@@ -162,6 +163,9 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
   loop.controller.exitCode = result.code;
   loop.controller.sessionId = discoveredSessionId;
   manifest.controller.sessionId = discoveredSessionId;
+  try {
+    manifest.controller.lastSeenTranscriptLine = countTranscriptLinesSync(manifest.files && manifest.files.transcript);
+  } catch {}
 
   if (result.aborted) {
     throw new Error('Claude controller process was interrupted.');

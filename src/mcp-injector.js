@@ -158,12 +158,40 @@ function mcpServersForRole(role, options = {}) {
     }
   }
 
+  // Auto-inject built-in coding tools MCP ONLY for API mode
+  const needsBuiltinTools = role === 'controller'
+    ? options.controllerCli === 'api'
+    : (options.workerCli === 'api' || (options.agents && Object.values(options.agents).some(a => a && a.cli === 'api')));
+  if (needsBuiltinTools) {
+    const btPath = findBuiltinToolsPath(extensionPath ? [path.join(extensionPath, 'builtin-tools-mcp-server.js')] : []);
+    if (btPath) {
+      result['builtin-tools'] = {
+        command: 'node',
+        args: [btPath],
+        env: { CWD: repoRoot },
+      };
+    }
+  }
+
   return result;
+}
+
+function findBuiltinToolsPath(extra = []) {
+  const candidates = [
+    ...extra,
+    path.resolve(__dirname, '..', 'extension', 'builtin-tools-mcp-server.js'),
+    path.resolve(__dirname, 'builtin-tools-mcp-server.js'),
+  ];
+  for (const p of candidates) {
+    try { if (require('fs').existsSync(p)) return p; } catch {}
+  }
+  return null;
 }
 
 module.exports = {
   findDetachedCommandPath,
   findTasksMcpPath,
   findTestsMcpPath,
+  findBuiltinToolsPath,
   mcpServersForRole,
 };
