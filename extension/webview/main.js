@@ -3007,6 +3007,7 @@
   let activeLiveQaReportSlot = null;
   let qaReportOverlay = null;
   let suppressUiLog = false;
+  const entryRawTextStore = new WeakMap();
 
   // ── Thinking indicator ────────────────────────────────────────────
   const pandaMessages = [
@@ -4336,18 +4337,23 @@
   function setEntryRawText(entry, rawText) {
     if (!entry) return;
     if (rawText == null) {
-      delete entry.dataset.rawText;
+      entryRawTextStore.delete(entry);
       return;
     }
-    entry.dataset.rawText = String(rawText);
+    entryRawTextStore.set(entry, String(rawText));
   }
 
   function appendEntryRawText(entry, rawText) {
     if (!entry || rawText == null) return;
     const value = String(rawText);
     if (!value) return;
-    const current = entry.dataset.rawText || '';
-    entry.dataset.rawText = current ? `${current}\n${value}` : value;
+    const current = entryRawTextStore.get(entry) || '';
+    entryRawTextStore.set(entry, current ? `${current}\n${value}` : value);
+  }
+
+  function getEntryRawText(entry) {
+    if (!entry) return '';
+    return entryRawTextStore.get(entry) || '';
   }
 
   function removeLiveEntityCardSlot() {
@@ -4436,7 +4442,7 @@
     copyBtn.textContent = '\uD83D\uDCCB';
     copyBtn.title = 'Copy';
     wireCopyButton(copyBtn, function() {
-      return entry.dataset.rawText || content.textContent;
+      return getEntryRawText(entry) || content.textContent;
     });
 
     entry.appendChild(content);
