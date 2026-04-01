@@ -787,13 +787,14 @@
 
     const isEdit = !!editTest;
     let html = `<div class="task-form">`;
+    html += `<div class="task-detail-toolbar"><button class="mcp-btn" id="test-back">Back</button></div>`;
     html += `<div class="task-form-header">`;
     if (isEdit) {
       html += `<div class="task-detail-artifact-header">${renderArtifactHeaderHtml('test', editTest.id, editTest.title, { extraMeta: editTest.environment || '' })}</div>`;
     } else {
       html += `<h3>New Test</h3>`;
     }
-    html += `<button class="task-form-close" id="test-form-close">✕</button></div>`;
+    html += `</div>`;
 
     html += `<label>Title</label><input type="text" id="test-title" value="${isEdit ? escapeHtml(editTest.title) : ''}" placeholder="Test title..." />`;
     html += `<label>Environment</label><select id="test-env"><option value="browser" ${isEdit && editTest.environment === 'browser' ? 'selected' : ''}>Browser</option><option value="computer" ${isEdit && editTest.environment === 'computer' ? 'selected' : ''}>Desktop</option></select>`;
@@ -854,7 +855,7 @@
     testDetailEl.innerHTML = html;
 
     // Wire events
-    document.getElementById('test-form-close').addEventListener('click', () => {
+    document.getElementById('test-back').addEventListener('click', () => {
       testDetailEl.style.display = 'none';
       testDetailEl.innerHTML = '';
       if (testBoardEl) testBoardEl.style.display = '';
@@ -4846,7 +4847,7 @@
         btnSend.style.display = 'none';
         if (btnContinue) btnContinue.style.display = 'none';
         if (btnOrchestrate) btnOrchestrate.style.display = 'none';
-        btnStop.style.display = 'inline-block';
+        btnStop.style.display = msg.showStop === false ? 'none' : 'inline-block';
         textarea.disabled = true;
         showThinking();
       } else {

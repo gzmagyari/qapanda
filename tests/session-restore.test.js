@@ -186,7 +186,7 @@ test('/compact compacts the current API agent session locally', async () => {
     },
     requests: [{ id: 'req-1', loops: [{ index: 3 }] }],
   };
-  const { session, cleanup } = buildSession({
+  const { session, posted, cleanup } = buildSession({
     runExists: true,
     manifest,
     config: { chatTarget: 'agent-QA-Browser', workerCli: 'api' },
@@ -198,6 +198,14 @@ test('/compact compacts the current API agent session locally', async () => {
     assert.equal(captured.sessionKey, 'worker:agent:QA-Browser');
     assert.equal(captured.backend, 'worker:api');
     assert.equal(captured.force, true);
+    assert.ok(
+      posted.some((msg) => msg.type === 'running' && msg.value === true && msg.showStop === false),
+      'should show an in-progress indicator immediately'
+    );
+    assert.ok(
+      posted.some((msg) => msg.type === 'running' && msg.value === false && msg.showStop === false),
+      'should clear the in-progress indicator after compaction'
+    );
   } finally {
     cleanup();
   }

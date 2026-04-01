@@ -4,6 +4,7 @@
   "description": "AI-powered QA agents for your codebase — test, fix, and ship with confidence",
   "version": "0.3.0",
   "publisher": "qapandaapp",
+  "license": "MIT",
   "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.85.0"

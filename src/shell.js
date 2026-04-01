@@ -484,6 +484,7 @@ async function runInteractiveShell(options = {}) {
             continue;
           }
           const { requestId, loopIndex } = latestRequestMeta(activeManifest);
+          renderer.banner(`Compacting ${directAgent ? 'current agent session' : 'controller session'}...`);
           const result = await compactApiSessionHistory({
             manifest: activeManifest,
             sessionKey: targetInfo.sessionKey,

@@ -848,19 +848,24 @@ class SessionManager {
     const label = !this._chatTarget || this._chatTarget === 'controller'
       ? 'Controller session'
       : 'Current agent session';
-    const result = await compactApiSessionHistory({
-      manifest: this._activeManifest,
-      sessionKey: targetInfo.sessionKey,
-      backend: targetInfo.backend,
-      requestId,
-      loopIndex,
-      provider: targetInfo.provider,
-      baseURL: targetInfo.baseURL,
-      model: targetInfo.model,
-      thinking: targetInfo.thinking,
-      force: true,
-    });
-    this._renderer.banner(describeCompactionResult(result, label));
+    this._postMessage({ type: 'running', value: true, showStop: false });
+    try {
+      const result = await compactApiSessionHistory({
+        manifest: this._activeManifest,
+        sessionKey: targetInfo.sessionKey,
+        backend: targetInfo.backend,
+        requestId,
+        loopIndex,
+        provider: targetInfo.provider,
+        baseURL: targetInfo.baseURL,
+        model: targetInfo.model,
+        thinking: targetInfo.thinking,
+        force: true,
+      });
+      this._renderer.banner(describeCompactionResult(result, label));
+    } finally {
+      this._postMessage({ type: 'running', value: false, showStop: false });
+    }
   }
 
   async _handleInput(text) {

@@ -170,7 +170,7 @@ describe('webview UI fixes', () => {
     assert.match(wv.clipboardWrites.at(-1), /Linked Issues: #1 \(task-1\)/);
   });
 
-  it('test detail view shows the short badge and raw id', () => {
+  it('test detail view shows the short badge, raw id, and back button', () => {
     wv.click('[data-tab="tests"]');
     wv.postMessage({
       type: 'testsData',
@@ -189,6 +189,9 @@ describe('webview UI fixes', () => {
     wv.click('.test-card');
     assert.match(wv.text('#test-detail'), /#28/);
     assert.match(wv.text('#test-detail'), /test-28/);
+    assert.equal(wv.text('#test-back'), 'Back');
+    wv.click('#test-back');
+    assert.equal(wv.document.getElementById('test-detail').style.display, 'none');
   });
 
   it('copies structured text from chat task cards', async () => {

@@ -63,9 +63,10 @@ function buildAssistantToolCallLineMap(entries, sessionKey) {
   return lineByToolCallId;
 }
 
-function imagePreservedLines(entries, sessionKey) {
-  const preserved = new Set();
+function imagePreservationInfo(entries, sessionKey) {
+  const allLines = new Set();
   const assistantLines = buildAssistantToolCallLineMap(entries, sessionKey);
+  let latestImageEntry = null;
   for (const entry of currentReplayEntries(entries, sessionKey)) {
     if (!entry || entry.kind !== 'tool_result') continue;
     const messageParts = providerMessagesForToolResult(entry);
@@ -74,12 +75,23 @@ function imagePreservedLines(entries, sessionKey) {
       message.content.some((part) => part && part.type === 'image_url')
     );
     if (!hasImage) continue;
-    if (entry.__lineNumber) preserved.add(entry.__lineNumber);
-    if (entry.toolCallId && assistantLines.has(entry.toolCallId)) {
-      preserved.add(assistantLines.get(entry.toolCallId));
+    if (!latestImageEntry || (entry.__lineNumber || 0) > (latestImageEntry.__lineNumber || 0)) {
+      latestImageEntry = entry;
+    }
+    if (entry.__lineNumber) allLines.add(entry.__lineNumber);
+    if (entry.toolCallId && assistantLines.has(entry.toolCallId)) allLines.add(assistantLines.get(entry.toolCallId));
+  }
+  const preservedLines = new Set();
+  if (latestImageEntry) {
+    if (latestImageEntry.__lineNumber) preservedLines.add(latestImageEntry.__lineNumber);
+    if (latestImageEntry.toolCallId && assistantLines.has(latestImageEntry.toolCallId)) {
+      preservedLines.add(assistantLines.get(latestImageEntry.toolCallId));
     }
   }
-  return preserved;
+  return {
+    allLines,
+    preservedLines,
+  };
 }
 
 function compactableEntries(entries, sessionKey) {
@@ -88,13 +100,14 @@ function compactableEntries(entries, sessionKey) {
     .sort((a, b) => (a.__lineNumber || 0) - (b.__lineNumber || 0));
 }
 
-function selectEntriesToKeep(entries, preserveLines, keepRecentMessages) {
+function selectEntriesToKeep(entries, preserveLines, keepRecentMessages, excludedRecentLines = new Set()) {
   const keepLines = new Set(preserveLines);
   let remaining = keepRecentMessages;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     const lineNumber = entry.__lineNumber || 0;
     if (keepLines.has(lineNumber)) continue;
+    if (excludedRecentLines.has(lineNumber)) continue;
     if (remaining <= 0) break;
     keepLines.add(lineNumber);
     remaining -= replayMessageCountForEntry(entry);
@@ -212,11 +225,16 @@ async function compactApiSessionHistory({
     return { performed: false, reason: 'nothing-to-compact', replayMessageCount };
   }
 
-  const preservedLines = imagePreservedLines(entries, sessionKey);
+  const imageLines = imagePreservationInfo(entries, sessionKey);
+  const preservedLines = imageLines.preservedLines;
+  const excludedRecentLines = new Set(
+    Array.from(imageLines.allLines).filter((lineNumber) => !preservedLines.has(lineNumber))
+  );
   const keepLines = selectEntriesToKeep(
     candidates,
     preservedLines,
-    force ? forcedKeepRecentMessages : keepRecentMessages
+    force ? forcedKeepRecentMessages : keepRecentMessages,
+    excludedRecentLines
   );
   let compactAway = candidates.filter((entry) => !keepLines.has(entry.__lineNumber || 0));
   if (force && compactAway.length === 0) {

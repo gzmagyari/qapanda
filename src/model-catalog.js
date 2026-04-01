@@ -1,5 +1,6 @@
 const API_PROVIDER_MODELS = {
   openai: [
+    // Curated to models that pass the current direct chat-completions smoke tests.
     { value: '', label: 'Model: default' },
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
