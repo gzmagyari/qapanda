@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=4XdG6p-HByM">
-    <img src="https://img.youtube.com/vi/4XdG6p-HByM/maxresdefault.jpg" width="600" alt="QA Panda Demo">
+  <a href="https://www.youtube.com/watch?v=sslQ0-HD5mE">
+    <img src="https://img.youtube.com/vi/sslQ0-HD5mE/maxresdefault.jpg" width="600" alt="QA Panda Demo">
   </a>
   <br>
   <em>▶ Watch the demo</em>
