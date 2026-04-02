@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/23b09027-1ab9-403f-858e-0260dc362fea" controls width="600"></video>
+  <video src="https://github.com/user-attachments/assets/1271d9c8-0b41-46d5-abdf-4a00475edfab" controls width="600"></video>
 </p>
 
 <h3 align="center">An open-source AI QA engineer that lives inside VSCode.<br>Works with your ChatGPT subscription — no API keys needed.</h3>
