@@ -12,6 +12,7 @@
 const fs = require('node:fs');
 const readline = require('node:readline');
 const path = require('node:path');
+const { rankSearchResults } = require('./mcp-search');
 
 const TASKS_FILE = process.env.TASKS_FILE || '';
 
@@ -59,6 +60,19 @@ const TOOLS = [
         task_id: { type: 'string', description: 'The task ID' },
       },
       required: ['task_id'],
+    },
+  },
+  {
+    name: 'search_tasks',
+    description: 'Search for likely duplicate existing tasks before creating a new one',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search text describing the issue' },
+        status: { type: 'string', description: 'Optional status filter' },
+        limit: { type: 'number', description: 'Maximum results to return (default 5)' },
+      },
+      required: ['query'],
     },
   },
   {
@@ -230,6 +244,31 @@ function handleToolCall(name, args) {
       const task = data.tasks.find(t => t.id === args.task_id);
       if (!task) throw new Error(`Task not found: ${args.task_id}`);
       return JSON.stringify(task, null, 2);
+    }
+
+    case 'search_tasks': {
+      let tasks = data.tasks;
+      if (args.status) tasks = tasks.filter(t => t.status === args.status);
+      const matches = rankSearchResults(
+        tasks,
+        args.query,
+        (task) => ([
+          { label: 'title', value: task.title, weight: 5 },
+          { label: 'description', value: task.description, weight: 3 },
+          { label: 'details', value: task.detail_text, weight: 2 },
+        ]),
+        args.limit || 5
+      );
+      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        status: item.status,
+        updated_at: item.updated_at,
+        linkedTestIds: item.linkedTestIds || [],
+        match_score: score,
+        match_reason: matchReason,
+      })), null, 2);
     }
 
     case 'create_task': {

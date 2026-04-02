@@ -25,6 +25,8 @@ const CARD_MAP = {
   get_test_summary:     { icon: '\uD83D\uDC3C\uD83D\uDCCA', text: 'Test suite summary', startText: 'Getting test summary', template: 'testSuite' },
   list_tests:           { icon: '\uD83D\uDCCB', text: 'Listed tests', startText: 'Listing tests' },
   get_test:             { icon: '\uD83D\uDD0D', text: 'Viewing test', startText: 'Loading test', field: 'test_id' },
+  search_tests:         { icon: '\uD83D\uDD0D', text: 'Search results', startText: 'Searching tests', field: 'query' },
+  reset_test_steps:     { icon: '\uD83D\uDD04', text: 'Test steps reset', startText: 'Resetting test steps', field: 'test_id' },
   get_test_history:     { icon: '\uD83D\uDCDC', text: 'Test history', startText: 'Loading history', field: 'test_id' },
   display_test_summary: { template: 'displayTestSummary', suppress: true },
   display_bug_report:   { template: 'displayBugReport', suppress: true },
@@ -36,6 +38,7 @@ const CARD_MAP = {
   add_progress_update:  { icon: '\uD83D\uDCCA', text: 'Progress updated', startText: 'Adding progress' },
   list_tasks:           { icon: '\uD83D\uDCCB', text: 'Listed tasks', startText: 'Listing tasks' },
   get_task:             { icon: '\uD83D\uDD0D', text: 'Viewing task', startText: 'Loading task', field: 'task_id' },
+  search_tasks:         { icon: '\uD83D\uDD0D', text: 'Search results', startText: 'Searching tasks', field: 'query' },
   display_task:         { template: 'displayTask', suppress: true },
 
   // ── Chrome DevTools ───────────────────────

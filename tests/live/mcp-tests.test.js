@@ -66,6 +66,8 @@ describe('Tests MCP server (stdio)', () => {
     assert.ok(names.includes('list_tests'));
     assert.ok(names.includes('add_test_step'));
     assert.ok(names.includes('run_test'));
+    assert.ok(names.includes('search_tests'));
+    assert.ok(names.includes('reset_test_steps'));
     assert.ok(names.includes('update_step_result'));
     assert.ok(names.includes('complete_test_run'));
     assert.ok(names.includes('create_bug_from_test'));
@@ -170,6 +172,35 @@ describe('Tests MCP server (stdio)', () => {
     assert.equal(tests[0].title, 'Browser test');
   });
 
+  it('searches for reusable tests and resets steps before rerun', async () => {
+    mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
+    await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+    await mcp.callTool('create_test', { title: 'Login validation flow', description: 'Covers invalid password and redirect behavior', environment: 'browser', tags: ['auth', 'regression'] });
+    await mcp.callTool('add_test_step', { test_id: 'test-1', description: 'Submit invalid password', expectedResult: 'Inline error is shown' });
+    await mcp.callTool('add_test_step', { test_id: 'test-1', description: 'Open protected route', expectedResult: 'Redirects to login' });
+
+    let runRes = await mcp.callTool('run_test', { test_id: 'test-1', agent: 'QA Browser' });
+    let run = JSON.parse(runRes.result.content[0].text);
+    await mcp.callTool('update_step_result', { test_id: 'test-1', run_id: run.run_id, step_id: 1, status: 'fail', actualResult: 'No validation message' });
+    await mcp.callTool('complete_test_run', { test_id: 'test-1', run_id: run.run_id });
+
+    const searchRes = await mcp.callTool('search_tests', { query: 'login invalid password validation', environment: 'browser' });
+    const matches = JSON.parse(searchRes.result.content[0].text);
+    assert.equal(matches[0].id, 'test-1');
+    assert.match(matches[0].match_reason, /Matched/);
+
+    const resetRes = await mcp.callTool('reset_test_steps', { test_id: 'test-1' });
+    const reset = JSON.parse(resetRes.result.content[0].text);
+    assert.equal(reset.reset_steps, 2);
+    assert.equal(reset.status, 'untested');
+
+    const testRes = await mcp.callTool('get_test', { test_id: 'test-1' });
+    const test = JSON.parse(testRes.result.content[0].text);
+    assert.equal(test.steps[0].status, 'untested');
+    assert.equal(test.steps[0].actualResult, null);
+    assert.equal(test.runs.length, 1, 'should preserve run history');
+  });
+
   it('links and unlinks tests to tasks', async () => {
     mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
     await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
@@ -184,5 +215,42 @@ describe('Tests MCP server (stdio)', () => {
     testRes = await mcp.callTool('get_test', { test_id: 'test-1' });
     test = JSON.parse(testRes.result.content[0].text);
     assert.ok(!test.linkedTaskIds.includes('task-42'));
+  });
+});
+
+describe('Tests MCP server (HTTP)', { timeout: 15000 }, () => {
+  let httpServer;
+
+  afterEach(async () => {
+    if (httpServer) { await httpServer.close(); httpServer = null; }
+  });
+
+  it('searches and resets tests via POST /mcp', async () => {
+    const { startTestsMcpServer, stopTestsMcpServer } = require('../../extension/tests-mcp-http');
+    const { httpPost } = require('../helpers/live-test-utils');
+
+    const testsFile = path.join(tmp.ccDir, 'tests-http.json');
+    const tasksFile = path.join(tmp.ccDir, 'tasks-http.json');
+    httpServer = await startTestsMcpServer(testsFile, tasksFile);
+
+    const baseUrl = `http://127.0.0.1:${httpServer.port}/mcp`;
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '1', method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } });
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '2', method: 'tools/call', params: { name: 'create_test', arguments: { title: 'Forgot password flow', description: 'Reset email validation', environment: 'browser' } } });
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '3', method: 'tools/call', params: { name: 'add_test_step', arguments: { test_id: 'test-1', description: 'Submit empty email', expectedResult: 'Validation shows' } } });
+    const runRes = await httpPost(baseUrl, { jsonrpc: '2.0', id: '4', method: 'tools/call', params: { name: 'run_test', arguments: { test_id: 'test-1' } } });
+    const run = JSON.parse(runRes.result.content[0].text);
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '5', method: 'tools/call', params: { name: 'update_step_result', arguments: { test_id: 'test-1', run_id: run.run_id, step_id: 1, status: 'fail', actualResult: 'Submitted without error' } } });
+
+    const searchRes = await httpPost(baseUrl, { jsonrpc: '2.0', id: '6', method: 'tools/call', params: { name: 'search_tests', arguments: { query: 'forgot password empty email validation' } } });
+    const matches = JSON.parse(searchRes.result.content[0].text);
+    assert.equal(matches[0].id, 'test-1');
+
+    const resetRes = await httpPost(baseUrl, { jsonrpc: '2.0', id: '7', method: 'tools/call', params: { name: 'reset_test_steps', arguments: { test_id: 'test-1' } } });
+    const reset = JSON.parse(resetRes.result.content[0].text);
+    assert.equal(reset.status, 'untested');
+
+    await httpServer.close();
+    stopTestsMcpServer();
+    httpServer = null;
   });
 });

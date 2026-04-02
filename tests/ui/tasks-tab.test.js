@@ -57,4 +57,24 @@ describe('Issues tab', () => {
     assert.match(wv.text('#task-detail'), /#12/);
     assert.match(wv.text('#task-detail'), /task-12/);
   });
+
+  it('deletes an issue from detail view after confirm and returns to the board', async () => {
+    wv.postMessage({
+      type: 'tasksData',
+      tasks: [
+        { id: 'task-1', title: 'Fix login', status: 'todo', description: 'Short summary', detail_text: 'Detailed notes', comments: [], progress_updates: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      ],
+    });
+    wv.click('.kanban-card');
+    await wv.flush();
+    wv.click('#task-delete');
+    assert.match(wv.text('#confirm-modal-text'), /Delete this issue\?/);
+    wv.click('#confirm-modal-yes');
+    await wv.flush();
+    const deleteMsg = wv.messages.find((msg) => msg.type === 'taskDelete');
+    assert.equal(deleteMsg.type, 'taskDelete');
+    assert.equal(deleteMsg.task_id, 'task-1');
+    assert.equal(wv.document.getElementById('task-detail').style.display, 'none');
+    assert.notEqual(wv.document.getElementById('kanban-board').style.display, 'none');
+  });
 });

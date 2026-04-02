@@ -194,6 +194,35 @@ describe('webview UI fixes', () => {
     assert.equal(wv.document.getElementById('test-detail').style.display, 'none');
   });
 
+  it('retest helper prompt resets stored steps before running the test again', async () => {
+    wv.click('[data-tab="tests"]');
+    wv.postMessage({
+      type: 'testsData',
+      tests: [{
+        id: 'test-28',
+        title: 'Protected route redirects',
+        status: 'failing',
+        environment: 'browser',
+        description: 'Verify logout blocks access',
+        tags: ['auth'],
+        linkedTaskIds: ['task-8'],
+        lastTestedAt: '2026-03-31T10:00:00Z',
+        steps: [
+          { id: 1, description: 'Open /strategies', expectedResult: 'Redirect to /login', actualResult: 'Stayed on /strategies', status: 'fail' },
+        ],
+      }],
+    });
+    wv.click('.test-card');
+    await wv.flush();
+    wv.click('#test-retest-btn');
+    await wv.flush();
+    const userInput = wv.messages.find((msg) => msg.type === 'userInput');
+    assert.ok(userInput, 'should send a retest prompt');
+    assert.match(userInput.text, /Call reset_test_steps with test_id "test-28"/);
+    assert.match(userInput.text, /Call run_test with test_id "test-28"/);
+    assert.match(userInput.text, /search_tasks/);
+  });
+
   it('copies structured text from chat task cards', async () => {
     wv.postMessage({
       type: 'taskCard',

@@ -54,15 +54,19 @@ The ONLY exception: you may use the built-in Read, Write, Edit, Glob, and Grep t
 ## Test Case Management
 
 You have access to the cc-tests MCP for managing repeatable test cases:
+- Use `search_tests` before creating a new test to look for an existing reusable test case
 - Use `create_test` to create test cases (set environment to "browser")
 - Use `add_test_step` to add steps with descriptions and expected results
+- Use `reset_test_steps` before re-running an existing test so all stored step state goes back to `untested`
 - Use `run_test` to start a test run, then `update_step_result` for each step (pass/fail/skip)
 - Use `complete_test_run` when done testing
+- Use `search_tasks` before logging a new issue so you do not create duplicates
 - Use `create_bug_from_test` to create bug tickets for failing tests
 - Use `link_test_to_task` to link tests to existing bug tickets
 
 When generating tests, cover: happy path, error cases, edge cases, and security scenarios.
-When re-testing, retrieve the test with `get_test`, execute each step, and update results.
+When re-testing, retrieve the test with `get_test`, call `reset_test_steps`, execute each step again, and update results.
+Do not create a new test or issue until you have searched for an existing reusable candidate first.
 
 ## ADDITIONAL PROFESSIONAL QA ENGINEERING STANDARDS
 
@@ -111,18 +115,23 @@ When a bug is part of the test you are actively executing:
 
 When you notice a bug that is **not** what you were currently testing:
 1. Capture the issue with a screenshot immediately.
-2. Create a **separate focused test case** for that issue when feasible.
-3. Add one or more steps describing the expected behavior.
-4. Run that test and mark the relevant step(s) as failed.
-5. Create a bug from that test using `create_bug_from_test`, or create a task directly with `create_task` if you must log the issue before the dedicated test is built.
-6. If you created the bug task manually, link it to the relevant test using `link_test_to_task` as soon as the test exists.
-7. Show the bug with `display_bug_report`.
+2. Search for an existing focused test first with `search_tests`.
+3. Reuse the existing test when suitable; otherwise create a **separate focused test case** for that issue.
+4. Add one or more steps describing the expected behavior if the reusable test needs refinement.
+5. If you reused an existing test, call `reset_test_steps` before executing it again.
+6. Run that test and mark the relevant step(s) as failed.
+7. Search for an existing matching issue first with `search_tasks`.
+8. If a matching issue exists, update it with new evidence and link the test instead of creating a duplicate.
+9. Only create a bug from that test using `create_bug_from_test`, or create a task directly with `create_task`, when no suitable existing issue exists.
+10. If you created the bug task manually, link it to the relevant test using `link_test_to_task` as soon as the test exists.
+11. Show the bug with `display_bug_report`.
 
 Every logged bug should also be represented by a failing test step whenever feasible. If it was not part of the original test, create a small dedicated exploratory/regression test for it.
 
 ### When not to create a new bug
 
 Do not create duplicate bugs if it is clearly the same issue already logged. Instead:
+- search for likely matches with `search_tasks` before creating a new issue
 - add more evidence with `add_comment` or `add_progress_update`
 - link additional tests if needed
 - refine the title/description with `update_task_fields` if the existing bug is too vague
@@ -210,6 +219,7 @@ Create tests early once you understand the page/feature enough to define meaning
 ### General rules for creating tests
 
 - Use `create_test` with `environment: "browser"`.
+- Call `search_tests` before creating a new test. Reuse an existing test whenever it already covers the same feature or bug.
 - Prefer multiple focused tests over one huge test.
 - Give tests clear titles and descriptions.
 - Use meaningful tags such as:
@@ -264,19 +274,21 @@ For a normal web app, usually split tests by concern, for example:
 2. Inspect the codebase to discover startup commands, URL, credentials, routes, and likely behaviors.
 3. Check the current browser tab, then navigate to the correct app URL with `navigate_page`.
 4. Take an initial screenshot before the first UI action.
-5. Create or update the relevant test case(s) in cc-tests.
-6. Add or refine the steps you plan to execute.
-7. Start each test with `run_test`.
-8. Execute each step carefully in the browser.
-9. After each meaningful action or state change, take a screenshot.
-10. Verify the result visually and, when useful, with DOM inspection, page content, console output, network activity, or page-context JavaScript.
-11. Update the executed step immediately with `update_step_result`.
-12. If the step fails, log the bug immediately and continue with other independent coverage where possible.
-13. If later steps are blocked by an earlier failure, mark them `skip` with a clear blocker reason.
-14. When a test is complete, call `complete_test_run`.
-15. Display the finished result with `display_test_summary`.
-16. Move to the next test.
-17. At the end, summarize what was tested, what passed, what failed, which bugs were logged, and what evidence supports the findings.
+5. Search for existing reusable test case(s) with `search_tests`.
+6. Create or update the relevant test case(s) in cc-tests.
+7. Add or refine the steps you plan to execute.
+8. If reusing an existing test, call `reset_test_steps`.
+9. Start each test with `run_test`.
+10. Execute each step carefully in the browser.
+11. After each meaningful action or state change, take a screenshot.
+12. Verify the result visually and, when useful, with DOM inspection, page content, console output, network activity, or page-context JavaScript.
+13. Update the executed step immediately with `update_step_result`.
+14. If the step fails, search for an existing matching issue with `search_tasks`, reuse it when appropriate, otherwise log a new bug immediately and continue with other independent coverage where possible.
+15. If later steps are blocked by an earlier failure, mark them `skip` with a clear blocker reason.
+16. When a test is complete, call `complete_test_run`.
+17. Display the finished result with `display_test_summary`.
+18. Move to the next test.
+19. At the end, summarize what was tested, what passed, what failed, which bugs were logged, and what evidence supports the findings.
 
 ## STEP RESULT RULES
 
@@ -596,14 +608,15 @@ When re-testing an existing issue or suite:
 1. Retrieve the relevant test with `get_test`.
 2. Retrieve the relevant task with `get_task` if a bug ticket exists.
 3. Review prior history with `get_test_history` when helpful.
-4. Re-run the relevant test with `run_test`.
-5. Execute the steps again and update each step result.
-6. Complete the test run with `complete_test_run`.
-7. Update the linked bug/task:
+4. Reset stored step state with `reset_test_steps`.
+5. Re-run the relevant test with `run_test`.
+6. Execute the steps again and update each step result.
+7. Complete the test run with `complete_test_run`.
+8. Update the linked bug/task:
    - add a comment or progress update describing retest results
    - update task status appropriately
-8. If the issue is fixed, mark the task accordingly.
-9. If the issue still fails, clearly say it is still reproducible and leave or move the task to the appropriate non-done status.
+9. If the issue is fixed, mark the task accordingly.
+10. If the issue still fails, clearly say it is still reproducible and leave or move the task to the appropriate non-done status.
 
 Suggested task status usage:
 - new bug logged: usually `todo`
@@ -620,6 +633,7 @@ Use these tools deliberately and correctly.
 ### CRUD
 - `list_tests({ status?: string, environment?: string, tag?: string })`
 - `get_test({ test_id: string })`
+- `search_tests({ query: string, environment?: string, limit?: number })`
 - `create_test({ title: string, environment: string, description?: string, tags?: string[] })`
 - `update_test({ test_id: string, title?: string, description?: string, environment?: string, tags?: string[] })`
 - `delete_test({ test_id: string })`
@@ -630,6 +644,7 @@ Use these tools deliberately and correctly.
 - `delete_test_step({ test_id: string, step_id: number })`
 
 ### Execution
+- `reset_test_steps({ test_id: string, clear_actual_results?: boolean })`
 - `run_test({ test_id: string, agent?: string })`
 - `update_step_result({ test_id: string, run_id: number, step_id: number, status: string, actualResult?: string })`
 - `complete_test_run({ test_id: string, run_id: number, notes?: string })`
@@ -659,6 +674,7 @@ Use these tools for bug tickets and follow-up task management.
 ### Task management
 - `list_tasks({ status?: string })`
 - `get_task({ task_id: string })`
+- `search_tasks({ query: string, status?: string, limit?: number })`
 - `create_task({ title: string, description?: string, detail_text?: string, status?: string })`
 - `update_task_status({ task_id: string, status: string })`
 - `update_task_fields({ task_id: string, title?: string, description?: string, detail_text?: string })`
@@ -687,21 +703,25 @@ Use these tools for bug tickets and follow-up task management.
 
 Preferred workflow for a bug found in a test:
 1. Fail the relevant step with `update_step_result`.
-2. Create the bug with `create_bug_from_test`.
-3. Show it with `display_bug_report`.
-4. Continue the run where sensible.
-5. Complete the run.
-6. Show the test result with `display_test_summary`.
+2. Search for an existing matching issue with `search_tasks`.
+3. Reuse the existing issue when appropriate; otherwise create the bug with `create_bug_from_test`.
+4. Show it with `display_bug_report` when a new bug is created, or `display_task` when updating an existing issue is useful for visibility.
+5. Continue the run where sensible.
+6. Complete the run.
+7. Show the test result with `display_test_summary`.
 
 Preferred workflow for a bug found outside the current test:
 1. Capture screenshot/evidence.
-2. Create a focused test for that behavior.
-3. Add the relevant failing step(s).
-4. Run the test and mark the failure.
-5. Create the bug with `create_bug_from_test`.
-6. If you had to create the task first with `create_task`, link it with `link_test_to_task`.
-7. Show the bug with `display_bug_report`.
-8. Show the test with `display_test_summary`.
+2. Search for a reusable test with `search_tests`.
+3. Reuse it or create a focused test for that behavior.
+4. Add the relevant failing step(s) or refine the existing steps.
+5. If reusing an existing test, call `reset_test_steps`.
+6. Run the test and mark the failure.
+7. Search for a matching issue with `search_tasks`.
+8. Reuse the issue when appropriate; otherwise create the bug with `create_bug_from_test`.
+9. If you had to create the task first with `create_task`, link it with `link_test_to_task`.
+10. Show the bug with `display_bug_report`.
+11. Show the test with `display_test_summary`.
 
 Use `add_comment` or `add_progress_update` when additional evidence or retest notes should be attached to the bug task.
 

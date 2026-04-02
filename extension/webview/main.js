@@ -783,6 +783,7 @@
   function showTestForm(editTest) {
     if (!testDetailEl) return;
     testDetailEl.style.display = '';
+    testDetailEl.dataset.testId = editTest ? editTest.id : '';
     if (testBoardEl) testBoardEl.style.display = 'none';
 
     const isEdit = !!editTest;
@@ -914,7 +915,7 @@
         retestBtn.addEventListener('click', () => {
           const agentId = editTest.environment === 'computer' ? 'QA' : 'QA-Browser';
           const stepsText = (editTest.steps || []).map((s, i) => `${i + 1}. ${s.description} — Expected: ${s.expectedResult}`).join('\n');
-          const prompt = `Re-test the following test case using the cc-tests MCP tools:\n\nTest: ${editTest.title} (${editTest.id})\nEnvironment: ${editTest.environment}\n\nSteps:\n${stepsText}\n\nInstructions:\n1. Call run_test with test_id "${editTest.id}"\n2. Execute each step and call update_step_result for each\n3. Call complete_test_run when done\n4. If any step fails, use create_bug_from_test to create a bug ticket`;
+          const prompt = `Re-test the following test case using the cc-tests MCP tools:\n\nTest: ${editTest.title} (${editTest.id})\nEnvironment: ${editTest.environment}\n\nSteps:\n${stepsText}\n\nInstructions:\n1. Call get_test with test_id "${editTest.id}"\n2. Call reset_test_steps with test_id "${editTest.id}"\n3. Call run_test with test_id "${editTest.id}"\n4. Execute each step and call update_step_result for each\n5. Call complete_test_run when done\n6. If any step fails, first check linked issues and search_tasks for an existing matching issue before creating a new bug ticket`;
 
           // Switch to correct agent and send
           const targetValue = 'agent-' + agentId;
@@ -1842,9 +1843,12 @@
       const delBtn = document.getElementById('task-delete');
       if (delBtn) {
         delBtn.addEventListener('click', () => {
-          if (confirm('Delete this issue?')) {
+          showConfirm('Delete this issue?', () => {
             vscode.postMessage({ type: 'taskDelete', task_id: t.id });
-          }
+            taskDetail.style.display = 'none';
+            taskDetail.innerHTML = '';
+            renderKanban();
+          });
         });
       }
 

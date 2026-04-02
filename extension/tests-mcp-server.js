@@ -13,6 +13,7 @@
 const fs = require('node:fs');
 const readline = require('node:readline');
 const path = require('node:path');
+const { rankSearchResults } = require('./mcp-search');
 
 const TESTS_FILE = process.env.TESTS_FILE || '';
 const TASKS_FILE = process.env.TASKS_FILE || '';
@@ -64,6 +65,7 @@ const TOOLS = [
   // CRUD
   { name: 'list_tests', description: 'List tests, optionally filtered by status, environment, or tag', inputSchema: { type: 'object', properties: { status: { type: 'string', description: 'Filter: untested, passing, failing, partial' }, environment: { type: 'string', description: 'Filter: browser, computer' }, tag: { type: 'string', description: 'Filter by tag' } } } },
   { name: 'get_test', description: 'Get full test details including steps, runs, and linked tasks', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+  { name: 'search_tests', description: 'Search for likely reusable existing tests before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string' }, environment: { type: 'string', description: 'Optional environment filter: browser or computer' }, limit: { type: 'number', description: 'Maximum results to return (default 5)' } }, required: ['query'] } },
   { name: 'create_test', description: 'Create a new test case', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string', description: 'browser or computer' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['title', 'environment'] } },
   { name: 'update_test', description: 'Update test fields (title, description, environment, tags)', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['test_id'] } },
   { name: 'delete_test', description: 'Delete a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
@@ -73,6 +75,7 @@ const TOOLS = [
   { name: 'delete_test_step', description: 'Delete a step from a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' } }, required: ['test_id', 'step_id'] } },
   // Execution
   { name: 'run_test', description: 'Start a new test run for a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, agent: { type: 'string', description: 'Agent name performing the test' } }, required: ['test_id'] } },
+  { name: 'reset_test_steps', description: 'Reset stored step results on a test before rerunning it', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, clear_actual_results: { type: 'boolean', description: 'Clear stored actual results (default true)' } }, required: ['test_id'] } },
   { name: 'update_step_result', description: 'Record pass/fail result for a step in a test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, step_id: { type: 'number' }, status: { type: 'string', description: 'pass, fail, or skip' }, actualResult: { type: 'string', description: 'Actual result if different from expected' } }, required: ['test_id', 'run_id', 'step_id', 'status'] } },
   { name: 'complete_test_run', description: 'Finalize a test run and compute overall status', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, notes: { type: 'string' } }, required: ['test_id', 'run_id'] } },
   // Linking
@@ -112,6 +115,35 @@ function handleToolCall(name, args) {
       const test = data.tests.find(t => t.id === args.test_id);
       if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
       return JSON.stringify(test, null, 2);
+    }
+
+    case 'search_tests': {
+      let tests = data.tests;
+      if (args.environment) tests = tests.filter(t => t.environment === args.environment);
+      const matches = rankSearchResults(
+        tests,
+        args.query,
+        (test) => ([
+          { label: 'title', value: test.title, weight: 5 },
+          { label: 'description', value: test.description, weight: 3 },
+          { label: 'tags', value: (test.tags || []).join(' '), weight: 2 },
+          { label: 'steps', value: (test.steps || []).map((step) => `${step.description} ${step.expectedResult}`).join(' '), weight: 2 },
+        ]),
+        args.limit || 5
+      );
+      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        environment: item.environment,
+        status: item.status,
+        tags: item.tags || [],
+        steps_count: (item.steps || []).length,
+        lastTestedAt: item.lastTestedAt || null,
+        linkedTaskIds: item.linkedTaskIds || [],
+        match_score: score,
+        match_reason: matchReason,
+      })), null, 2);
     }
 
     case 'create_test': {
@@ -196,6 +228,25 @@ function handleToolCall(name, args) {
       test.updated_at = nowIso();
       saveData(data);
       return JSON.stringify({ run_id: run.id, test_id: test.id, steps_to_test: test.steps.length }, null, 2);
+    }
+
+    case 'reset_test_steps': {
+      const test = data.tests.find(t => t.id === args.test_id);
+      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+      const clearActualResults = args.clear_actual_results !== false;
+      for (const step of (test.steps || [])) {
+        step.status = 'untested';
+        if (clearActualResults) step.actualResult = null;
+      }
+      test.status = 'untested';
+      test.updated_at = nowIso();
+      saveData(data);
+      return JSON.stringify({
+        test_id: test.id,
+        reset_steps: (test.steps || []).length,
+        clear_actual_results: clearActualResults,
+        status: test.status,
+      }, null, 2);
     }
 
     case 'update_step_result': {

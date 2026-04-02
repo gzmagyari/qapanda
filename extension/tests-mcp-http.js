@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createMcpHttpServer } = require('./mcp-http-server');
+const { rankSearchResults } = require('./mcp-search');
 
 // Import tool definitions and handler from the stdio server inline
 // (we duplicate the tool list and handler to keep them in sync)
@@ -26,11 +27,7 @@ function computeOverallStatus(steps) {
   return 'untested';
 }
 
-// Re-export the tool definitions from the stdio server
-const TOOLS = require('./tests-mcp-server.js') === undefined ? [] : []; // Tools are defined inline below
-
-// We need to define tools here since the stdio server's TOOLS aren't easily importable
-// (it auto-starts on require). Instead, we use the same handleToolCall pattern.
+// We define the tools inline here because requiring the stdio server would auto-start it.
 
 let _testsFile = '';
 let _tasksFile = '';
@@ -62,6 +59,7 @@ function saveTasksData(data) {
 const HTTP_TOOLS = [
   { name: 'list_tests', description: 'List tests, optionally filtered', inputSchema: { type: 'object', properties: { status: { type: 'string' }, environment: { type: 'string' }, tag: { type: 'string' } } } },
   { name: 'get_test', description: 'Get full test details', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+  { name: 'search_tests', description: 'Search for likely reusable existing tests before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string' }, environment: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
   { name: 'create_test', description: 'Create a new test case', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['title', 'environment'] } },
   { name: 'update_test', description: 'Update test fields', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['test_id'] } },
   { name: 'delete_test', description: 'Delete a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
@@ -69,6 +67,7 @@ const HTTP_TOOLS = [
   { name: 'update_test_step', description: 'Update step', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'step_id'] } },
   { name: 'delete_test_step', description: 'Delete step', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' } }, required: ['test_id', 'step_id'] } },
   { name: 'run_test', description: 'Start a test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, agent: { type: 'string' } }, required: ['test_id'] } },
+  { name: 'reset_test_steps', description: 'Reset stored step results on a test before rerunning it', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, clear_actual_results: { type: 'boolean' } }, required: ['test_id'] } },
   { name: 'update_step_result', description: 'Record step pass/fail', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, step_id: { type: 'number' }, status: { type: 'string' }, actualResult: { type: 'string' } }, required: ['test_id', 'run_id', 'step_id', 'status'] } },
   { name: 'complete_test_run', description: 'Finalize test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, notes: { type: 'string' } }, required: ['test_id', 'run_id'] } },
   { name: 'link_test_to_task', description: 'Link test to task', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
@@ -86,6 +85,34 @@ function handleToolCall(name, args) {
   switch (name) {
     case 'list_tests': { let tests = data.tests; if (args.status) tests = tests.filter(t => t.status === args.status); if (args.environment) tests = tests.filter(t => t.environment === args.environment); if (args.tag) tests = tests.filter(t => t.tags && t.tags.includes(args.tag)); return JSON.stringify(tests.map(t => ({ id: t.id, title: t.title, description: t.description, environment: t.environment, status: t.status, steps_count: (t.steps||[]).length, steps_passing: (t.steps||[]).filter(s=>s.status==='pass').length, tags: t.tags||[], linkedTaskIds: t.linkedTaskIds||[], lastTestedAt: t.lastTestedAt, created_at: t.created_at })), null, 2); }
     case 'get_test': { const t = data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t,null,2) : JSON.stringify({error:'Not found'}); }
+    case 'search_tests': {
+      let tests = data.tests;
+      if (args.environment) tests = tests.filter(t => t.environment === args.environment);
+      const matches = rankSearchResults(
+        tests,
+        args.query,
+        (test) => ([
+          { label: 'title', value: test.title, weight: 5 },
+          { label: 'description', value: test.description, weight: 3 },
+          { label: 'tags', value: (test.tags || []).join(' '), weight: 2 },
+          { label: 'steps', value: (test.steps || []).map((step) => `${step.description} ${step.expectedResult}`).join(' '), weight: 2 },
+        ]),
+        args.limit || 5
+      );
+      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        environment: item.environment,
+        status: item.status,
+        tags: item.tags || [],
+        steps_count: (item.steps || []).length,
+        lastTestedAt: item.lastTestedAt || null,
+        linkedTaskIds: item.linkedTaskIds || [],
+        match_score: score,
+        match_reason: matchReason,
+      })), null, 2);
+    }
     case 'create_test': { const id='test-'+data.nextId++; const t={id,title:args.title,description:args.description||'',environment:VALID_ENVIRONMENTS.includes(args.environment)?args.environment:'browser',status:'untested',steps:[],linkedTaskIds:[],tags:args.tags||[],lastTestedAt:null,lastTestedBy:null,created_at:nowIso(),updated_at:nowIso(),runs:[]}; data.tests.push(t); saveData(data); return JSON.stringify(t,null,2); }
     case 'update_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t) return JSON.stringify({error:'Not found'}); if(args.title!==undefined)t.title=args.title; if(args.description!==undefined)t.description=args.description; if(args.environment!==undefined&&VALID_ENVIRONMENTS.includes(args.environment))t.environment=args.environment; if(args.tags!==undefined)t.tags=args.tags; t.updated_at=nowIso(); saveData(data); return JSON.stringify(t,null,2); }
     case 'delete_test': { data.tests=data.tests.filter(t=>t.id!==args.test_id); saveData(data); return JSON.stringify({deleted:args.test_id}); }
@@ -93,6 +120,7 @@ function handleToolCall(name, args) {
     case 'update_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s=t.steps.find(s=>s.id===args.step_id); if(!s)return JSON.stringify({error:'Step not found'}); if(args.description!==undefined)s.description=args.description; if(args.expectedResult!==undefined)s.expectedResult=args.expectedResult; t.updated_at=nowIso(); saveData(data); return JSON.stringify(s,null,2); }
     case 'delete_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.steps=t.steps.filter(s=>s.id!==args.step_id); t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({deleted:args.step_id}); }
     case 'run_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r={id:data.nextRunId++,date:nowIso(),agent:args.agent||'agent',status:'running',stepResults:t.steps.map(s=>({stepId:s.id,status:'untested',actualResult:null})),notes:null}; t.runs.push(r); t.lastTestedAt=r.date; t.lastTestedBy=r.agent; t.updated_at=nowIso(); saveData(data); return JSON.stringify({run_id:r.id,test_id:t.id,steps_to_test:t.steps.length},null,2); }
+    case 'reset_test_steps': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const clearActualResults=args.clear_actual_results!==false; for (const s of (t.steps||[])) { s.status='untested'; if (clearActualResults) s.actualResult=null; } t.status='untested'; t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,reset_steps:(t.steps||[]).length,clear_actual_results:clearActualResults,status:t.status},null,2); }
     case 'update_step_result': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); const sr=r.stepResults.find(sr=>sr.stepId===args.step_id); if(!sr)return JSON.stringify({error:'Step not in run'}); if(VALID_STEP_STATUSES.includes(args.status))sr.status=args.status; if(args.actualResult!==undefined)sr.actualResult=args.actualResult; const step=t.steps.find(s=>s.id===args.step_id); if(step){step.status=sr.status; if(args.actualResult!==undefined)step.actualResult=args.actualResult;} t.updated_at=nowIso(); saveData(data); return JSON.stringify({step_id:args.step_id,status:sr.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
     case 'complete_test_run': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); if(args.notes)r.notes=args.notes; const sts=r.stepResults.map(sr=>sr.status); if(sts.every(s=>s==='pass'||s==='skip'))r.status='passing'; else if(sts.every(s=>s==='fail'))r.status='failing'; else if(sts.some(s=>s==='fail'))r.status='partial'; else r.status='untested'; t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,run_id:r.id,status:r.status,test_status:t.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
     case 'link_test_to_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); if(!t.linkedTaskIds)t.linkedTaskIds=[]; if(!t.linkedTaskIds.includes(args.task_id))t.linkedTaskIds.push(args.task_id); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }

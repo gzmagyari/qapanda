@@ -39,6 +39,7 @@ describe('Tasks MCP server (stdio)', () => {
     assert.ok(toolNames.includes('create_task'));
     assert.ok(toolNames.includes('list_tasks'));
     assert.ok(toolNames.includes('get_task'));
+    assert.ok(toolNames.includes('search_tasks'));
     assert.ok(toolNames.includes('update_task_status'));
     assert.ok(toolNames.includes('add_comment'));
     assert.ok(toolNames.includes('delete_task'));
@@ -126,6 +127,24 @@ describe('Tasks MCP server (stdio)', () => {
     assert.equal(tasks[0].title, 'Done task');
   });
 
+  it('searches for likely duplicate issues', async () => {
+    await initMcp(path.join(tmp.ccDir, 'tasks.json'));
+    await mcp.callTool('create_task', {
+      title: 'Login password field missing autocomplete attributes',
+      description: 'Login form lacks autocomplete hints',
+      detail_text: 'Where: /login. Repro: inspect the credential fields.',
+    });
+    await mcp.callTool('create_task', {
+      title: 'Dashboard title mismatch',
+      description: 'Authenticated route has the wrong document title',
+    });
+
+    const res = await mcp.callTool('search_tasks', { query: 'login credential autocomplete missing' });
+    const tasks = JSON.parse(getToolText(res));
+    assert.equal(tasks[0].id, 'task-1');
+    assert.match(tasks[0].match_reason, /Matched/);
+  });
+
   it('adds progress update to a task', async () => {
     await initMcp(path.join(tmp.ccDir, 'tasks.json'));
     const createRes = await mcp.callTool('create_task', { title: 'Progress task' });
@@ -145,8 +164,8 @@ describe('Tasks MCP server (stdio)', () => {
 describe('Tasks MCP server (HTTP)', { timeout: 15000 }, () => {
   let httpServer;
 
-  afterEach(() => {
-    if (httpServer) { httpServer.close(); httpServer = null; }
+  afterEach(async () => {
+    if (httpServer) { await httpServer.close(); httpServer = null; }
   });
 
   it('starts HTTP server and handles CRUD via POST /mcp', async () => {
@@ -180,7 +199,28 @@ describe('Tasks MCP server (HTTP)', { timeout: 15000 }, () => {
     const tasks2 = JSON.parse(listRes2.result.content[0].text);
     assert.equal(tasks2.length, 0);
 
-    stopTasksMcpServer();
+    await httpServer.close();
+    await stopTasksMcpServer();
+    httpServer = null;
+  });
+
+  it('searches tasks via POST /mcp', async () => {
+    const { startTasksMcpServer, stopTasksMcpServer } = require('../../extension/tasks-mcp-http');
+    const { httpPost } = require('../helpers/live-test-utils');
+
+    const tasksFile = path.join(tmp.ccDir, 'tasks-http-search.json');
+    httpServer = await startTasksMcpServer(tasksFile);
+    const baseUrl = `http://127.0.0.1:${httpServer.port}/mcp`;
+
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '1', method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } });
+    await httpPost(baseUrl, { jsonrpc: '2.0', id: '2', method: 'tools/call', params: { name: 'create_task', arguments: { title: 'Forgot password reset link disabled', description: 'Submit button stays disabled on forgot password page' } } });
+
+    const searchRes = await httpPost(baseUrl, { jsonrpc: '2.0', id: '3', method: 'tools/call', params: { name: 'search_tasks', arguments: { query: 'forgot password submit button disabled' } } });
+    const tasks = JSON.parse(searchRes.result.content[0].text);
+    assert.equal(tasks[0].id, 'task-1');
+
+    await httpServer.close();
+    await stopTasksMcpServer();
     httpServer = null;
   });
 });

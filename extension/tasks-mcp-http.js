@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createMcpHttpServer } = require('./mcp-http-server');
+const { rankSearchResults } = require('./mcp-search');
 
 const VALID_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'];
 
@@ -28,6 +29,7 @@ function saveData(tasksFile, data) {
 const TOOLS = [
   { name: 'list_tasks', description: 'List tasks, optionally filtered by status', inputSchema: { type: 'object', properties: { status: { type: 'string', description: 'Filter by status (backlog, todo, in_progress, review, testing, done)' } } } },
   { name: 'get_task', description: 'Get task details by ID, including comments and progress updates', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' } }, required: ['task_id'] } },
+  { name: 'search_tasks', description: 'Search for likely duplicate existing tasks before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search text describing the issue' }, status: { type: 'string', description: 'Optional status filter' }, limit: { type: 'number', description: 'Maximum results to return (default 5)' } }, required: ['query'] } },
   { name: 'create_task', description: 'Create a new task', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Task title' }, description: { type: 'string', description: 'Short description' }, detail_text: { type: 'string', description: 'Detailed notes / acceptance criteria' }, status: { type: 'string', description: 'Initial status (default: todo)' } }, required: ['title'] } },
   { name: 'update_task_status', description: 'Move a task to a new status column', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' }, status: { type: 'string', description: 'New status' } }, required: ['task_id', 'status'] } },
   { name: 'update_task_fields', description: 'Update task title, description, or detail_text', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' }, title: { type: 'string' }, description: { type: 'string' }, detail_text: { type: 'string' } }, required: ['task_id'] } },
@@ -59,6 +61,30 @@ function handleToolCall(tasksFile, name, args) {
       const task = data.tasks.find(t => t.id === args.task_id);
       if (!task) throw new Error(`Task not found: ${args.task_id}`);
       return JSON.stringify(task, null, 2);
+    }
+    case 'search_tasks': {
+      let tasks = data.tasks;
+      if (args.status) tasks = tasks.filter(t => t.status === args.status);
+      const matches = rankSearchResults(
+        tasks,
+        args.query,
+        (task) => ([
+          { label: 'title', value: task.title, weight: 5 },
+          { label: 'description', value: task.description, weight: 3 },
+          { label: 'details', value: task.detail_text, weight: 2 },
+        ]),
+        args.limit || 5
+      );
+      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        status: item.status,
+        updated_at: item.updated_at,
+        linkedTestIds: item.linkedTestIds || [],
+        match_score: score,
+        match_reason: matchReason,
+      })), null, 2);
     }
     case 'create_task': {
       const status = args.status || 'todo';
