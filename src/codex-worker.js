@@ -8,8 +8,7 @@ const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
 const { getOrCreateConnection } = require('./codex-app-server');
-
-const MCP_STARTUP_TIMEOUT_SEC = 30;
+const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 
 /**
  * Build args for Codex used as a worker backend.
@@ -61,10 +60,14 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
     if (!server) continue;
     // Codex uses underscores in MCP names (not hyphens)
     const codexName = name.replace(/-/g, '_');
+    const toolTimeoutSec = mcpToolTimeoutSec(name);
     // HTTP MCP servers
     if (server.url) {
       args.push('-c', `mcp_servers.${codexName}.url="${tomlEsc(server.url)}"`);
       args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+      if (toolTimeoutSec != null) {
+        args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+      }
       continue;
     }
     // Stdio MCP servers
@@ -87,6 +90,9 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
       }
     }
     args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+    if (toolTimeoutSec != null) {
+      args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+    }
   }
 
   // Disable built-in shell when detached-command MCP is available (prevents session hangs)

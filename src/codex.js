@@ -1,11 +1,11 @@
 const { readText, writeText, parsePossiblyFencedJson } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 
-const MCP_STARTUP_TIMEOUT_SEC = 30;
 const { parseJsonLine, mapAppServerNotification, summarizeCodexEvent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 const { getOrCreateConnection } = require('./codex-app-server');
+const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 const { countTranscriptLinesSync } = require('./transcript');
 
 function buildCodexArgs(manifest, loop) {
@@ -58,10 +58,14 @@ function buildCodexArgs(manifest, loop) {
     if (!server) continue;
     // Codex uses underscores in MCP names (not hyphens)
     const codexName = name.replace(/-/g, '_');
+    const toolTimeoutSec = mcpToolTimeoutSec(name);
     // HTTP MCP servers
     if (server.url) {
       args.push('-c', `mcp_servers.${codexName}.url="${tomlEsc(server.url)}"`);
       args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+      if (toolTimeoutSec != null) {
+        args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+      }
       continue;
     }
     // Stdio MCP servers
@@ -77,6 +81,9 @@ function buildCodexArgs(manifest, loop) {
       }
     }
     args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+    if (toolTimeoutSec != null) {
+      args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+    }
   }
 
   // Disable built-in shell when detached-command MCP is available (prevents session hangs)

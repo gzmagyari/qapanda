@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const readline = require('node:readline');
 const { spawnArgs, killProcessTree } = require('./process-utils');
+const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
@@ -269,8 +270,6 @@ class CodexAppServerConnection {
 
 const _connections = new Map(); // runId → CodexAppServerConnection
 
-const MCP_STARTUP_TIMEOUT_SEC = 30;
-
 /**
  * Build -c config flags for MCP servers (same format as codex.js buildCodexArgs).
  * Resolves {CHROME_DEBUG_PORT}, {EXTENSION_DIR}, {REPO_ROOT} placeholders
@@ -283,9 +282,13 @@ function buildMcpConfigArgs(mcpServers, manifest) {
   for (const [name, server] of Object.entries(mcpServers)) {
     if (!server) continue;
     const codexName = name.replace(/-/g, '_');
+    const toolTimeoutSec = mcpToolTimeoutSec(name);
     if (server.url) {
       args.push('-c', `mcp_servers.${codexName}.url="${tomlEsc(server.url)}"`);
       args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+      if (toolTimeoutSec != null) {
+        args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+      }
       continue;
     }
     if (!server.command) continue;
@@ -309,6 +312,9 @@ function buildMcpConfigArgs(mcpServers, manifest) {
       }
     }
     args.push('-c', `mcp_servers.${codexName}.startup_timeout_sec=${MCP_STARTUP_TIMEOUT_SEC}`);
+    if (toolTimeoutSec != null) {
+      args.push('-c', `mcp_servers.${codexName}.tool_timeout_sec=${toolTimeoutSec}`);
+    }
   }
   // Disable built-in shell when detached-command MCP is available
   if (mcpServers['detached-command']) {
@@ -423,6 +429,7 @@ async function closeAllConnections() {
 
 module.exports = {
   CodexAppServerConnection,
+  buildMcpConfigArgs,
   getOrCreateConnection,
   prestartConnection,
   closeConnection,

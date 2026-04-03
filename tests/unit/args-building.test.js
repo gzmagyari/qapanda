@@ -276,6 +276,18 @@ describe('buildCodexArgs', () => {
     assert.ok(hasMcpUrl, 'should have HTTP MCP url in -c flag (with underscores)');
   });
 
+  it('sets a longer tool timeout for cc-agent-delegate', () => {
+    const manifest = baseManifest({
+      controllerMcpServers: {
+        'cc-agent-delegate': { type: 'http', url: 'http://localhost:12345/mcp' },
+      },
+    });
+    const args = buildCodexArgs(manifest, baseLoop());
+    const cFlags = args.filter((a, i) => i > 0 && args[i - 1] === '-c');
+    const hasToolTimeout = cFlags.some((f) => f === 'mcp_servers.cc_agent_delegate.tool_timeout_sec=600');
+    assert.ok(hasToolTimeout, 'should raise tool timeout for agent delegation MCP');
+  });
+
   it('converts hyphens to underscores in MCP names for Codex', () => {
     const manifest = baseManifest({
       controllerMcpServers: {
@@ -361,5 +373,15 @@ describe('buildCodexWorkerArgs', () => {
     const cFlags = args.filter((a, i) => i > 0 && args[i - 1] === '-c');
     const hasShellDisable = cFlags.some(f => f === 'features.shell_tool=false');
     assert.ok(hasShellDisable, 'should disable shell tool');
+  });
+
+  it('sets a longer tool timeout for worker agent delegation MCP', () => {
+    const manifest = baseManifest({
+      workerMcpServers: { 'cc-agent-delegate': { type: 'http', url: 'http://localhost:12345/mcp' } },
+    });
+    const args = buildCodexWorkerArgs(manifest, baseWorkerRecord(), { agentConfig: null, agentSession: null });
+    const cFlags = args.filter((a, i) => i > 0 && args[i - 1] === '-c');
+    const hasToolTimeout = cFlags.some((f) => f === 'mcp_servers.cc_agent_delegate.tool_timeout_sec=600');
+    assert.ok(hasToolTimeout, 'should raise worker tool timeout for agent delegation MCP');
   });
 });

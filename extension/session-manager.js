@@ -76,6 +76,9 @@ class SessionManager {
     this._activeManifest = null;
     this._abortController = null;
     this._running = false;
+    this._activityCounts = { foreground: 0, utility: 0 };
+    this._runningUiState = { value: false, showStop: false };
+    this._executingAgentStack = [];
     this._postMessage = options.postMessage || (() => {});
     this._waitTimer = null;
     // Model/thinking overrides (load from persisted config if available)
@@ -124,6 +127,63 @@ class SessionManager {
     if (this._activeManifest && this._activeManifest.files && this._activeManifest.files.chatLog) {
       this._renderer.chatLogPath = this._activeManifest.files.chatLog;
     }
+  }
+
+  _computeRunningUiState() {
+    if ((this._activityCounts.foreground || 0) > 0) {
+      return { value: true, showStop: true };
+    }
+    if ((this._activityCounts.utility || 0) > 0) {
+      return { value: true, showStop: false };
+    }
+    return { value: false, showStop: false };
+  }
+
+  _syncRunningState(force = false) {
+    const next = this._computeRunningUiState();
+    this._running = next.value;
+    if (!force &&
+        this._runningUiState.value === next.value &&
+        this._runningUiState.showStop === next.showStop) {
+      return;
+    }
+    this._runningUiState = next;
+    this._postMessage({ type: 'running', value: next.value, showStop: next.showStop });
+  }
+
+  _beginActivity(kind = 'foreground') {
+    const key = kind === 'utility' ? 'utility' : 'foreground';
+    this._activityCounts[key] = (this._activityCounts[key] || 0) + 1;
+    this._syncRunningState();
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this._activityCounts[key] = Math.max(0, (this._activityCounts[key] || 0) - 1);
+      this._syncRunningState();
+    };
+  }
+
+  _pushExecutingAgent(agentId) {
+    this._executingAgentStack.push(agentId || null);
+  }
+
+  _popExecutingAgent() {
+    if (this._executingAgentStack.length === 0) return;
+    this._executingAgentStack.pop();
+  }
+
+  _currentExecutingAgentId() {
+    return this._executingAgentStack.length > 0
+      ? this._executingAgentStack[this._executingAgentStack.length - 1]
+      : null;
+  }
+
+  _workerRunHooks() {
+    return {
+      onWorkerStart: (agentId) => this._pushExecutingAgent(agentId),
+      onWorkerEnd: () => this._popExecutingAgent(),
+    };
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
@@ -317,6 +377,10 @@ class SessionManager {
       const available = Object.entries(agents).map(([id, a]) => `${id} (${a.name || id})`).join(', ');
       throw new Error(`Unknown agent "${agentId}". Available agents: ${available}`);
     }
+    const currentAgentId = this._currentExecutingAgentId();
+    if (currentAgentId && agentId === currentAgentId) {
+      throw new Error(`Agent "${agentId}" cannot delegate to itself.`);
+    }
 
     // Save manifest transient state — runDirectWorkerTurn overwrites these
     const savedStatus = this._activeManifest.status;
@@ -325,6 +389,7 @@ class SessionManager {
     const savedWorkerMcpServers = this._activeManifest.workerMcpServers;
 
     this._delegationDepth++;
+    const endActivity = this._beginActivity('foreground');
     try {
       // Setup for the delegated agent (same steps as _runDirectAgent)
       this._syncMcpToManifest(agentId);
@@ -339,6 +404,7 @@ class SessionManager {
         agentId,
         isDelegation: true,
         abortSignal: this._abortController ? this._abortController.signal : undefined,
+        ...this._workerRunHooks(),
       });
 
       // Extract the delegated agent's response
@@ -347,6 +413,7 @@ class SessionManager {
       return resultText;
     } finally {
       this._delegationDepth--;
+      endActivity();
       // Restore manifest state so the calling agent's run isn't corrupted
       if (this._activeManifest) {
         this._activeManifest.status = savedStatus;
@@ -360,11 +427,12 @@ class SessionManager {
   /** Handle a list_agents tool call — return available agents as JSON. */
   _handleListAgents() {
     const agents = this._enabledAgents();
+    const currentAgentId = this._currentExecutingAgentId();
     const list = Object.entries(agents).map(([id, agent]) => ({
       id,
       name: agent.name || id,
       description: agent.description || '',
-    }));
+    })).filter((agent) => agent.id !== currentAgentId);
     return JSON.stringify(list, null, 2);
   }
 
@@ -848,7 +916,7 @@ class SessionManager {
     const label = !this._chatTarget || this._chatTarget === 'controller'
       ? 'Controller session'
       : 'Current agent session';
-    this._postMessage({ type: 'running', value: true, showStop: false });
+    const endActivity = this._beginActivity('utility');
     try {
       const result = await compactApiSessionHistory({
         manifest: this._activeManifest,
@@ -864,7 +932,7 @@ class SessionManager {
       });
       this._renderer.banner(describeCompactionResult(result, label));
     } finally {
-      this._postMessage({ type: 'running', value: false, showStop: false });
+      endActivity();
     }
   }
 
@@ -1595,32 +1663,30 @@ class SessionManager {
     if (this._extensionPath && this._activeManifest) {
       this._activeManifest.extensionDir = this._extensionPath;
     }
-    this._running = true;
+    const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
-    this._postMessage({ type: 'running', value: true });
 
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
         abortSignal: this._abortController.signal,
+        ...this._workerRunHooks(),
       });
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
       await saveManifest(this._activeManifest);
     } finally {
-      this._running = false;
       this._abortController = null;
-      this._postMessage({ type: 'running', value: false });
+      endActivity();
     }
   }
 
   async _runDirectAgent(userMessage, agentId) {
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest(agentId);
-    this._running = true;
+    const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
-    this._postMessage({ type: 'running', value: true });
     await this._ensureChromeIfNeeded(agentId);
     // Ensure extensionDir is always on the manifest for MCP placeholder replacement
     if (this._extensionPath && this._activeManifest) {
@@ -1632,15 +1698,15 @@ class SessionManager {
         userMessage,
         agentId,
         abortSignal: this._abortController.signal,
+        ...this._workerRunHooks(),
       });
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
       await saveManifest(this._activeManifest);
     } finally {
-      this._running = false;
       this._abortController = null;
-      this._postMessage({ type: 'running', value: false });
+      endActivity();
     }
   }
 
@@ -1693,9 +1759,8 @@ class SessionManager {
 
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
-    this._running = true;
+    const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
-    this._postMessage({ type: 'running', value: true });
     try {
       const { runManagerLoop } = require('./src/orchestrator');
       // The user message for the controller is always a neutral "decide next step" instruction.
@@ -1708,6 +1773,7 @@ class SessionManager {
         abortSignal: this._abortController.signal,
         singlePass: true,
         controllerLabel: 'Continue',
+        ...this._workerRunHooks(),
       });
       await saveManifest(this._activeManifest);
       // If loop mode is on and the run didn't stop, auto-continue
@@ -1718,9 +1784,8 @@ class SessionManager {
       // Restore original prompt and controller session ID
       this._activeManifest.controllerSystemPrompt = originalPrompt;
       this._activeManifest.controller.sessionId = savedControllerSessionId;
-      this._running = false;
       this._abortController = null;
-      this._postMessage({ type: 'running', value: false });
+      endActivity();
     }
   }
 
@@ -1780,9 +1845,8 @@ class SessionManager {
   async _runLoop(options) {
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
-    this._running = true;
+    const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
-    this._postMessage({ type: 'running', value: true });
 
     const delayMs = parseWaitDelay(this._waitDelay);
     const useSinglePass = Boolean(delayMs && options.singlePass !== false);
@@ -1792,15 +1856,15 @@ class SessionManager {
         ...options,
         singlePass: useSinglePass || options.singlePass,
         abortSignal: this._abortController.signal,
+        ...this._workerRunHooks(),
       });
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
       await saveManifest(this._activeManifest);
     } finally {
-      this._running = false;
       this._abortController = null;
-      this._postMessage({ type: 'running', value: false });
+      endActivity();
     }
   }
 

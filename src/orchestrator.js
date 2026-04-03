@@ -503,35 +503,45 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
       const activityLog = createActivityLog();
       workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
-      const workerResult = await runWorkerWithTracking(runWorker, {
-        manifest,
-        request,
-        loop,
-        workerRecord,
-        prompt: controllerResult.decision.claude_message,
-        agentId: controllerResult.decision.agent_id || null,
-        renderer,
-        abortSignal: signalController.signal,
-        emitEvent: async (event) => {
-          if (event.rawLine && workerRecord.stdoutFile) {
-            await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
-          }
-          if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
-            await appendJsonl(workerRecord.stderrFile, { text: event.text });
-          }
-          activityLog.feed(event.parsed);
-          await emitEvent(manifest, event, renderer);
-          await appendBackendTranscriptEvent(manifest, event, {
-            sessionKey: workerMeta.sessionKey,
-            backend: workerMeta.backend,
-            requestId: request.id,
-            loopIndex: loop.index,
-            agentId: workerMeta.agentId,
-            workerCli: workerMeta.workerCli,
-          });
-        },
-      });
-      activityLog.finish();
+      let workerResult;
+      if (typeof options.onWorkerStart === 'function') {
+        await options.onWorkerStart(controllerResult.decision.agent_id || null);
+      }
+      try {
+        workerResult = await runWorkerWithTracking(runWorker, {
+          manifest,
+          request,
+          loop,
+          workerRecord,
+          prompt: controllerResult.decision.claude_message,
+          agentId: controllerResult.decision.agent_id || null,
+          renderer,
+          abortSignal: signalController.signal,
+          emitEvent: async (event) => {
+            if (event.rawLine && workerRecord.stdoutFile) {
+              await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            }
+            if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
+              await appendJsonl(workerRecord.stderrFile, { text: event.text });
+            }
+            activityLog.feed(event.parsed);
+            await emitEvent(manifest, event, renderer);
+            await appendBackendTranscriptEvent(manifest, event, {
+              sessionKey: workerMeta.sessionKey,
+              backend: workerMeta.backend,
+              requestId: request.id,
+              loopIndex: loop.index,
+              agentId: workerMeta.agentId,
+              workerCli: workerMeta.workerCli,
+            });
+          },
+        });
+        activityLog.finish();
+      } finally {
+        if (typeof options.onWorkerEnd === 'function') {
+          await options.onWorkerEnd(controllerResult.decision.agent_id || null);
+        }
+      }
 
       if (delegateCli !== 'api') {
         await appendTranscript(manifest, {
@@ -714,35 +724,45 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     const activityLog = createActivityLog();
     workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
 
-    const workerResult = await runWorkerWithTracking(runWorker, {
-      manifest,
-      request,
-      loop,
-      workerRecord,
-      prompt: userMessage,
-      agentId,
-      renderer,
-      abortSignal: signalController.signal,
-      emitEvent: async (event) => {
-        if (event.rawLine && workerRecord.stdoutFile) {
-          await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
-        }
-        if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
-          await appendJsonl(workerRecord.stderrFile, { text: event.text });
-        }
-        activityLog.feed(event.parsed);
-        await emitEvent(manifest, event, renderer);
-        await appendBackendTranscriptEvent(manifest, event, {
-          sessionKey: workerMeta.sessionKey,
-          backend: workerMeta.backend,
-          requestId: request.id,
-          loopIndex: loop.index,
-          agentId: workerMeta.agentId,
-          workerCli: workerMeta.workerCli,
-        });
-      },
-    });
-    activityLog.finish();
+    let workerResult;
+    if (typeof options.onWorkerStart === 'function') {
+      await options.onWorkerStart(agentId);
+    }
+    try {
+      workerResult = await runWorkerWithTracking(runWorker, {
+        manifest,
+        request,
+        loop,
+        workerRecord,
+        prompt: userMessage,
+        agentId,
+        renderer,
+        abortSignal: signalController.signal,
+        emitEvent: async (event) => {
+          if (event.rawLine && workerRecord.stdoutFile) {
+            await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+          }
+          if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
+            await appendJsonl(workerRecord.stderrFile, { text: event.text });
+          }
+          activityLog.feed(event.parsed);
+          await emitEvent(manifest, event, renderer);
+          await appendBackendTranscriptEvent(manifest, event, {
+            sessionKey: workerMeta.sessionKey,
+            backend: workerMeta.backend,
+            requestId: request.id,
+            loopIndex: loop.index,
+            agentId: workerMeta.agentId,
+            workerCli: workerMeta.workerCli,
+          });
+        },
+      });
+      activityLog.finish();
+    } finally {
+      if (typeof options.onWorkerEnd === 'function') {
+        await options.onWorkerEnd(agentId);
+      }
+    }
 
     if (workerMeta.workerCli !== 'api') {
       await appendTranscript(manifest, {
@@ -957,26 +977,36 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
       });
       syncControllerTranscriptCursor(manifest);
 
-      const workerResult = await runWorkerWithTracking(runWorker, {
-        manifest, request, loop, workerRecord,
-        prompt: delegateMessage,
-        agentId: delegateAgentId,
-        renderer,
-        abortSignal: signalController.signal,
-        emitEvent: async (event) => {
-          if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
-          if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
-          await emitEvent(manifest, event, renderer);
-          await appendBackendTranscriptEvent(manifest, event, {
-            sessionKey: workerMeta.sessionKey,
-            backend: workerMeta.backend,
-            requestId: request.id,
-            loopIndex: loop.index,
-            agentId: workerMeta.agentId,
-            workerCli: workerMeta.workerCli,
-          });
-        },
-      });
+      let workerResult;
+      if (typeof options.onWorkerStart === 'function') {
+        await options.onWorkerStart(delegateAgentId);
+      }
+      try {
+        workerResult = await runWorkerWithTracking(runWorker, {
+          manifest, request, loop, workerRecord,
+          prompt: delegateMessage,
+          agentId: delegateAgentId,
+          renderer,
+          abortSignal: signalController.signal,
+          emitEvent: async (event) => {
+            if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
+            await emitEvent(manifest, event, renderer);
+            await appendBackendTranscriptEvent(manifest, event, {
+              sessionKey: workerMeta.sessionKey,
+              backend: workerMeta.backend,
+              requestId: request.id,
+              loopIndex: loop.index,
+              agentId: workerMeta.agentId,
+              workerCli: workerMeta.workerCli,
+            });
+          },
+        });
+      } finally {
+        if (typeof options.onWorkerEnd === 'function') {
+          await options.onWorkerEnd(delegateAgentId);
+        }
+      }
 
       if (workerMeta.workerCli !== 'api') {
         await appendTranscript(manifest, {

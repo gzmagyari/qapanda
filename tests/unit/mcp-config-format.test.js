@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { buildClaudeArgs } = require('../../src/claude');
 const { buildCodexArgs } = require('../../src/codex');
+const { buildMcpConfigArgs } = require('../../src/codex-app-server');
 
 const EXTENSION_DIR = path.resolve(__dirname, '../../extension');
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -194,5 +195,14 @@ describe('Codex -c MCP TOML format', () => {
     const envFlag = cFlags.find(f => f.includes('env.PATH_VAR'));
     assert.ok(envFlag, 'should have env flag');
     assert.ok(envFlag.includes('"'), 'env value should be quoted');
+  });
+
+  it('app-server config adds a longer tool timeout for cc-agent-delegate', () => {
+    const flags = buildMcpConfigArgs({
+      'cc-agent-delegate': { type: 'http', url: 'http://localhost:8080/mcp' },
+    }, baseManifest());
+    const cFlags = flags.filter((a, i) => i > 0 && flags[i - 1] === '-c');
+    const hasToolTimeout = cFlags.some((f) => f === 'mcp_servers.cc_agent_delegate.tool_timeout_sec=600');
+    assert.ok(hasToolTimeout, 'should raise app-server tool timeout for agent delegation MCP');
   });
 });
