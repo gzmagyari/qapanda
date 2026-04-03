@@ -537,7 +537,10 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
       await conn.resumeThread(agentSession.appServerThreadId);
     }
 
-    await conn.startTurn(stdinText);
+    await conn.startTurn(stdinText, undefined, {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
     await turnCompletePromise;
   } finally {
     if (abortSignal && abortHandler) {

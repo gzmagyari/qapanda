@@ -180,13 +180,15 @@ class CodexAppServerConnection {
   /**
    * Start a turn on the current thread.
    */
-  async startTurn(inputText, outputSchema) {
+  async startTurn(inputText, outputSchema, options = {}) {
     if (!this._threadId) throw new Error('No active thread');
+    const approvalPolicy = options.approvalPolicy || 'never';
     const params = {
       threadId: this._threadId,
       input: [{ type: 'text', text: inputText }],
-      approvalPolicy: 'never',
+      approvalPolicy,
     };
+    if (options.sandbox) params.sandbox = options.sandbox;
     if (outputSchema) params.outputSchema = outputSchema;
     const result = await this.sendRequest('turn/start', params);
     this._turnId = result.turn.id;

@@ -296,7 +296,10 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
     }
 
     // Start the turn with the controller prompt
-    await conn.startTurn(prompt, controllerDecisionSchema);
+    await conn.startTurn(prompt, controllerDecisionSchema, {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
 
     // Wait for turn to complete
     await turnCompletePromise;
