@@ -3,6 +3,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
 const {
+  isAppInfoEnabled,
+  isMemoryEnabled,
+  loadAppInfo,
+  loadMemory,
+} = require('./project-context');
+const {
   buildMergedRunView,
   hasTranscriptV2,
   readTranscriptEntriesSync,
@@ -158,6 +164,50 @@ function loadCcManagerMd(repoRoot) {
     }
   }
   return null;
+}
+
+function inferRepoRootFromPromptsDirs(promptsDirs) {
+  for (const dir of promptsDirs || []) {
+    if (!dir) continue;
+    const parent = path.dirname(dir);
+    if (path.basename(parent) === '.qpanda') {
+      return path.dirname(parent);
+    }
+  }
+  return null;
+}
+
+function buildProjectContextSections(repoRoot, opts = {}) {
+  if (!repoRoot) return [];
+  const sections = [];
+
+  if (isAppInfoEnabled(repoRoot)) {
+    const appInfo = loadAppInfo(repoRoot).trim();
+    if (appInfo) {
+      sections.push(`Project App Info:\n${appInfo}`);
+    }
+  }
+
+  const memoryEnabled = isMemoryEnabled(repoRoot);
+  if (memoryEnabled) {
+    const memory = loadMemory(repoRoot).trim();
+    if (memory) {
+      sections.push(`Project Memory:\n${memory}`);
+    }
+    if (opts.includeMemoryGuidance) {
+      sections.push([
+        'Project Memory guidance:',
+        '- Consult Project Memory before re-discovering stable project or app facts.',
+        '- Save durable knowledge there when it will help future work.',
+        '- At the end of a substantial task or session, proactively update Project Memory with durable facts learned; do not wait for the user to ask.',
+        '- Keep memory concise and high-signal: stable URLs, credentials usage notes, verified behaviors, navigation structure, feature relationships, and hard-won knowledge about how to use or test the app effectively.',
+        '- Edit, condense, and reorganize memory instead of endlessly appending to it.',
+        '- Do not dump long transcripts or transient step-by-step notes into memory.',
+      ].join('\n'));
+    }
+  }
+
+  return sections;
 }
 
 /**
@@ -323,6 +373,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
     loadCcManagerMd(manifest.repoRoot),
+    ...buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true }),
     manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),
@@ -436,6 +487,7 @@ function buildControllerPrompt(manifest, request) {
       ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
       : null,
     loadCcManagerMd(manifest.repoRoot),
+    ...buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true }),
     manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),
@@ -479,6 +531,7 @@ function buildAgentWorkerSystemPrompt(agentConfig, opts, promptsDirs) {
   let prompt = (agentConfig && agentConfig.system_prompt)
     ? agentConfig.system_prompt
     : buildDefaultWorkerAppendSystemPrompt();
+  const repoRoot = (opts && opts.repoRoot) || inferRepoRootFromPromptsDirs(promptsDirs);
   if (promptsDirs) {
     const { expandPromptTags } = require('./prompt-tags');
     prompt = expandPromptTags(prompt, promptsDirs);
@@ -486,6 +539,10 @@ function buildAgentWorkerSystemPrompt(agentConfig, opts, promptsDirs) {
   if (opts && opts.selfTesting) {
     const isQaBrowser = agentConfig && (agentConfig.name || '').toLowerCase().includes('browser');
     prompt += '\n' + buildSelfTestingPrompt(isQaBrowser ? 'qa-browser' : 'agent', opts.selfTestPrompts);
+  }
+  const projectSections = buildProjectContextSections(repoRoot, { includeMemoryGuidance: true });
+  if (projectSections.length > 0) {
+    prompt += '\n\n' + projectSections.join('\n\n');
   }
   return prompt;
 }
@@ -496,6 +553,10 @@ function buildAgentWorkerSystemPrompt(agentConfig, opts, promptsDirs) {
  */
 function buildCopilotBasePrompt(opts) {
   const selfTestSection = (opts && opts.selfTesting) ? '\n' + buildSelfTestingPrompt('controller', opts.selfTestPrompts) + '\n' : '';
+  const projectContextSections = buildProjectContextSections(opts && opts.repoRoot, { includeMemoryGuidance: true });
+  const projectContextSection = projectContextSections.length > 0
+    ? '\n' + projectContextSections.join('\n\n') + '\n'
+    : '\n';
   return `You are a copilot that drives work forward by giving an AI agent its next task.${selfTestSection}
 
 Your output is JSON with these fields:
@@ -514,6 +575,7 @@ KEY PRINCIPLES:
 5. If the agent finished work, tell it to VERIFY (run tests, review changes).
 6. If work is verified and complete, stop.
 
+${projectContextSection}
 FULL EXAMPLE — Development flow (agent_id: "dev"):
 
 Transcript so far:

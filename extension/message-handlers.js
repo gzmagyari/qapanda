@@ -9,6 +9,14 @@ const os = require('node:os');
 const { globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadMergedAgents } = require('./agents-store');
 const { loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store');
 const { listInstances, stopInstance, restartInstance, ensureDesktop, getSnapshotExists } = require('./src/remote-desktop');
+const {
+  loadProjectConfig,
+  saveProjectConfig,
+  loadAppInfo,
+  saveAppInfo,
+  loadMemory,
+  saveMemory,
+} = require('./src/project-context');
 
 // ── MCP config file helpers ─────────────────────────────────────────
 function globalMcpPath() {
@@ -41,18 +49,49 @@ function loadMergedMcpServers(repoRoot) {
 
 // ── Instance config helpers ──────────────────────────────────────────
 function loadInstanceConfig(repoRoot) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(repoRoot, '.qpanda', 'config.json'), 'utf8'));
-  } catch {
-    return {};
-  }
+  return loadProjectConfig(repoRoot);
 }
 
 function saveInstanceConfig(repoRoot, data) {
-  const dir = path.join(repoRoot, '.qpanda');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const existing = loadInstanceConfig(repoRoot);
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ ...existing, ...data }, null, 2), 'utf8');
+  saveProjectConfig(repoRoot, data);
+}
+
+function handleProjectContextMessage(msg, repoRoot) {
+  if (msg.type === 'appInfoLoad') {
+    return {
+      type: 'appInfoData',
+      content: loadAppInfo(repoRoot),
+      enabled: loadProjectConfig(repoRoot).appInfoEnabled !== false,
+    };
+  }
+  if (msg.type === 'appInfoSave') {
+    const content = saveAppInfo(repoRoot, msg.content || '');
+    const config = saveProjectConfig(repoRoot, { appInfoEnabled: msg.enabled !== false });
+    return {
+      type: 'appInfoData',
+      content,
+      enabled: config.appInfoEnabled !== false,
+      saved: true,
+    };
+  }
+  if (msg.type === 'memoryLoad') {
+    return {
+      type: 'memoryData',
+      content: loadMemory(repoRoot),
+      enabled: loadProjectConfig(repoRoot).memoryEnabled !== false,
+    };
+  }
+  if (msg.type === 'memorySave') {
+    const content = saveMemory(repoRoot, msg.content || '');
+    const config = saveProjectConfig(repoRoot, { memoryEnabled: msg.enabled !== false });
+    return {
+      type: 'memoryData',
+      content,
+      enabled: config.memoryEnabled !== false,
+      saved: true,
+    };
+  }
+  return null;
 }
 
 // ── Tasks file helpers ───────────────────────────────────────────────
@@ -396,6 +435,7 @@ module.exports = {
   loadMergedMcpServers,
   loadInstanceConfig,
   saveInstanceConfig,
+  handleProjectContextMessage,
   handleTaskMessage,
   handleTestMessage,
   handleAgentMessage,

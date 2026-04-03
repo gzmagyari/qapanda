@@ -39,6 +39,8 @@
     agent: document.getElementById('tab-agent'),
     tasks: document.getElementById('tab-tasks'),
     tests: document.getElementById('tab-tests'),
+    appinfo: document.getElementById('tab-appinfo'),
+    memory: document.getElementById('tab-memory'),
     agents: document.getElementById('tab-agents'),
     mcp: document.getElementById('tab-mcp'),
     instances: document.getElementById('tab-instances'),
@@ -59,6 +61,8 @@
     }
     if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
     if (tab === 'tests') vscode.postMessage({ type: 'testsLoad' });
+    if (tab === 'appinfo') vscode.postMessage({ type: 'appInfoLoad' });
+    if (tab === 'memory') vscode.postMessage({ type: 'memoryLoad' });
     if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
     if (tab === 'instances') {
       instancesActionId++;
@@ -90,6 +94,14 @@
   const settingPromptAgent = document.getElementById('setting-prompt-agent');
   const settingsPromptsSave = document.getElementById('settings-prompts-save');
   const settingsPromptsReset = document.getElementById('settings-prompts-reset');
+  const appInfoText = document.getElementById('app-info-text');
+  const appInfoEnabled = document.getElementById('app-info-enabled');
+  const appInfoSave = document.getElementById('app-info-save');
+  const appInfoStatus = document.getElementById('app-info-status');
+  const memoryText = document.getElementById('memory-text');
+  const memoryEnabled = document.getElementById('memory-enabled');
+  const memorySave = document.getElementById('memory-save');
+  const memoryStatus = document.getElementById('memory-status');
 
   const promptsExpander = document.getElementById('settings-prompts-expander');
   const promptsContent = document.getElementById('settings-prompts-content');
@@ -147,6 +159,33 @@
       updateControllerDropdowns(); // refresh warning
     });
   });
+
+  function setProjectDocStatus(kind, text) {
+    const el = kind === 'appInfo' ? appInfoStatus : memoryStatus;
+    if (el) el.textContent = text || '';
+  }
+
+  if (appInfoSave) {
+    appInfoSave.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'appInfoSave',
+        content: appInfoText ? appInfoText.value : '',
+        enabled: appInfoEnabled ? appInfoEnabled.checked : true,
+      });
+      setProjectDocStatus('appInfo', 'Saved.');
+    });
+  }
+
+  if (memorySave) {
+    memorySave.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'memorySave',
+        content: memoryText ? memoryText.value : '',
+        enabled: memoryEnabled ? memoryEnabled.checked : true,
+      });
+      setProjectDocStatus('memory', 'Saved.');
+    });
+  }
 
   // ── MCP Server Management ─────────────────────────────────────────
   let mcpGlobal = {};
@@ -5279,6 +5318,18 @@
       });
       // Re-evaluate warnings
       updateControllerDropdowns();
+    },
+
+    appInfoData(msg) {
+      if (appInfoText) appInfoText.value = msg.content || '';
+      if (appInfoEnabled) appInfoEnabled.checked = msg.enabled !== false;
+      setProjectDocStatus('appInfo', msg.saved ? 'Saved.' : '');
+    },
+
+    memoryData(msg) {
+      if (memoryText) memoryText.value = msg.content || '';
+      if (memoryEnabled) memoryEnabled.checked = msg.enabled !== false;
+      setProjectDocStatus('memory', msg.saved ? 'Saved.' : '');
     },
 
     dependencyMissing(msg) {

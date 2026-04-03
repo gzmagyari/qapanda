@@ -36,6 +36,9 @@ Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal 
 
 ## Hot Updates
 
+**2026-04-03**  
+- 🧠 Added built-in **App Info** and **Memory** tabs so agents can inherit repo-local app facts and learned testing context across sessions.
+
 **2026-04-01**  
 Latest updates. See the full history in the
 [GitHub changelog](https://github.com/gzmagyari/qapanda/blob/main/extension/CHANGELOG.md).

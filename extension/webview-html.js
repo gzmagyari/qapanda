@@ -29,6 +29,8 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
       <button class="tab-btn active" data-tab="agent">Agent</button>
       <button class="tab-btn" data-tab="tasks">Issues</button>
       <button class="tab-btn" data-tab="tests">Tests</button>
+      <button class="tab-btn" data-tab="appinfo">App Info</button>
+      <button class="tab-btn" data-tab="memory">Memory</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="mcp">MCP Servers</button>
       <button class="tab-btn" data-tab="instances">Instances</button>
@@ -211,6 +213,52 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
       <div id="test-board" class="test-board"></div>
       <div id="test-detail" class="test-detail"></div>
     </div><!-- /tab-tests -->
+
+    <div id="tab-appinfo" class="tab-hidden">
+      <div class="project-doc-panel">
+        <div class="project-doc-header">
+          <div>
+            <h3>Project App Info</h3>
+            <span class="project-doc-path">.qpanda/APPINFO.md</span>
+          </div>
+          <label class="project-doc-toggle">
+            <input type="checkbox" id="app-info-enabled" checked />
+            Inject into agent prompts
+          </label>
+        </div>
+        <p class="project-doc-help">
+          App Info is for user-provided facts about the app, such as URLs, credentials, environments, and other repo-local information you want every agent to know.
+        </p>
+        <textarea id="app-info-text" class="project-doc-textarea" rows="24" spellcheck="false" placeholder="App URL, credentials, API keys, environments, notes, and other repo-local information."></textarea>
+        <div class="project-doc-actions">
+          <button class="mcp-btn mcp-btn-primary" id="app-info-save">Save App Info</button>
+          <span class="project-doc-status" id="app-info-status"></span>
+        </div>
+      </div>
+    </div><!-- /tab-appinfo -->
+
+    <div id="tab-memory" class="tab-hidden">
+      <div class="project-doc-panel">
+        <div class="project-doc-header">
+          <div>
+            <h3>Project Memory</h3>
+            <span class="project-doc-path">.qpanda/MEMORY.md</span>
+          </div>
+          <label class="project-doc-toggle">
+            <input type="checkbox" id="memory-enabled" checked />
+            Inject prompts + enable memory MCP
+          </label>
+        </div>
+        <p class="project-doc-help">
+          Memory stores durable facts the agent learns about how the app works and how to use or test it effectively. Agents may update it automatically, and you can edit it manually too.
+        </p>
+        <textarea id="memory-text" class="project-doc-textarea" rows="24" spellcheck="false" placeholder="Long-term project memory edited by humans and agents."></textarea>
+        <div class="project-doc-actions">
+          <button class="mcp-btn mcp-btn-primary" id="memory-save">Save Memory</button>
+          <span class="project-doc-status" id="memory-status"></span>
+        </div>
+      </div>
+    </div><!-- /tab-memory -->
 
     <div id="tab-agents" class="tab-hidden">
       <div class="mcp-container">

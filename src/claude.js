@@ -3,7 +3,7 @@ const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent, summarizeClaudeEvent } = require('./events');
 const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = require('./prompts');
-const { expandPromptTags, buildPromptsDirs } = require('./prompt-tags');
+const { buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
@@ -139,17 +139,18 @@ function buildClaudeArgs(manifest, options = {}) {
   const selfTestOpts = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
   const _promptsDirs = buildPromptsDirs(manifest.repoRoot);
   if (agentConfig && agentConfig.system_prompt) {
-    let sysPrompt = expandPromptTags(agentConfig.system_prompt, _promptsDirs);
-    if (selfTestOpts) {
-      const { buildSelfTestingPrompt } = require('./prompts');
-      const isQaBrowser = (agentConfig.name || '').toLowerCase().includes('browser');
-      sysPrompt += '\n' + buildSelfTestingPrompt(isQaBrowser ? 'qa-browser' : 'agent', manifest.selfTestPrompts);
-    }
+    const sysPrompt = buildAgentWorkerSystemPrompt(
+      agentConfig,
+      selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+      _promptsDirs
+    );
     args.push('--system-prompt', sysPrompt);
   } else {
-    const appendSystemPrompt = agentConfig
-      ? buildAgentWorkerSystemPrompt(agentConfig, selfTestOpts, _promptsDirs)
-      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
+    const appendSystemPrompt = buildAgentWorkerSystemPrompt(
+      agentConfig,
+      selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+      _promptsDirs
+    ) || manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt();
     if (appendSystemPrompt) {
       args.push('--append-system-prompt', appendSystemPrompt);
     }
@@ -447,17 +448,18 @@ function buildInteractiveArgs(manifest, options = {}) {
   const selfTestOpts2 = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
   const _promptsDirs2 = buildPromptsDirs(manifest.repoRoot);
   if (agentConfig && agentConfig.system_prompt) {
-    let sysPrompt2 = expandPromptTags(agentConfig.system_prompt, _promptsDirs2);
-    if (selfTestOpts2) {
-      const { buildSelfTestingPrompt: bst } = require('./prompts');
-      const isQa = (agentConfig.name || '').toLowerCase().includes('browser');
-      sysPrompt2 += '\n' + bst(isQa ? 'qa-browser' : 'agent', manifest.selfTestPrompts);
-    }
+    const sysPrompt2 = buildAgentWorkerSystemPrompt(
+      agentConfig,
+      selfTestOpts2 ? { ...selfTestOpts2, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+      _promptsDirs2
+    );
     args.push('--system-prompt', sysPrompt2);
   } else {
-    const appendSystemPrompt = agentConfig
-      ? buildAgentWorkerSystemPrompt(agentConfig, selfTestOpts2, _promptsDirs2)
-      : (manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt());
+    const appendSystemPrompt = buildAgentWorkerSystemPrompt(
+      agentConfig,
+      selfTestOpts2 ? { ...selfTestOpts2, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+      _promptsDirs2
+    ) || manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt();
     if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
   }
 

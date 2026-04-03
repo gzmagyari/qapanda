@@ -99,6 +99,7 @@ class SessionManager {
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
     this._chromePort = null;
+    this._memoryMcpPort = null;
     // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
     try {
       const { setQaDesktopPath } = require('./src/remote-desktop');
@@ -262,6 +263,7 @@ class SessionManager {
 
   /** Return servers visible to a given role, stripped of the target field. */
   _mcpServersForRole(role, isRemote = false) {
+    const { isMemoryEnabled } = require('./src/project-context');
     const result = {};
     const all = { ...this._mcpData.global, ...this._mcpData.project };
     for (const [name, server] of Object.entries(all)) {
@@ -296,6 +298,17 @@ class SessionManager {
           TASKS_FILE: path.join(this._repoRoot, '.qpanda', 'tasks.json'),
         },
       };
+    }
+    if (isMemoryEnabled(this._repoRoot)) {
+      if (this._memoryMcpPort) {
+        result['cc-memory'] = { type: 'http', url: `http://${mcpHost}:${this._memoryMcpPort}/mcp` };
+      } else if (this._extensionPath) {
+        result['cc-memory'] = {
+          command: 'node',
+          args: [path.join(this._extensionPath, 'memory-mcp-server.js')],
+          env: { MEMORY_FILE: path.join(this._repoRoot, '.qpanda', 'MEMORY.md') },
+        };
+      }
     }
     if (this._qaDesktopMcpPort && require('./src/feature-flags').getFlag('enableRemoteDesktop')) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
@@ -1791,7 +1804,7 @@ class SessionManager {
 
   /** Base copilot prompt — delegates to shared builder in prompts.js */
   _buildCopilotBasePrompt() {
-    return buildCopilotBasePrompt({ selfTesting: this._selfTesting });
+    return buildCopilotBasePrompt({ selfTesting: this._selfTesting, repoRoot: this._repoRoot });
   }
 
   /** Continue directive — delegates to shared builder in prompts.js */

@@ -50,6 +50,9 @@ Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</str
 
 ## Hot Updates
 
+**2026-04-03**  
+- 🧠 Added repo-local **App Info** and **Memory** so agents can start with user-provided app facts and preserve learned workflow context across sessions.
+
 **2026-04-01**  
 Latest updates. See the full history in [CHANGELOG.md](./CHANGELOG.md).
 

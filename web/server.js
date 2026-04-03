@@ -31,6 +31,7 @@ const { loadSettings, saveSettings } = require(path.join(EXTENSION_DIR, 'setting
 const { buildSelfTestingPrompt } = require(path.join(__dirname, '..', 'src', 'prompts'));
 const { startTasksMcpServer } = require(path.join(EXTENSION_DIR, 'tasks-mcp-http'));
 const { startTestsMcpServer } = require(path.join(EXTENSION_DIR, 'tests-mcp-http'));
+const { startMemoryMcpServer } = require(path.join(EXTENSION_DIR, 'memory-mcp-http'));
 const { startQaDesktopMcpServer } = require(path.join(EXTENSION_DIR, 'qa-desktop-mcp-server'));
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ const MIME = {
 // ── MCP HTTP servers (started once, shared across sessions) ──────────
 let _tasksMcpPort = null;
 let _testsMcpPort = null;
+let _memoryMcpPort = null;
 let _qaDesktopMcpPort = null;
 
 async function startMcpServers() {
@@ -67,6 +69,11 @@ async function startMcpServers() {
     _testsMcpPort = r.port;
     console.log(`  Tests MCP on port ${r.port}`);
   } catch (e) { console.error('Failed to start tests MCP:', e.message); }
+  try {
+    const r = await startMemoryMcpServer(path.join(repoRoot, '.qpanda', 'MEMORY.md'));
+    _memoryMcpPort = r.port;
+    console.log(`  Memory MCP on port ${r.port}`);
+  } catch (e) { console.error('Failed to start memory MCP:', e.message); }
   try {
     const r = await startQaDesktopMcpServer(repoRoot);
     _qaDesktopMcpPort = r.port;
@@ -153,6 +160,7 @@ wss.on('connection', (ws) => {
   });
   session._tasksMcpPort = _tasksMcpPort;
   session._testsMcpPort = _testsMcpPort;
+  session._memoryMcpPort = _memoryMcpPort;
   session._qaDesktopMcpPort = _qaDesktopMcpPort;
   session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
   session.setAgents(loadMergedAgents(repoRoot, extensionPath));
@@ -247,6 +255,8 @@ wss.on('connection', (ws) => {
     }
 
     // ── Panel title (no-op in web) ──
+    const projectContextReply = handlers.handleProjectContextMessage(msg, repoRoot);
+    if (projectContextReply) { postMessage(projectContextReply); return; }
     if (msg.type === 'setPanelTitle') return;
 
     // ── CRUD handlers ──

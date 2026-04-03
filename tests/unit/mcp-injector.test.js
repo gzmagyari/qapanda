@@ -1,7 +1,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const { mcpServersForRole, findDetachedCommandPath, findTasksMcpPath } = require('../../src/mcp-injector');
+const { mcpServersForRole, findDetachedCommandPath, findTasksMcpPath, findMemoryMcpPath } = require('../../src/mcp-injector');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const EXTENSION_DIR = path.join(PROJECT_ROOT, 'extension');
@@ -19,6 +21,14 @@ describe('findTasksMcpPath', () => {
     const p = findTasksMcpPath();
     assert.ok(p, 'should find tasks MCP path');
     assert.ok(p.includes('tasks-mcp-server'));
+  });
+});
+
+describe('findMemoryMcpPath', () => {
+  it('finds memory-mcp-server.js', () => {
+    const p = findMemoryMcpPath();
+    assert.ok(p, 'should find memory MCP path');
+    assert.ok(p.includes('memory-mcp-server'));
   });
 });
 
@@ -45,6 +55,35 @@ describe('mcpServersForRole', () => {
     assert.ok(mcps['cc-tasks']);
     assert.equal(mcps['cc-tasks'].type, 'http');
     assert.ok(mcps['cc-tasks'].url.includes('12345'));
+  });
+
+  it('auto-injects cc-memory when enabled', () => {
+    const mcps = mcpServersForRole('worker', { repoRoot: PROJECT_ROOT });
+    assert.ok(mcps['cc-memory'], 'should have cc-memory');
+    assert.equal(mcps['cc-memory'].command, 'node');
+  });
+
+  it('uses HTTP cc-memory when port provided', () => {
+    const mcps = mcpServersForRole('worker', { repoRoot: PROJECT_ROOT, memoryMcpPort: 23456 });
+    assert.ok(mcps['cc-memory']);
+    assert.equal(mcps['cc-memory'].type, 'http');
+    assert.ok(mcps['cc-memory'].url.includes('23456'));
+  });
+
+  it('omits cc-memory when disabled in project config', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-mcp-injector-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, '.qpanda'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, '.qpanda', 'config.json'),
+        JSON.stringify({ memoryEnabled: false }, null, 2),
+        'utf8'
+      );
+      const mcps = mcpServersForRole('worker', { repoRoot: tmpRoot });
+      assert.equal(mcps['cc-memory'], undefined);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('uses host.docker.internal for remote agents', () => {

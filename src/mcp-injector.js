@@ -6,6 +6,7 @@
  * host rewriting for remote agents (host.docker.internal).
  */
 const path = require('node:path');
+const { isMemoryEnabled } = require('./project-context');
 
 /**
  * Find the path to detached-command-mcp dist/index.js.
@@ -55,6 +56,21 @@ function findTestsMcpPath(hints = []) {
 }
 
 /**
+ * Find the path to memory-mcp-server.js.
+ */
+function findMemoryMcpPath(hints = []) {
+  const fs = require('node:fs');
+  const candidates = [
+    ...hints,
+    path.resolve(__dirname, '..', 'extension', 'memory-mcp-server.js'),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
  * Build MCP servers for a specific role (controller or worker).
  *
  * @param {'controller'|'worker'} role
@@ -68,6 +84,7 @@ function findTestsMcpPath(hints = []) {
  * @param {string} [options.detachedCommandPath] - Explicit path to detached-command-mcp
  * @param {string} [options.tasksMcpPath] - Explicit path to tasks-mcp-server.js
  * @param {number} [options.tasksMcpPort] - HTTP port for tasks MCP (if running as HTTP)
+ * @param {number} [options.memoryMcpPort] - HTTP port for memory MCP (if running as HTTP)
  * @param {number} [options.qaDesktopMcpPort] - HTTP port for qa-desktop MCP
  * @returns {object} MCP server configs for this role
  */
@@ -82,6 +99,7 @@ function mcpServersForRole(role, options = {}) {
     detachedCommandPath: explicitDetachedPath,
     tasksMcpPath: explicitTasksPath,
     tasksMcpPort,
+    memoryMcpPort,
     qaDesktopMcpPort,
   } = options;
 
@@ -133,6 +151,22 @@ function mcpServersForRole(role, options = {}) {
         TASKS_FILE: path.join(repoRoot, '.qpanda', 'tasks.json'),
       },
     };
+  }
+
+  // Auto-inject cc-memory (gated by project config)
+  if (isMemoryEnabled(repoRoot)) {
+    if (memoryMcpPort) {
+      result['cc-memory'] = { type: 'http', url: `http://${mcpHost}:${memoryMcpPort}/mcp` };
+    } else {
+      const memoryMcpPath = findMemoryMcpPath(extensionPath ? [path.join(extensionPath, 'memory-mcp-server.js')] : []);
+      if (memoryMcpPath) {
+        result['cc-memory'] = {
+          command: 'node',
+          args: [memoryMcpPath],
+          env: { MEMORY_FILE: path.join(repoRoot, '.qpanda', 'MEMORY.md') },
+        };
+      }
+    }
   }
 
   // Auto-inject qa-desktop
@@ -190,6 +224,7 @@ function findBuiltinToolsPath(extra = []) {
 
 module.exports = {
   findDetachedCommandPath,
+  findMemoryMcpPath,
   findTasksMcpPath,
   findTestsMcpPath,
   findBuiltinToolsPath,

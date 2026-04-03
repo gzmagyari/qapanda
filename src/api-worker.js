@@ -7,7 +7,7 @@ const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-cli
 const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
-const { expandPromptTags, buildPromptsDirs } = require('./prompt-tags');
+const { buildPromptsDirs } = require('./prompt-tags');
 const { lookupAgentConfig } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
@@ -88,21 +88,13 @@ async function runApiWorkerTurn({
 
   // Build system prompt
   const promptsDirs = buildPromptsDirs(manifest.repoRoot);
-  let systemPrompt;
-  if (agentConfig && agentConfig.system_prompt) {
-    systemPrompt = expandPromptTags(agentConfig.system_prompt, promptsDirs);
-    if (manifest.selfTesting) {
-      const { buildSelfTestingPrompt } = require('./prompts');
-      const isQaBrowser = (agentConfig.name || '').toLowerCase().includes('browser');
-      systemPrompt += '\n' + buildSelfTestingPrompt(isQaBrowser ? 'qa-browser' : 'agent', manifest.selfTestPrompts);
-    }
-  } else {
-    systemPrompt = buildAgentWorkerSystemPrompt(
-      agentConfig,
-      manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined,
-      promptsDirs
-    );
-  }
+  let systemPrompt = buildAgentWorkerSystemPrompt(
+    agentConfig,
+    manifest.selfTesting
+      ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts, repoRoot: manifest.repoRoot }
+      : { repoRoot: manifest.repoRoot },
+    promptsDirs
+  );
 
   systemPrompt += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file — Read files\n- builtin_tools__write_file — Write/create files\n- builtin_tools__edit_file — Edit files (find and replace)\n- builtin_tools__run_command — Execute shell commands\n- builtin_tools__list_directory — List directory contents\n- builtin_tools__glob_search — Find files by pattern\n- builtin_tools__grep_search — Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
 

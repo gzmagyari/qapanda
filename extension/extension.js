@@ -13,9 +13,10 @@ let WebviewRenderer, SessionManager;
 let globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents;
 let loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile;
 let findExistingDesktop;
-let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
+let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
 let startTasksMcpServer, stopTasksMcpServer;
 let startTestsMcpServer, stopTestsMcpServer;
+let startMemoryMcpServer, stopMemoryMcpServer;
 let startQaDesktopMcpServer, stopQaDesktopMcpServer;
 let loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix;
 let loadSettings, saveSettings;
@@ -35,12 +36,14 @@ try {
   _aDbg('require OK: modes-store');
   ({ findExistingDesktop } = require('./src/remote-desktop'));
   _aDbg('require OK: remote-desktop');
-  ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
+  ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
   _aDbg('require OK: message-handlers');
   ({ startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http'));
   _aDbg('require OK: tasks-mcp-http');
   ({ startTestsMcpServer, stopTestsMcpServer } = require('./tests-mcp-http'));
   _aDbg('require OK: tests-mcp-http');
+  ({ startMemoryMcpServer, stopMemoryMcpServer } = require('./memory-mcp-http'));
+  _aDbg('require OK: memory-mcp-http');
   ({ startQaDesktopMcpServer, stopQaDesktopMcpServer } = require('./qa-desktop-mcp-server'));
   _aDbg('require OK: qa-desktop-mcp-server');
   ({ loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require('./onboarding'));
@@ -62,6 +65,7 @@ try {
 const activePanels = new Set();
 let _tasksMcpPort = null;
 let _testsMcpPort = null;
+let _memoryMcpPort = null;
 let _qaDesktopMcpPort = null;
 
 async function handleQaReportExportMessage(msg, repoRoot) {
@@ -148,6 +152,8 @@ function _activateInner(context) {
   startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
   const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
   startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
+  const defaultMemoryFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'MEMORY.md');
+  startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
   _aDbg('checkpoint: calling loadFeatureFlags');
   if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
@@ -201,6 +207,7 @@ function _activateInner(context) {
     // Pass HTTP MCP server ports so agents can reach them
     session._tasksMcpPort = _tasksMcpPort;
     session._testsMcpPort = _testsMcpPort;
+    session._memoryMcpPort = _memoryMcpPort;
     session._qaDesktopMcpPort = _qaDesktopMcpPort;
     // Initialize MCP servers and agents from disk
     const extensionPath1 = context.extensionUri.fsPath;
@@ -302,6 +309,8 @@ function _activateInner(context) {
           try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
           return;
         }
+        const projectContextReply = handleProjectContextMessage(msg, repoRoot);
+        if (projectContextReply) { try { panel.webview.postMessage(projectContextReply); } catch {} return; }
         if (await handleQaReportExportMessage(msg, repoRoot)) {
           return;
         }
@@ -411,6 +420,8 @@ async function _deserializeInner(panel, state, context) {
         extensionPath: context.extensionUri.fsPath,
       });
       session._tasksMcpPort = _tasksMcpPort;
+      session._testsMcpPort = _testsMcpPort;
+      session._memoryMcpPort = _memoryMcpPort;
       session._qaDesktopMcpPort = _qaDesktopMcpPort;
       const extensionPath2 = context.extensionUri.fsPath;
       session.setMcpServers(loadMergedMcpServers(repoRoot));
@@ -482,6 +493,8 @@ async function _deserializeInner(panel, state, context) {
             try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
             return;
           }
+          const projectContextReply = handleProjectContextMessage(msg, repoRoot);
+          if (projectContextReply) { try { panel.webview.postMessage(projectContextReply); } catch {} return; }
           if (await handleQaReportExportMessage(msg, repoRoot)) {
             return;
           }
@@ -584,6 +597,8 @@ async function _deserializeInner(panel, state, context) {
 
 function deactivate() {
   stopTasksMcpServer().catch(() => {});
+  stopTestsMcpServer().catch(() => {});
+  stopMemoryMcpServer().catch(() => {});
   stopQaDesktopMcpServer().catch(() => {});
   try { require('./chrome-manager').killAll(); } catch {}
   // Clean up any persistent Codex app-server connections

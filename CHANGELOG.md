@@ -2,6 +2,10 @@
 
 All notable user-facing changes are documented here in the order they were added.
 
+## 2026-04-03
+
+- 🧠 Added repo-local **App Info** and **Memory** so agents can start with user-provided app facts and preserve learned workflow context across sessions.
+
 ## 2026-04-01
 
 - 🔥 Added full **BYOK API mode** with curated provider/model support for OpenAI, Gemini, Anthropic, and OpenRouter.

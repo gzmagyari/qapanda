@@ -430,7 +430,7 @@ async function runInteractiveShell(options = {}) {
             }
             // Set copilot prompt + continue directive so controller knows what to do
             const originalPrompt = activeManifest.controllerSystemPrompt;
-            const basePrompt = originalPrompt || buildCopilotBasePrompt({ selfTesting: activeManifest.selfTesting });
+            const basePrompt = originalPrompt || buildCopilotBasePrompt({ selfTesting: activeManifest.selfTesting, repoRoot: activeManifest.repoRoot });
             const directive = buildContinueDirective(guidance, directAgent);
             activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + directive;
             // Copilot mode: fresh one-shot controller — don't resume any existing session

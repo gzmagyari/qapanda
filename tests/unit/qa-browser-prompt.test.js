@@ -18,5 +18,9 @@ describe('QA Browser prompt activation rules', () => {
     assert.match(prompt, /create tests/i);
     assert.match(prompt, /start test runs/i);
     assert.match(prompt, /If the user later narrows scope, only test that requested scope/i);
+    assert.match(prompt, /After a meaningful exploration or testing session, save the durable facts you learned without waiting for the user to ask/i);
+    assert.match(prompt, /important navigation structure, major feature areas, and how screens connect/i);
+    assert.match(prompt, /hard-won knowledge about how to perform or verify important tasks in the app/i);
+    assert.match(prompt, /Do not treat Project Memory as a bug tracker/i);
   });
 });

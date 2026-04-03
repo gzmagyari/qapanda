@@ -110,8 +110,11 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
  * For agents with a system_prompt, we prepend it before the actual user prompt.
  */
 function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
-  if (!agentConfig) return prompt;
-  const systemPrompt = buildAgentWorkerSystemPrompt(agentConfig, opts, buildPromptsDirs(repoRoot));
+  const systemPrompt = buildAgentWorkerSystemPrompt(
+    agentConfig,
+    { ...(opts || {}), repoRoot },
+    buildPromptsDirs(repoRoot)
+  );
   if (!systemPrompt) return prompt;
   return `${systemPrompt}\n\n---\n\n${prompt}`;
 }
