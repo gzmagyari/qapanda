@@ -4,7 +4,7 @@ All notable user-facing changes are documented here in the order they were added
 
 ## 2026-04-03
 
-- 🧠 Added repo-local **App Info** and **Memory** so agents can start with user-provided app facts and preserve learned workflow context across sessions.
+- 🧠 Added repo-local **App Info** plus agent-maintained **Memory** so agents can start with user-provided app facts, learn how your app works automatically, and reuse that context in later sessions.
 
 ## 2026-04-01
 

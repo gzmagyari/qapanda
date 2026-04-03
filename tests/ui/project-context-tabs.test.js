@@ -28,7 +28,7 @@ describe('Project context tabs', () => {
     assert.equal(wv.messages.at(-1).type, 'memoryLoad');
     assert.match(
       wv.document.querySelector('#tab-memory .project-doc-help').textContent,
-      /agent learns about how the app works and how to use or test it effectively/i
+      /automatically updated by agents/i
     );
   });
 

@@ -250,9 +250,9 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
           </label>
         </div>
         <p class="project-doc-help">
-          Memory stores durable facts the agent learns about how the app works and how to use or test it effectively. Agents may update it automatically, and you can edit it manually too.
+          Memory is automatically updated by agents as they learn how the app works and how to use or test it effectively. That learned context is reused in later sessions, and you can edit it manually too.
         </p>
-        <textarea id="memory-text" class="project-doc-textarea" rows="24" spellcheck="false" placeholder="Long-term project memory edited by humans and agents."></textarea>
+        <textarea id="memory-text" class="project-doc-textarea" rows="24" spellcheck="false" placeholder="Agent-maintained project memory that can also be edited manually."></textarea>
         <div class="project-doc-actions">
           <button class="mcp-btn mcp-btn-primary" id="memory-save">Save Memory</button>
           <span class="project-doc-status" id="memory-status"></span>

@@ -4,7 +4,7 @@ All notable user-facing changes for the VS Code extension are documented here in
 
 ## 2026-04-03
 
-- 🧠 Added built-in **App Info** and **Memory** tabs so agents can inherit repo-local app facts and learned testing context across sessions.
+- 🧠 Added built-in **App Info** plus agent-maintained **Memory** so agents can start with your app facts, update what they learn automatically, and reuse that context in later sessions.
 
 ## 2026-04-01
 
