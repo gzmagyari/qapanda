@@ -4701,6 +4701,20 @@
       addBanner(msg.text);
     },
 
+    qaReportExported(msg) {
+      if (!msg || !msg.url) return;
+      const link = document.createElement('a');
+      link.href = msg.url;
+      if (msg.fileName) link.download = msg.fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      try {
+        link.click();
+      } finally {
+        link.remove();
+      }
+    },
+
     line(msg) {
       streamingEntry = null;
       addEntry(msg.label, renderInlineMarkdown(msg.text), '', msg.text);

@@ -81,6 +81,7 @@ class SessionManager {
     this._executingAgentStack = [];
     this._postMessage = options.postMessage || (() => {});
     this._waitTimer = null;
+    this._loopContinueTimer = null;
     // Model/thinking overrides (load from persisted config if available)
     const init = options.initialConfig || {};
     this._controllerModel = init.controllerModel || null;
@@ -771,6 +772,13 @@ class SessionManager {
     }
   }
 
+  _clearLoopContinueTimer() {
+    if (this._loopContinueTimer) {
+      clearTimeout(this._loopContinueTimer);
+      this._loopContinueTimer = null;
+    }
+  }
+
   _scheduleNextPass() {
     this._clearWaitTimer();
     if (!this._activeManifest || this._activeManifest.status !== 'running') return;
@@ -926,6 +934,7 @@ class SessionManager {
     if (msg.type === 'continueInput') {
       // Continue button: send to controller with optional guidance
       const guidance = (msg.text || '').trim();
+      this._clearLoopContinueTimer();
       this._handleContinue(guidance);
       return;
     }
@@ -933,11 +942,13 @@ class SessionManager {
     if (msg.type === 'orchestrateInput') {
       // Orchestrate button: full controller orchestration with persistent session
       const text = (msg.text || '').trim();
+      this._clearLoopContinueTimer();
       await this._handleOrchestrate(text);
       return;
     }
 
     if (msg.type === 'userInput') {
+      this._clearLoopContinueTimer();
       await this._handleInput(String(msg.text || '').trim());
       return;
     }
@@ -985,6 +996,7 @@ class SessionManager {
   }
 
   abort() {
+    this._clearLoopContinueTimer();
     if (this._abortController) {
       this._abortController.abort();
     }
@@ -1914,6 +1926,7 @@ class SessionManager {
     this._syncMcpToManifest();
     const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
+    let shouldScheduleLoopContinue = false;
     try {
       const { runManagerLoop } = require('./src/orchestrator');
       // The user message for the controller is always a neutral "decide next step" instruction.
@@ -1929,17 +1942,24 @@ class SessionManager {
         ...this._workerRunHooks(),
       });
       this._syncLoopConfigToManifest();
-      await saveManifest(this._activeManifest);
-      // If loop mode is on and the run didn't stop, auto-continue
-      if (this._loopMode && this._activeManifest && this._activeManifest.status === 'running') {
-        this._scheduleLoopContinue();
-      }
+      shouldScheduleLoopContinue = !!(
+        this._loopMode &&
+        this._activeManifest &&
+        this._activeManifest.status === 'running'
+      );
     } finally {
       // Restore original prompt and controller session ID
-      this._activeManifest.controllerSystemPrompt = originalPrompt;
-      this._activeManifest.controller.sessionId = savedControllerSessionId;
+      if (this._activeManifest && this._activeManifest.controller) {
+        this._activeManifest.controllerSystemPrompt = originalPrompt;
+        this._activeManifest.controller.sessionId = savedControllerSessionId;
+      }
       this._abortController = null;
       endActivity();
+    }
+
+    await saveManifest(this._activeManifest);
+    if (shouldScheduleLoopContinue) {
+      this._scheduleLoopContinue();
     }
   }
 
@@ -1961,10 +1981,12 @@ class SessionManager {
    */
   _scheduleLoopContinue() {
     if (!this._loopMode) return;
+    this._clearLoopContinueTimer();
     // Small delay to let UI update before next cycle
-    setTimeout(() => {
+    this._loopContinueTimer = setTimeout(() => {
+      this._loopContinueTimer = null;
       if (!this._loopMode || this._running) return;
-      this._handleContinue('');
+      Promise.resolve(this._handleContinue('')).catch(() => {});
     }, 500);
   }
 
@@ -1987,6 +2009,7 @@ class SessionManager {
       // Always loop until the controller says STOP — that's the point of Orchestrate
       await this._runLoop({
         userMessage: text || '[ORCHESTRATE] Decide the next step based on the conversation transcript.',
+        singlePass: false,
       });
     } catch (error) {
       if (!isAbortError(error)) {
@@ -2006,12 +2029,14 @@ class SessionManager {
     this._abortController = new AbortController();
 
     const delayMs = parseWaitDelay(this._waitDelay);
-    const useSinglePass = Boolean(delayMs && options.singlePass !== false);
+    const useSinglePass = options.singlePass === false
+      ? false
+      : Boolean(options.singlePass || delayMs);
 
     try {
       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
         ...options,
-        singlePass: useSinglePass || options.singlePass,
+        singlePass: useSinglePass,
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });
@@ -2027,6 +2052,7 @@ class SessionManager {
   }
 
   dispose() {
+    this._clearLoopContinueTimer();
     this._stopWaitTimer();
     this.abort();
     this._stopAgentDelegateMcp();

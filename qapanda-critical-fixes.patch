@@ -1,0 +1,3595 @@
+diff --git a/extension/extension.js b/extension/extension.js
+index 0127351bbcc8642ce5517aba4fb365da0d76d17f..a642839561886b548d146d1d0a4a125430efbd50 100644
+--- a/extension/extension.js
++++ b/extension/extension.js
+@@ -149,8 +149,8 @@ function _activateInner(context) {
+   // Start HTTP MCP servers (singletons shared across all panels)
+   _aDbg('checkpoint: starting MCP servers');
+   const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tasks.json');
+-  startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
+   const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
++  startTasksMcpServer(defaultTasksFile, defaultTestsFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
+   startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
+   const defaultMemoryFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'MEMORY.md');
+   startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
+diff --git a/extension/message-handlers.js b/extension/message-handlers.js
+index 501519f18ee9e277304d8d3eac438c3e51665e03..ba4ad9383e5ad54af381e5aa208afd9f9c64ea0a 100644
+--- a/extension/message-handlers.js
++++ b/extension/message-handlers.js
+@@ -17,6 +17,19 @@ const {
+   loadMemory,
+   saveMemory,
+ } = require('./src/project-context');
++const {
++  VALID_TASK_STATUSES,
++  VALID_ENVIRONMENTS,
++  nowIso,
++  loadTasksDoc,
++  saveTasksDoc,
++  loadTestsDoc,
++  saveTestsDoc,
++  normalizeSeverity,
++  updateTestStatus,
++  cleanupDeletedTask,
++  cleanupDeletedTest,
++} = require('./qa-state-store');
+ 
+ // ── MCP config file helpers ─────────────────────────────────────────
+ function globalMcpPath() {
+@@ -94,122 +107,145 @@ function handleProjectContextMessage(msg, repoRoot) {
+   return null;
+ }
+ 
+-// ── Tasks file helpers ───────────────────────────────────────────────
++// ── Tasks/tests file helpers ────────────────────────────────────────
+ function tasksFilePath(repoRoot) {
+   return path.join(repoRoot, '.qpanda', 'tasks.json');
+ }
+ 
+-function loadTasksFile(filePath) {
+-  try {
+-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+-  } catch {
+-    return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] };
+-  }
++function testsFilePath(repoRoot) {
++  return path.join(repoRoot, '.qpanda', 'tests.json');
+ }
+ 
+-function saveTasksFile(filePath, data) {
+-  const dir = path.dirname(filePath);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-function nowIso() { return new Date().toISOString(); }
+-
+-// ── Tests file helpers ───────────────────────────────────────────────
+-function testsFilePath(repoRoot) { return path.join(repoRoot, '.qpanda', 'tests.json'); }
+-function loadTestsFile(fp) { try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; } }
+-function saveTestsFile(fp, data) { const dir = path.dirname(fp); if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf8'); }
+-
+ // ── Task CRUD ────────────────────────────────────────────────────────
+ function handleTaskMessage(msg, repoRoot) {
+   const fp = tasksFilePath(repoRoot);
+-  const data = loadTasksFile(fp);
++  const data = loadTasksDoc(fp);
+ 
+   if (msg.type === 'tasksLoad') {
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskCreate') {
++    const status = msg.status || 'backlog';
++    if (!VALID_TASK_STATUSES.includes(status)) {
++      return { type: 'error', label: 'Tasks', text: `Invalid status: ${status}` };
++    }
+     const id = `task-${data.nextId++}`;
+     const task = {
+-      id, title: msg.title || 'Untitled', description: msg.description || '',
+-      detail_text: msg.detail_text || '', status: msg.status || 'backlog',
+-      created_at: nowIso(), updated_at: nowIso(), comments: [], progress_updates: [],
++      id,
++      title: msg.title || 'Untitled',
++      description: msg.description || '',
++      detail_text: msg.detail_text || '',
++      severity: normalizeSeverity(msg.severity),
++      status,
++      created_at: nowIso(),
++      updated_at: nowIso(),
++      comments: [],
++      progress_updates: [],
++      linkedTestIds: [],
+     };
+     data.tasks.push(task);
+-    saveTasksFile(fp, data);
++    saveTasksDoc(fp, data);
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskUpdate') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
+-    if (task) {
+-      if (msg.title !== undefined) task.title = msg.title;
+-      if (msg.description !== undefined) task.description = msg.description;
+-      if (msg.detail_text !== undefined) task.detail_text = msg.detail_text;
+-      if (msg.status !== undefined) task.status = msg.status;
+-      task.updated_at = nowIso();
+-      saveTasksFile(fp, data);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
++    if (!task) return { type: 'tasksData', tasks: data.tasks };
++    if (msg.title !== undefined) task.title = msg.title;
++    if (msg.description !== undefined) task.description = msg.description;
++    if (msg.detail_text !== undefined) task.detail_text = msg.detail_text;
++    if (msg.status !== undefined) {
++      if (!VALID_TASK_STATUSES.includes(msg.status)) {
++        return { type: 'error', label: 'Tasks', text: `Invalid status: ${msg.status}` };
++      }
++      task.status = msg.status;
+     }
++    if (msg.severity !== undefined) task.severity = normalizeSeverity(msg.severity);
++    task.updated_at = nowIso();
++    saveTasksDoc(fp, data);
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskDelete') {
+-    data.tasks = data.tasks.filter(t => t.id !== msg.task_id);
+-    saveTasksFile(fp, data);
++    const index = data.tasks.findIndex((task) => task.id === msg.task_id);
++    if (index !== -1) {
++      const removed = data.tasks.splice(index, 1)[0];
++      saveTasksDoc(fp, data);
++      const testsFp = testsFilePath(repoRoot);
++      const testsDoc = loadTestsDoc(testsFp);
++      cleanupDeletedTask(removed.id, testsDoc);
++      saveTestsDoc(testsFp, testsDoc);
++    }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskAddComment') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task) {
+-      if (!task.comments) task.comments = [];
+       task.comments.push({ id: data.nextCommentId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
+       task.updated_at = nowIso();
+-      saveTasksFile(fp, data);
++      saveTasksDoc(fp, data);
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskDeleteComment') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task && task.comments) {
+-      task.comments = task.comments.filter(c => c.id !== msg.comment_id);
++      task.comments = task.comments.filter((comment) => comment.id !== msg.comment_id);
+       task.updated_at = nowIso();
+-      saveTasksFile(fp, data);
++      saveTasksDoc(fp, data);
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskEditComment') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task && task.comments) {
+-      const comment = task.comments.find(c => c.id === msg.comment_id);
+-      if (comment) { comment.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
++      const comment = task.comments.find((item) => item.id === msg.comment_id);
++      if (comment) {
++        comment.text = msg.text;
++        task.updated_at = nowIso();
++        saveTasksDoc(fp, data);
++      }
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskDeleteProgress') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task && task.progress_updates) {
+-      task.progress_updates = task.progress_updates.filter(p => p.id !== msg.progress_id);
++      task.progress_updates = task.progress_updates.filter((update) => update.id !== msg.progress_id);
+       task.updated_at = nowIso();
+-      saveTasksFile(fp, data);
++      saveTasksDoc(fp, data);
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskEditProgress') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task && task.progress_updates) {
+-      const update = task.progress_updates.find(p => p.id === msg.progress_id);
+-      if (update) { update.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
++      const update = task.progress_updates.find((item) => item.id === msg.progress_id);
++      if (update) {
++        update.text = msg.text;
++        task.updated_at = nowIso();
++        saveTasksDoc(fp, data);
++      }
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   if (msg.type === 'taskAddProgress') {
+-    const task = data.tasks.find(t => t.id === msg.task_id);
++    const task = data.tasks.find((item) => item.id === msg.task_id);
+     if (task) {
+-      if (!task.progress_updates) task.progress_updates = [];
+       task.progress_updates.push({ id: data.nextProgressId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
+       task.updated_at = nowIso();
+-      saveTasksFile(fp, data);
++      saveTasksDoc(fp, data);
+     }
+     return { type: 'tasksData', tasks: data.tasks };
+   }
++
+   return null;
+ }
+ 
+@@ -217,76 +253,108 @@ function handleTaskMessage(msg, repoRoot) {
+ function handleTestMessage(msg, repoRoot) {
+   const fp = testsFilePath(repoRoot);
+   if (msg.type === 'testsLoad') {
+-    const data = loadTestsFile(fp);
++    const data = loadTestsDoc(fp);
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testCreate') {
+-    const data = loadTestsFile(fp);
+-    const id = 'test-' + data.nextId++;
++    if (!VALID_ENVIRONMENTS.includes(msg.environment || 'browser')) {
++      return { type: 'error', label: 'Tests', text: `Invalid environment: ${msg.environment}` };
++    }
++    const data = loadTestsDoc(fp);
++    const id = `test-${data.nextId++}`;
+     const test = {
+-      id, title: msg.title || 'New Test', description: msg.description || '',
+-      environment: msg.environment || 'browser', status: 'untested',
+-      steps: [], linkedTaskIds: [], tags: msg.tags || [],
+-      lastTestedAt: null, lastTestedBy: null,
+-      created_at: nowIso(), updated_at: nowIso(), runs: [],
++      id,
++      title: msg.title || 'New Test',
++      description: msg.description || '',
++      environment: msg.environment || 'browser',
++      status: 'untested',
++      steps: [],
++      linkedTaskIds: [],
++      tags: msg.tags || [],
++      lastTestedAt: null,
++      lastTestedBy: null,
++      created_at: nowIso(),
++      updated_at: nowIso(),
++      runs: [],
+     };
+     data.tests.push(test);
+-    saveTestsFile(fp, data);
++    saveTestsDoc(fp, data);
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testUpdate') {
+-    const data = loadTestsFile(fp);
+-    const test = data.tests.find(t => t.id === msg.test_id);
++    const data = loadTestsDoc(fp);
++    const test = data.tests.find((item) => item.id === msg.test_id);
+     if (test) {
+       if (msg.title !== undefined) test.title = msg.title;
+       if (msg.description !== undefined) test.description = msg.description;
+-      if (msg.environment !== undefined) test.environment = msg.environment;
++      if (msg.environment !== undefined) {
++        if (!VALID_ENVIRONMENTS.includes(msg.environment)) {
++          return { type: 'error', label: 'Tests', text: `Invalid environment: ${msg.environment}` };
++        }
++        test.environment = msg.environment;
++      }
+       if (msg.tags !== undefined) test.tags = msg.tags;
+       test.updated_at = nowIso();
+-      saveTestsFile(fp, data);
++      saveTestsDoc(fp, data);
+     }
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testDelete') {
+-    const data = loadTestsFile(fp);
+-    data.tests = data.tests.filter(t => t.id !== msg.test_id);
+-    saveTestsFile(fp, data);
++    const data = loadTestsDoc(fp);
++    const index = data.tests.findIndex((item) => item.id === msg.test_id);
++    if (index !== -1) {
++      const removed = data.tests.splice(index, 1)[0];
++      saveTestsDoc(fp, data);
++      const tasksFp = tasksFilePath(repoRoot);
++      const tasksDoc = loadTasksDoc(tasksFp);
++      cleanupDeletedTest(removed.id, tasksDoc);
++      saveTasksDoc(tasksFp, tasksDoc);
++    }
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testAddStep') {
+-    const data = loadTestsFile(fp);
+-    const test = data.tests.find(t => t.id === msg.test_id);
++    const data = loadTestsDoc(fp);
++    const test = data.tests.find((item) => item.id === msg.test_id);
+     if (test) {
+       test.steps.push({ id: data.nextStepId++, description: msg.description || '', expectedResult: msg.expectedResult || '', status: 'untested', actualResult: null });
++      updateTestStatus(test);
+       test.updated_at = nowIso();
+-      saveTestsFile(fp, data);
++      saveTestsDoc(fp, data);
+     }
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testUpdateStep') {
+-    const data = loadTestsFile(fp);
+-    const test = data.tests.find(t => t.id === msg.test_id);
++    const data = loadTestsDoc(fp);
++    const test = data.tests.find((item) => item.id === msg.test_id);
+     if (test) {
+-      const step = test.steps.find(s => s.id === msg.step_id);
++      const step = test.steps.find((item) => item.id === msg.step_id);
+       if (step) {
+         if (msg.description !== undefined) step.description = msg.description;
+         if (msg.expectedResult !== undefined) step.expectedResult = msg.expectedResult;
+         test.updated_at = nowIso();
+-        saveTestsFile(fp, data);
++        saveTestsDoc(fp, data);
+       }
+     }
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   if (msg.type === 'testDeleteStep') {
+-    const data = loadTestsFile(fp);
+-    const test = data.tests.find(t => t.id === msg.test_id);
++    const data = loadTestsDoc(fp);
++    const test = data.tests.find((item) => item.id === msg.test_id);
+     if (test) {
+-      test.steps = test.steps.filter(s => s.id !== msg.step_id);
++      test.steps = test.steps.filter((step) => step.id !== msg.step_id);
++      updateTestStatus(test);
+       test.updated_at = nowIso();
+-      saveTestsFile(fp, data);
++      saveTestsDoc(fp, data);
+     }
+     return { type: 'testsData', tests: data.tests };
+   }
++
+   return null;
+ }
+ 
+@@ -402,8 +470,8 @@ async function handleInstanceMessage(msg, repoRoot, panelId, postFn, extensionPa
+     return _instancesData(repoRoot, panelId, {}, aid);
+   }
+   if (msg.type === 'instanceRestart') {
+-    await restartInstance(msg.name, repoRoot, panelId);
+-    return _instancesData(repoRoot, panelId, {}, aid);
++    const desktop = await restartInstance(msg.name, repoRoot, panelId);
++    return _instancesData(repoRoot, panelId, { novncPort: desktop ? desktop.novncPort : null }, aid);
+   }
+   if (msg.type === 'instanceStopAll') {
+     const current = await listInstances(panelId);
+@@ -441,4 +509,5 @@ module.exports = {
+   handleAgentMessage,
+   handleModeMessage,
+   handleInstanceMessage,
++  _instancesData,
+ };
+diff --git a/extension/qa-report-export.js b/extension/qa-report-export.js
+index fe365968a3eb83f926ac655d9258f359a82a4790..b0fe711a6eea01297ec72b87f7ee685aa291cfa1 100644
+--- a/extension/qa-report-export.js
++++ b/extension/qa-report-export.js
+@@ -192,6 +192,10 @@ function writeIssueSection(doc, tasks) {
+     if (detailText) {
+       writeLabeledText(doc, 'Details: ', detailText);
+     }
++    const severity = text((item && item.severity) || detail.severity, '').trim();
++    if (severity) {
++      writeLabeledText(doc, 'Severity: ', severity, { valueColor: severity === 'critical' ? '#d32f2f' : (severity === 'high' ? '#ef6c00' : (severity === 'medium' ? '#f9a825' : '#6d4c41')) });
++    }
+     const linkedTestIds = Array.isArray(item && item.linkedTestIds)
+       ? item.linkedTestIds
+       : (Array.isArray(detail && detail.linkedTestIds) ? detail.linkedTestIds : []);
+diff --git a/extension/qa-state-store.js b/extension/qa-state-store.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..d54f44cb021862c54107b1075ae2eae2418542b7
+--- /dev/null
++++ b/extension/qa-state-store.js
+@@ -0,0 +1,273 @@
++const fs = require('node:fs');
++const path = require('node:path');
++
++const VALID_TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'];
++const VALID_TEST_STATUSES = ['untested', 'passing', 'failing', 'partial'];
++const VALID_STEP_STATUSES = ['untested', 'pass', 'fail', 'skip'];
++const VALID_ENVIRONMENTS = ['browser', 'computer'];
++const VALID_BUG_SEVERITIES = ['critical', 'high', 'medium', 'low'];
++
++function nowIso() {
++  return new Date().toISOString();
++}
++
++function defaultTasksDoc() {
++  return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] };
++}
++
++function defaultTestsDoc() {
++  return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] };
++}
++
++function readJsonFile(filePath, fallbackFactory) {
++  try {
++    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
++  } catch {
++    return fallbackFactory();
++  }
++}
++
++function writeJsonAtomic(filePath, data) {
++  const dir = path.dirname(filePath);
++  fs.mkdirSync(dir, { recursive: true });
++  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
++  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
++  try {
++    fs.renameSync(tempPath, filePath);
++  } catch (error) {
++    try { fs.rmSync(filePath, { force: true }); } catch {}
++    fs.renameSync(tempPath, filePath);
++  } finally {
++    try {
++      if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
++    } catch {}
++  }
++}
++
++function loadTasksDoc(tasksFile) {
++  return ensureTasksDoc(readJsonFile(tasksFile, defaultTasksDoc));
++}
++
++function saveTasksDoc(tasksFile, data) {
++  writeJsonAtomic(tasksFile, ensureTasksDoc(data));
++}
++
++function loadTestsDoc(testsFile) {
++  return ensureTestsDoc(readJsonFile(testsFile, defaultTestsDoc));
++}
++
++function saveTestsDoc(testsFile, data) {
++  writeJsonAtomic(testsFile, ensureTestsDoc(data));
++}
++
++function uniqueIds(values) {
++  const seen = new Set();
++  const result = [];
++  for (const value of values || []) {
++    const id = String(value || '').trim();
++    if (!id || seen.has(id)) continue;
++    seen.add(id);
++    result.push(id);
++  }
++  return result;
++}
++
++function normalizeSeverity(value) {
++  if (value == null || value === '') return null;
++  const normalized = String(value).trim().toLowerCase();
++  if (!VALID_BUG_SEVERITIES.includes(normalized)) {
++    throw new Error(`Invalid severity: ${value}`);
++  }
++  return normalized;
++}
++
++function ensureTaskDefaults(task) {
++  const value = task && typeof task === 'object' ? task : {};
++  value.comments = Array.isArray(value.comments) ? value.comments : [];
++  value.progress_updates = Array.isArray(value.progress_updates) ? value.progress_updates : [];
++  value.linkedTestIds = uniqueIds(value.linkedTestIds || []);
++  value.severity = value.severity == null ? null : normalizeSeverity(value.severity);
++  return value;
++}
++
++function ensureTestDefaults(test) {
++  const value = test && typeof test === 'object' ? test : {};
++  value.steps = Array.isArray(value.steps) ? value.steps : [];
++  value.runs = Array.isArray(value.runs) ? value.runs : [];
++  value.linkedTaskIds = uniqueIds(value.linkedTaskIds || []);
++  value.tags = Array.isArray(value.tags) ? value.tags : [];
++  for (const step of value.steps) {
++    step.status = VALID_STEP_STATUSES.includes(step && step.status) ? step.status : 'untested';
++    if (!Object.prototype.hasOwnProperty.call(step || {}, 'actualResult')) {
++      step.actualResult = null;
++    }
++  }
++  return value;
++}
++
++function ensureTasksDoc(doc) {
++  const value = doc && typeof doc === 'object' ? doc : defaultTasksDoc();
++  value.nextId = Number.isFinite(value.nextId) ? value.nextId : 1;
++  value.nextCommentId = Number.isFinite(value.nextCommentId) ? value.nextCommentId : 1;
++  value.nextProgressId = Number.isFinite(value.nextProgressId) ? value.nextProgressId : 1;
++  value.tasks = Array.isArray(value.tasks) ? value.tasks : [];
++  value.tasks.forEach(ensureTaskDefaults);
++  return value;
++}
++
++function ensureTestsDoc(doc) {
++  const value = doc && typeof doc === 'object' ? doc : defaultTestsDoc();
++  value.nextId = Number.isFinite(value.nextId) ? value.nextId : 1;
++  value.nextStepId = Number.isFinite(value.nextStepId) ? value.nextStepId : 1;
++  value.nextRunId = Number.isFinite(value.nextRunId) ? value.nextRunId : 1;
++  value.tests = Array.isArray(value.tests) ? value.tests : [];
++  value.tests.forEach(ensureTestDefaults);
++  return value;
++}
++
++function computeOverallStatus(steps) {
++  if (!steps || steps.length === 0) return 'untested';
++  const statuses = steps.map((step) => VALID_STEP_STATUSES.includes(step && step.status) ? step.status : 'untested');
++  if (statuses.every((status) => status === 'untested')) return 'untested';
++  if (statuses.every((status) => status === 'pass' || status === 'skip')) return 'passing';
++  if (statuses.every((status) => status === 'fail')) return 'failing';
++  if (statuses.some((status) => status === 'fail')) return 'partial';
++  if (statuses.some((status) => status === 'pass')) return 'partial';
++  return 'untested';
++}
++
++function computeRunStatus(stepResults) {
++  if (!stepResults || stepResults.length === 0) return 'untested';
++  const statuses = stepResults.map((step) => VALID_STEP_STATUSES.includes(step && step.status) ? step.status : 'untested');
++  if (statuses.every((status) => status === 'pass' || status === 'skip')) return 'passing';
++  if (statuses.every((status) => status === 'fail')) return 'failing';
++  if (statuses.some((status) => status === 'fail')) return 'partial';
++  if (statuses.some((status) => status === 'pass')) return 'partial';
++  return 'untested';
++}
++
++function updateTestStatus(test) {
++  ensureTestDefaults(test);
++  test.status = computeOverallStatus(test.steps);
++  return test.status;
++}
++
++function syncTestStepsFromRun(test, run) {
++  ensureTestDefaults(test);
++  const resultsByStepId = new Map((run && Array.isArray(run.stepResults) ? run.stepResults : [])
++    .map((stepResult) => [Number(stepResult.stepId), stepResult]));
++  for (const step of test.steps) {
++    const stepResult = resultsByStepId.get(Number(step.id));
++    if (!stepResult) {
++      step.status = 'untested';
++      step.actualResult = null;
++      continue;
++    }
++    step.status = VALID_STEP_STATUSES.includes(stepResult.status) ? stepResult.status : 'untested';
++    step.actualResult = stepResult.actualResult == null ? null : stepResult.actualResult;
++  }
++  updateTestStatus(test);
++}
++
++function ensureTaskTestLink(task, test) {
++  ensureTaskDefaults(task);
++  ensureTestDefaults(test);
++  task.linkedTestIds = uniqueIds([...(task.linkedTestIds || []), test.id]);
++  test.linkedTaskIds = uniqueIds([...(test.linkedTaskIds || []), task.id]);
++}
++
++function removeTaskTestLink(task, test) {
++  if (task) {
++    ensureTaskDefaults(task);
++    task.linkedTestIds = uniqueIds((task.linkedTestIds || []).filter((id) => String(id) !== String(test && test.id)));
++  }
++  if (test) {
++    ensureTestDefaults(test);
++    test.linkedTaskIds = uniqueIds((test.linkedTaskIds || []).filter((id) => String(id) !== String(task && task.id)));
++  }
++}
++
++function cleanupDeletedTask(taskId, testsDoc) {
++  ensureTestsDoc(testsDoc);
++  for (const test of testsDoc.tests) {
++    ensureTestDefaults(test);
++    test.linkedTaskIds = uniqueIds((test.linkedTaskIds || []).filter((id) => String(id) !== String(taskId)));
++  }
++}
++
++function cleanupDeletedTest(testId, tasksDoc) {
++  ensureTasksDoc(tasksDoc);
++  for (const task of tasksDoc.tasks) {
++    ensureTaskDefaults(task);
++    task.linkedTestIds = uniqueIds((task.linkedTestIds || []).filter((id) => String(id) !== String(testId)));
++  }
++}
++
++function findTask(tasksDoc, taskId) {
++  ensureTasksDoc(tasksDoc);
++  return tasksDoc.tasks.find((task) => String(task.id) === String(taskId)) || null;
++}
++
++function findTest(testsDoc, testId) {
++  ensureTestsDoc(testsDoc);
++  return testsDoc.tests.find((test) => String(test.id) === String(testId)) || null;
++}
++
++function findRun(test, runId) {
++  ensureTestDefaults(test);
++  return (test.runs || []).find((run) => Number(run.id) === Number(runId)) || null;
++}
++
++function buildFailingBugDescription(test) {
++  const failingSteps = (test && Array.isArray(test.steps) ? test.steps : []).filter((step) => step.status === 'fail');
++  return `Bug from test: ${test.title}\n\nFailing steps:\n${failingSteps.map((step) => `- ${step.description}: expected "${step.expectedResult}", got "${step.actualResult || 'N/A'}"`).join('\n')}`;
++}
++
++function buildTestCardPayload(test) {
++  ensureTestDefaults(test);
++  return {
++    title: test.title,
++    test_id: test.id,
++    passed: test.steps.filter((step) => step.status === 'pass').length,
++    failed: test.steps.filter((step) => step.status === 'fail').length,
++    skipped: test.steps.filter((step) => !step.status || step.status === 'skip' || step.status === 'untested').length,
++    steps: test.steps.map((step) => ({
++      name: step.description,
++      status: step.status === 'untested' ? 'skip' : (step.status || 'skip'),
++    })),
++  };
++}
++
++module.exports = {
++  VALID_TASK_STATUSES,
++  VALID_TEST_STATUSES,
++  VALID_STEP_STATUSES,
++  VALID_ENVIRONMENTS,
++  VALID_BUG_SEVERITIES,
++  nowIso,
++  defaultTasksDoc,
++  defaultTestsDoc,
++  loadTasksDoc,
++  saveTasksDoc,
++  loadTestsDoc,
++  saveTestsDoc,
++  ensureTaskDefaults,
++  ensureTestDefaults,
++  ensureTasksDoc,
++  ensureTestsDoc,
++  uniqueIds,
++  normalizeSeverity,
++  computeOverallStatus,
++  computeRunStatus,
++  updateTestStatus,
++  syncTestStepsFromRun,
++  ensureTaskTestLink,
++  removeTaskTestLink,
++  cleanupDeletedTask,
++  cleanupDeletedTest,
++  findTask,
++  findTest,
++  findRun,
++  buildFailingBugDescription,
++  buildTestCardPayload,
++};
+diff --git a/extension/session-manager.js b/extension/session-manager.js
+index bdb0bb51bb381ff176e17722dc07481e1c84126e..0ddca30c760481b89cd0958a87947d53c5543fed 100644
+--- a/extension/session-manager.js
++++ b/extension/session-manager.js
+@@ -81,6 +81,7 @@ class SessionManager {
+     this._executingAgentStack = [];
+     this._postMessage = options.postMessage || (() => {});
+     this._waitTimer = null;
++    this._loopContinueTimer = null;
+     // Model/thinking overrides (load from persisted config if available)
+     const init = options.initialConfig || {};
+     this._controllerModel = init.controllerModel || null;
+@@ -284,7 +285,10 @@ class SessionManager {
+       result['cc-tasks'] = {
+         command: 'node',
+         args: [path.join(this._extensionPath, 'tasks-mcp-server.js')],
+-        env: { TASKS_FILE: path.join(this._repoRoot, '.qpanda', 'tasks.json') },
++        env: {
++          TASKS_FILE: path.join(this._repoRoot, '.qpanda', 'tasks.json'),
++          TESTS_FILE: path.join(this._repoRoot, '.qpanda', 'tests.json'),
++        },
+       };
+     }
+     if (this._testsMcpPort) {
+@@ -1788,15 +1792,20 @@ class SessionManager {
+         controllerLabel: 'Continue',
+         ...this._workerRunHooks(),
+       });
++      // Restore original prompt and controller session ID before persisting manifest state.
++      this._activeManifest.controllerSystemPrompt = originalPrompt;
++      this._activeManifest.controller.sessionId = savedControllerSessionId;
+       await saveManifest(this._activeManifest);
+       // If loop mode is on and the run didn't stop, auto-continue
+       if (this._loopMode && this._activeManifest && this._activeManifest.status === 'running') {
+         this._scheduleLoopContinue();
+       }
+     } finally {
+-      // Restore original prompt and controller session ID
+-      this._activeManifest.controllerSystemPrompt = originalPrompt;
+-      this._activeManifest.controller.sessionId = savedControllerSessionId;
++      // Restore original prompt and controller session ID defensively in case the run failed early.
++      if (this._activeManifest) {
++        this._activeManifest.controllerSystemPrompt = originalPrompt;
++        this._activeManifest.controller.sessionId = savedControllerSessionId;
++      }
+       this._abortController = null;
+       endActivity();
+     }
+@@ -1817,8 +1826,13 @@ class SessionManager {
+    */
+   _scheduleLoopContinue() {
+     if (!this._loopMode) return;
++    if (this._loopContinueTimer) {
++      clearTimeout(this._loopContinueTimer);
++      this._loopContinueTimer = null;
++    }
+     // Small delay to let UI update before next cycle
+-    setTimeout(() => {
++    this._loopContinueTimer = setTimeout(() => {
++      this._loopContinueTimer = null;
+       if (!this._loopMode || this._running) return;
+       this._handleContinue('');
+     }, 500);
+@@ -1843,6 +1857,7 @@ class SessionManager {
+       // Always loop until the controller says STOP — that's the point of Orchestrate
+       await this._runLoop({
+         userMessage: text || '[ORCHESTRATE] Decide the next step based on the conversation transcript.',
++        loopUntilStop: true,
+       });
+     } catch (error) {
+       if (!isAbortError(error)) {
+@@ -1861,13 +1876,14 @@ class SessionManager {
+     const endActivity = this._beginActivity('foreground');
+     this._abortController = new AbortController();
+ 
+-    const delayMs = parseWaitDelay(this._waitDelay);
+-    const useSinglePass = Boolean(delayMs && options.singlePass !== false);
++    const explicitSinglePass = options.singlePass === true;
++    const forceLoopUntilStop = options.loopUntilStop === true;
++    const useSinglePass = explicitSinglePass || (!forceLoopUntilStop && Boolean(delayMs));
+ 
+     try {
+       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
+         ...options,
+-        singlePass: useSinglePass || options.singlePass,
++        singlePass: useSinglePass,
+         abortSignal: this._abortController.signal,
+         ...this._workerRunHooks(),
+       });
+@@ -1883,6 +1899,10 @@ class SessionManager {
+ 
+   dispose() {
+     this._stopWaitTimer();
++    if (this._loopContinueTimer) {
++      clearTimeout(this._loopContinueTimer);
++      this._loopContinueTimer = null;
++    }
+     this.abort();
+     this._stopAgentDelegateMcp();
+     // Close any persistent interactive Claude sessions
+diff --git a/extension/tasks-domain.js b/extension/tasks-domain.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c8bcf91a92939f8527c7111ae92f02935f2b89c
+--- /dev/null
++++ b/extension/tasks-domain.js
+@@ -0,0 +1,392 @@
++const { rankSearchResults } = require('./mcp-search');
++const {
++  VALID_TASK_STATUSES,
++  nowIso,
++  loadTasksDoc,
++  saveTasksDoc,
++  loadTestsDoc,
++  saveTestsDoc,
++  normalizeSeverity,
++  cleanupDeletedTask,
++  findTask,
++  ensureTaskDefaults,
++} = require('./qa-state-store');
++
++const TASK_TOOLS = [
++  {
++    name: 'list_tasks',
++    description: 'List tasks, optionally filtered by status',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        status: { type: 'string', description: 'Filter by status (backlog, todo, in_progress, review, testing, done)' },
++      },
++    },
++  },
++  {
++    name: 'get_task',
++    description: 'Get task details by ID, including comments and progress updates',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++      },
++      required: ['task_id'],
++    },
++  },
++  {
++    name: 'search_tasks',
++    description: 'Search for likely duplicate existing tasks before creating a new one',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        query: { type: 'string', description: 'Search text describing the issue' },
++        status: { type: 'string', description: 'Optional status filter' },
++        limit: { type: 'number', description: 'Maximum results to return (default 5)' },
++      },
++      required: ['query'],
++    },
++  },
++  {
++    name: 'create_task',
++    description: 'Create a new task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        title: { type: 'string', description: 'Task title' },
++        description: { type: 'string', description: 'Short description' },
++        detail_text: { type: 'string', description: 'Detailed notes / acceptance criteria' },
++        severity: { type: 'string', description: 'Optional bug severity: critical, high, medium, low' },
++        status: { type: 'string', description: 'Initial status (default: todo)' },
++      },
++      required: ['title'],
++    },
++  },
++  {
++    name: 'update_task_status',
++    description: 'Move a task to a new status column',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        status: { type: 'string', description: 'New status (backlog, todo, in_progress, review, testing, done)' },
++      },
++      required: ['task_id', 'status'],
++    },
++  },
++  {
++    name: 'update_task_fields',
++    description: 'Update task title, description, detail_text, or severity',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        title: { type: 'string', description: 'New title' },
++        description: { type: 'string', description: 'New description' },
++        detail_text: { type: 'string', description: 'New detail text' },
++        severity: { type: 'string', description: 'Optional bug severity: critical, high, medium, low' },
++      },
++      required: ['task_id'],
++    },
++  },
++  {
++    name: 'delete_task',
++    description: 'Delete a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++      },
++      required: ['task_id'],
++    },
++  },
++  {
++    name: 'add_comment',
++    description: 'Add a comment to a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        text: { type: 'string', description: 'Comment text' },
++        author: { type: 'string', description: 'Author name (default: agent)' },
++      },
++      required: ['task_id', 'text'],
++    },
++  },
++  {
++    name: 'add_progress_update',
++    description: 'Add a progress update to a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        text: { type: 'string', description: 'Progress update text' },
++        author: { type: 'string', description: 'Author name (default: agent)' },
++      },
++      required: ['task_id', 'text'],
++    },
++  },
++  {
++    name: 'edit_comment',
++    description: 'Edit an existing comment on a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        comment_id: { type: 'number', description: 'The comment ID' },
++        text: { type: 'string', description: 'New comment text' },
++      },
++      required: ['task_id', 'comment_id', 'text'],
++    },
++  },
++  {
++    name: 'delete_comment',
++    description: 'Delete a comment from a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        comment_id: { type: 'number', description: 'The comment ID' },
++      },
++      required: ['task_id', 'comment_id'],
++    },
++  },
++  {
++    name: 'edit_progress_update',
++    description: 'Edit an existing progress update on a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        progress_id: { type: 'number', description: 'The progress update ID' },
++        text: { type: 'string', description: 'New progress update text' },
++      },
++      required: ['task_id', 'progress_id', 'text'],
++    },
++  },
++  {
++    name: 'delete_progress_update',
++    description: 'Delete a progress update from a task',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'The task ID' },
++        progress_id: { type: 'number', description: 'The progress update ID' },
++      },
++      required: ['task_id', 'progress_id'],
++    },
++  },
++  {
++    name: 'display_task',
++    description: 'Display a styled task card in the chat. Call this to show a task visually.',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        task_id: { type: 'string', description: 'Task ID' },
++        title: { type: 'string', description: 'Task title' },
++        status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'], description: 'Task status' },
++        description: { type: 'string', description: 'Brief description' },
++        severity: { type: 'string', description: 'Optional bug severity' },
++      },
++      required: ['title'],
++    },
++  },
++];
++
++function handleTaskToolCall(tasksFile, { name, args = {}, testsFile = null }) {
++  const data = loadTasksDoc(tasksFile);
++
++  switch (name) {
++    case 'list_tasks': {
++      let tasks = data.tasks;
++      if (args.status) tasks = tasks.filter((task) => task.status === args.status);
++      const summary = tasks.map((task) => ({
++        id: task.id,
++        title: task.title,
++        description: task.description,
++        status: task.status,
++        severity: task.severity || null,
++        linkedTestIds: task.linkedTestIds || [],
++        comments_count: (task.comments || []).length,
++        progress_count: (task.progress_updates || []).length,
++        created_at: task.created_at,
++        updated_at: task.updated_at,
++      }));
++      return JSON.stringify(summary, null, 2);
++    }
++
++    case 'get_task': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      return JSON.stringify(task, null, 2);
++    }
++
++    case 'search_tasks': {
++      let tasks = data.tasks;
++      if (args.status) tasks = tasks.filter((task) => task.status === args.status);
++      const matches = rankSearchResults(
++        tasks,
++        args.query,
++        (task) => ([
++          { label: 'title', value: task.title, weight: 5 },
++          { label: 'description', value: task.description, weight: 3 },
++          { label: 'details', value: task.detail_text, weight: 2 },
++        ]),
++        args.limit || 5,
++      );
++      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
++        id: item.id,
++        title: item.title,
++        description: item.description,
++        status: item.status,
++        severity: item.severity || null,
++        updated_at: item.updated_at,
++        linkedTestIds: item.linkedTestIds || [],
++        match_score: score,
++        match_reason: matchReason,
++      })), null, 2);
++    }
++
++    case 'create_task': {
++      const status = args.status || 'todo';
++      if (!VALID_TASK_STATUSES.includes(status)) throw new Error(`Invalid status: ${status}`);
++      const id = `task-${data.nextId++}`;
++      const task = ensureTaskDefaults({
++        id,
++        title: args.title,
++        description: args.description || '',
++        detail_text: args.detail_text || '',
++        severity: normalizeSeverity(args.severity),
++        status,
++        created_at: nowIso(),
++        updated_at: nowIso(),
++        comments: [],
++        progress_updates: [],
++        linkedTestIds: [],
++      });
++      data.tasks.push(task);
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(task, null, 2);
++    }
++
++    case 'update_task_status': {
++      if (!VALID_TASK_STATUSES.includes(args.status)) throw new Error(`Invalid status: ${args.status}`);
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      task.status = args.status;
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(task, null, 2);
++    }
++
++    case 'update_task_fields': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      if (args.title !== undefined) task.title = args.title;
++      if (args.description !== undefined) task.description = args.description;
++      if (args.detail_text !== undefined) task.detail_text = args.detail_text;
++      if (args.severity !== undefined) task.severity = normalizeSeverity(args.severity);
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(task, null, 2);
++    }
++
++    case 'delete_task': {
++      const index = data.tasks.findIndex((task) => String(task.id) === String(args.task_id));
++      if (index === -1) throw new Error(`Task not found: ${args.task_id}`);
++      const removed = data.tasks.splice(index, 1)[0];
++      saveTasksDoc(tasksFile, data);
++      if (testsFile) {
++        const testsDoc = loadTestsDoc(testsFile);
++        cleanupDeletedTask(removed.id, testsDoc);
++        saveTestsDoc(testsFile, testsDoc);
++      }
++      return JSON.stringify({ deleted: removed.id }, null, 2);
++    }
++
++    case 'add_comment': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const comment = {
++        id: data.nextCommentId++,
++        author: args.author || 'agent',
++        text: args.text,
++        created_at: nowIso(),
++      };
++      task.comments.push(comment);
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(comment, null, 2);
++    }
++
++    case 'add_progress_update': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const update = {
++        id: data.nextProgressId++,
++        author: args.author || 'agent',
++        text: args.text,
++        created_at: nowIso(),
++      };
++      task.progress_updates.push(update);
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(update, null, 2);
++    }
++
++    case 'edit_comment': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const comment = (task.comments || []).find((item) => item.id === args.comment_id);
++      if (!comment) throw new Error(`Comment not found: ${args.comment_id}`);
++      comment.text = args.text;
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(comment, null, 2);
++    }
++
++    case 'delete_comment': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const index = (task.comments || []).findIndex((item) => item.id === args.comment_id);
++      if (index === -1) throw new Error(`Comment not found: ${args.comment_id}`);
++      task.comments.splice(index, 1);
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify({ deleted: args.comment_id }, null, 2);
++    }
++
++    case 'edit_progress_update': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const update = (task.progress_updates || []).find((item) => item.id === args.progress_id);
++      if (!update) throw new Error(`Progress update not found: ${args.progress_id}`);
++      update.text = args.text;
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify(update, null, 2);
++    }
++
++    case 'delete_progress_update': {
++      const task = findTask(data, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      const index = (task.progress_updates || []).findIndex((item) => item.id === args.progress_id);
++      if (index === -1) throw new Error(`Progress update not found: ${args.progress_id}`);
++      task.progress_updates.splice(index, 1);
++      task.updated_at = nowIso();
++      saveTasksDoc(tasksFile, data);
++      return JSON.stringify({ deleted: args.progress_id }, null, 2);
++    }
++
++    case 'display_task':
++      return 'Displayed task card.';
++
++    default:
++      throw new Error(`Unknown tool: ${name}`);
++  }
++}
++
++module.exports = {
++  TASK_TOOLS,
++  handleTaskToolCall,
++};
+diff --git a/extension/tasks-mcp-http.js b/extension/tasks-mcp-http.js
+index 55202dd38b67d7b3d67279690bbf076a7d9b2421..08dae1e63c3fcf50598e347d4e15b85b3288954e 100644
+--- a/extension/tasks-mcp-http.js
++++ b/extension/tasks-mcp-http.js
+@@ -1,207 +1,25 @@
+ /**
+  * HTTP version of the QA Panda Tasks MCP Server.
+- * Reuses the same tool definitions and handler logic as the stdio version,
++ * Reuses the same domain logic as the stdio version,
+  * but serves over HTTP so container-based agents can reach it via host.docker.internal.
+  */
+-const fs = require('node:fs');
+-const path = require('node:path');
+ const { createMcpHttpServer } = require('./mcp-http-server');
+-const { rankSearchResults } = require('./mcp-search');
+-
+-const VALID_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'];
+-
+-function nowIso() { return new Date().toISOString(); }
+-
+-function loadData(tasksFile) {
+-  try {
+-    return JSON.parse(fs.readFileSync(tasksFile, 'utf8'));
+-  } catch {
+-    return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] };
+-  }
+-}
+-
+-function saveData(tasksFile, data) {
+-  const dir = path.dirname(tasksFile);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(tasksFile, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-const TOOLS = [
+-  { name: 'list_tasks', description: 'List tasks, optionally filtered by status', inputSchema: { type: 'object', properties: { status: { type: 'string', description: 'Filter by status (backlog, todo, in_progress, review, testing, done)' } } } },
+-  { name: 'get_task', description: 'Get task details by ID, including comments and progress updates', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' } }, required: ['task_id'] } },
+-  { name: 'search_tasks', description: 'Search for likely duplicate existing tasks before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search text describing the issue' }, status: { type: 'string', description: 'Optional status filter' }, limit: { type: 'number', description: 'Maximum results to return (default 5)' } }, required: ['query'] } },
+-  { name: 'create_task', description: 'Create a new task', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Task title' }, description: { type: 'string', description: 'Short description' }, detail_text: { type: 'string', description: 'Detailed notes / acceptance criteria' }, status: { type: 'string', description: 'Initial status (default: todo)' } }, required: ['title'] } },
+-  { name: 'update_task_status', description: 'Move a task to a new status column', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' }, status: { type: 'string', description: 'New status' } }, required: ['task_id', 'status'] } },
+-  { name: 'update_task_fields', description: 'Update task title, description, or detail_text', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' }, title: { type: 'string' }, description: { type: 'string' }, detail_text: { type: 'string' } }, required: ['task_id'] } },
+-  { name: 'delete_task', description: 'Delete a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task ID' } }, required: ['task_id'] } },
+-  { name: 'add_comment', description: 'Add a comment to a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, text: { type: 'string' }, author: { type: 'string', description: 'Author name (default: agent)' } }, required: ['task_id', 'text'] } },
+-  { name: 'add_progress_update', description: 'Add a progress update to a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, text: { type: 'string' }, author: { type: 'string' } }, required: ['task_id', 'text'] } },
+-  { name: 'edit_comment', description: 'Edit an existing comment on a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, comment_id: { type: 'number' }, text: { type: 'string' } }, required: ['task_id', 'comment_id', 'text'] } },
+-  { name: 'delete_comment', description: 'Delete a comment from a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, comment_id: { type: 'number' } }, required: ['task_id', 'comment_id'] } },
+-  { name: 'edit_progress_update', description: 'Edit an existing progress update on a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, progress_id: { type: 'number' }, text: { type: 'string' } }, required: ['task_id', 'progress_id', 'text'] } },
+-  { name: 'delete_progress_update', description: 'Delete a progress update from a task', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, progress_id: { type: 'number' } }, required: ['task_id', 'progress_id'] } },
+-  { name: 'display_task', description: 'Display a styled task card in the chat. Call this to show a task visually.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Task ID' }, title: { type: 'string', description: 'Task title' }, status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'], description: 'Task status' }, description: { type: 'string', description: 'Brief description' } }, required: ['title'] } },
+-];
+-
+-function handleToolCall(tasksFile, name, args) {
+-  const data = loadData(tasksFile);
+-
+-  switch (name) {
+-    case 'list_tasks': {
+-      let tasks = data.tasks;
+-      if (args.status) tasks = tasks.filter(t => t.status === args.status);
+-      const summary = tasks.map(t => ({
+-        id: t.id, title: t.title, description: t.description, status: t.status,
+-        comments_count: (t.comments || []).length, progress_count: (t.progress_updates || []).length,
+-        created_at: t.created_at, updated_at: t.updated_at,
+-      }));
+-      return JSON.stringify(summary, null, 2);
+-    }
+-    case 'get_task': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      return JSON.stringify(task, null, 2);
+-    }
+-    case 'search_tasks': {
+-      let tasks = data.tasks;
+-      if (args.status) tasks = tasks.filter(t => t.status === args.status);
+-      const matches = rankSearchResults(
+-        tasks,
+-        args.query,
+-        (task) => ([
+-          { label: 'title', value: task.title, weight: 5 },
+-          { label: 'description', value: task.description, weight: 3 },
+-          { label: 'details', value: task.detail_text, weight: 2 },
+-        ]),
+-        args.limit || 5
+-      );
+-      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+-        id: item.id,
+-        title: item.title,
+-        description: item.description,
+-        status: item.status,
+-        updated_at: item.updated_at,
+-        linkedTestIds: item.linkedTestIds || [],
+-        match_score: score,
+-        match_reason: matchReason,
+-      })), null, 2);
+-    }
+-    case 'create_task': {
+-      const status = args.status || 'todo';
+-      if (!VALID_STATUSES.includes(status)) throw new Error(`Invalid status: ${status}`);
+-      const id = `task-${data.nextId++}`;
+-      const task = { id, title: args.title, description: args.description || '', detail_text: args.detail_text || '', status, created_at: nowIso(), updated_at: nowIso(), comments: [], progress_updates: [] };
+-      data.tasks.push(task);
+-      saveData(tasksFile, data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-    case 'update_task_status': {
+-      if (!VALID_STATUSES.includes(args.status)) throw new Error(`Invalid status: ${args.status}`);
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      task.status = args.status;
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-    case 'update_task_fields': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (args.title !== undefined) task.title = args.title;
+-      if (args.description !== undefined) task.description = args.description;
+-      if (args.detail_text !== undefined) task.detail_text = args.detail_text;
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-    case 'delete_task': {
+-      const idx = data.tasks.findIndex(t => t.id === args.task_id);
+-      if (idx === -1) throw new Error(`Task not found: ${args.task_id}`);
+-      const removed = data.tasks.splice(idx, 1)[0];
+-      saveData(tasksFile, data);
+-      return JSON.stringify({ deleted: removed.id });
+-    }
+-    case 'add_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (!task.comments) task.comments = [];
+-      const comment = { id: data.nextCommentId++, author: args.author || 'agent', text: args.text, created_at: nowIso() };
+-      task.comments.push(comment);
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(comment, null, 2);
+-    }
+-    case 'add_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (!task.progress_updates) task.progress_updates = [];
+-      const update = { id: data.nextProgressId++, author: args.author || 'agent', text: args.text, created_at: nowIso() };
+-      task.progress_updates.push(update);
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(update, null, 2);
+-    }
+-    case 'edit_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const comment = (task.comments || []).find(c => c.id === args.comment_id);
+-      if (!comment) throw new Error(`Comment not found: ${args.comment_id}`);
+-      comment.text = args.text;
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(comment, null, 2);
+-    }
+-    case 'delete_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const idx = (task.comments || []).findIndex(c => c.id === args.comment_id);
+-      if (idx === -1) throw new Error(`Comment not found: ${args.comment_id}`);
+-      task.comments.splice(idx, 1);
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify({ deleted: args.comment_id });
+-    }
+-    case 'edit_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const update = (task.progress_updates || []).find(p => p.id === args.progress_id);
+-      if (!update) throw new Error(`Progress update not found: ${args.progress_id}`);
+-      update.text = args.text;
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify(update, null, 2);
+-    }
+-    case 'delete_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const idx = (task.progress_updates || []).findIndex(p => p.id === args.progress_id);
+-      if (idx === -1) throw new Error(`Progress update not found: ${args.progress_id}`);
+-      task.progress_updates.splice(idx, 1);
+-      task.updated_at = nowIso();
+-      saveData(tasksFile, data);
+-      return JSON.stringify({ deleted: args.progress_id });
+-    }
+-    case 'display_task': return 'Displayed task card.';
+-    default:
+-      throw new Error(`Unknown tool: ${name}`);
+-  }
+-}
+-
+-// --- Server lifecycle ---
++const { TASK_TOOLS, handleTaskToolCall } = require('./tasks-domain');
+ 
+ let _server = null;
+ 
+ /**
+  * Start the HTTP tasks MCP server.
+  * @param {string} tasksFile - Absolute path to tasks.json
++ * @param {string|null} testsFile - Optional absolute path to tests.json for backlink cleanup
+  * @returns {Promise<{port: number, close: function}>}
+  */
+-async function startTasksMcpServer(tasksFile) {
++async function startTasksMcpServer(tasksFile, testsFile = null) {
+   if (_server) return { port: _server.port, close: _server.close };
+ 
+   const result = await createMcpHttpServer({
+-    tools: TOOLS,
+-    handleToolCall: (name, args) => handleToolCall(tasksFile, name, args),
++    tools: TASK_TOOLS,
++    handleToolCall: (name, args) => handleTaskToolCall(tasksFile, { name, args, testsFile }),
+     serverName: 'cc-tasks',
+   });
+ 
+diff --git a/extension/tasks-mcp-server.js b/extension/tasks-mcp-server.js
+index 5725ee4d1ec4a84a3918f1a59662c55ef6a394dd..8a1db29bd1de9143662a04fd069846c1226b1504 100644
+--- a/extension/tasks-mcp-server.js
++++ b/extension/tasks-mcp-server.js
+@@ -3,411 +3,20 @@
+  * QA Panda Tasks MCP Server — exposes task CRUD as MCP tools.
+  *
+  * Protocol: JSON-RPC 2.0 over stdio (one JSON message per line).
+- * No external dependencies — uses only Node.js built-ins.
+  *
+  * Env vars:
+  *   TASKS_FILE — absolute path to the tasks.json file
++ *   TESTS_FILE — optional absolute path to tests.json for backlink cleanup
+  */
+ 
+-const fs = require('node:fs');
+ const readline = require('node:readline');
+-const path = require('node:path');
+-const { rankSearchResults } = require('./mcp-search');
++const { TASK_TOOLS, handleTaskToolCall } = require('./tasks-domain');
+ 
+ const TASKS_FILE = process.env.TASKS_FILE || '';
++const TESTS_FILE = process.env.TESTS_FILE || '';
+ 
+-const VALID_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'];
+-
+-// ─── Data helpers ────────────────────────────────────────────────────────────
+-
+-function loadData() {
+-  try {
+-    return JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8'));
+-  } catch {
+-    return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] };
+-  }
+-}
+-
+-function saveData(data) {
+-  const dir = path.dirname(TASKS_FILE);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(TASKS_FILE, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-function nowIso() {
+-  return new Date().toISOString();
+-}
+-
+-// ─── Tool definitions ───────────────────────────────────────────────────────
+-
+-const TOOLS = [
+-  {
+-    name: 'list_tasks',
+-    description: 'List tasks, optionally filtered by status',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        status: { type: 'string', description: 'Filter by status (backlog, todo, in_progress, review, testing, done)' },
+-      },
+-    },
+-  },
+-  {
+-    name: 'get_task',
+-    description: 'Get task details by ID, including comments and progress updates',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-      },
+-      required: ['task_id'],
+-    },
+-  },
+-  {
+-    name: 'search_tasks',
+-    description: 'Search for likely duplicate existing tasks before creating a new one',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        query: { type: 'string', description: 'Search text describing the issue' },
+-        status: { type: 'string', description: 'Optional status filter' },
+-        limit: { type: 'number', description: 'Maximum results to return (default 5)' },
+-      },
+-      required: ['query'],
+-    },
+-  },
+-  {
+-    name: 'create_task',
+-    description: 'Create a new task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        title: { type: 'string', description: 'Task title' },
+-        description: { type: 'string', description: 'Short description' },
+-        detail_text: { type: 'string', description: 'Detailed notes / acceptance criteria' },
+-        status: { type: 'string', description: 'Initial status (default: todo)' },
+-      },
+-      required: ['title'],
+-    },
+-  },
+-  {
+-    name: 'update_task_status',
+-    description: 'Move a task to a new status column',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        status: { type: 'string', description: 'New status (backlog, todo, in_progress, review, testing, done)' },
+-      },
+-      required: ['task_id', 'status'],
+-    },
+-  },
+-  {
+-    name: 'update_task_fields',
+-    description: 'Update task title, description, or detail_text',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        title: { type: 'string', description: 'New title' },
+-        description: { type: 'string', description: 'New description' },
+-        detail_text: { type: 'string', description: 'New detail text' },
+-      },
+-      required: ['task_id'],
+-    },
+-  },
+-  {
+-    name: 'delete_task',
+-    description: 'Delete a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-      },
+-      required: ['task_id'],
+-    },
+-  },
+-  {
+-    name: 'add_comment',
+-    description: 'Add a comment to a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        text: { type: 'string', description: 'Comment text' },
+-        author: { type: 'string', description: 'Author name (default: agent)' },
+-      },
+-      required: ['task_id', 'text'],
+-    },
+-  },
+-  {
+-    name: 'add_progress_update',
+-    description: 'Add a progress update to a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        text: { type: 'string', description: 'Progress update text' },
+-        author: { type: 'string', description: 'Author name (default: agent)' },
+-      },
+-      required: ['task_id', 'text'],
+-    },
+-  },
+-  {
+-    name: 'edit_comment',
+-    description: 'Edit an existing comment on a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        comment_id: { type: 'number', description: 'The comment ID' },
+-        text: { type: 'string', description: 'New comment text' },
+-      },
+-      required: ['task_id', 'comment_id', 'text'],
+-    },
+-  },
+-  {
+-    name: 'delete_comment',
+-    description: 'Delete a comment from a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        comment_id: { type: 'number', description: 'The comment ID' },
+-      },
+-      required: ['task_id', 'comment_id'],
+-    },
+-  },
+-  {
+-    name: 'edit_progress_update',
+-    description: 'Edit an existing progress update on a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        progress_id: { type: 'number', description: 'The progress update ID' },
+-        text: { type: 'string', description: 'New progress update text' },
+-      },
+-      required: ['task_id', 'progress_id', 'text'],
+-    },
+-  },
+-  {
+-    name: 'delete_progress_update',
+-    description: 'Delete a progress update from a task',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'The task ID' },
+-        progress_id: { type: 'number', description: 'The progress update ID' },
+-      },
+-      required: ['task_id', 'progress_id'],
+-    },
+-  },
+-  // Display card (rendered as a styled card in the chat UI)
+-  {
+-    name: 'display_task',
+-    description: 'Display a styled task card in the chat. Call this to show a task visually.',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        task_id: { type: 'string', description: 'Task ID' },
+-        title: { type: 'string', description: 'Task title' },
+-        status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'review', 'testing', 'done'], description: 'Task status' },
+-        description: { type: 'string', description: 'Brief description' },
+-      },
+-      required: ['title'],
+-    },
+-  },
+-];
+-
+-// ─── Tool handlers ──────────────────────────────────────────────────────────
+-
+-function handleToolCall(name, args) {
+-  const data = loadData();
+-
+-  switch (name) {
+-    case 'list_tasks': {
+-      let tasks = data.tasks;
+-      if (args.status) {
+-        tasks = tasks.filter(t => t.status === args.status);
+-      }
+-      // Return summary (without full comments/progress)
+-      const summary = tasks.map(t => ({
+-        id: t.id, title: t.title, description: t.description, status: t.status,
+-        comments_count: (t.comments || []).length,
+-        progress_count: (t.progress_updates || []).length,
+-        created_at: t.created_at, updated_at: t.updated_at,
+-      }));
+-      return JSON.stringify(summary, null, 2);
+-    }
+-
+-    case 'get_task': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      return JSON.stringify(task, null, 2);
+-    }
+-
+-    case 'search_tasks': {
+-      let tasks = data.tasks;
+-      if (args.status) tasks = tasks.filter(t => t.status === args.status);
+-      const matches = rankSearchResults(
+-        tasks,
+-        args.query,
+-        (task) => ([
+-          { label: 'title', value: task.title, weight: 5 },
+-          { label: 'description', value: task.description, weight: 3 },
+-          { label: 'details', value: task.detail_text, weight: 2 },
+-        ]),
+-        args.limit || 5
+-      );
+-      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+-        id: item.id,
+-        title: item.title,
+-        description: item.description,
+-        status: item.status,
+-        updated_at: item.updated_at,
+-        linkedTestIds: item.linkedTestIds || [],
+-        match_score: score,
+-        match_reason: matchReason,
+-      })), null, 2);
+-    }
+-
+-    case 'create_task': {
+-      const status = args.status || 'todo';
+-      if (!VALID_STATUSES.includes(status)) throw new Error(`Invalid status: ${status}`);
+-      const id = `task-${data.nextId++}`;
+-      const task = {
+-        id,
+-        title: args.title,
+-        description: args.description || '',
+-        detail_text: args.detail_text || '',
+-        status,
+-        created_at: nowIso(),
+-        updated_at: nowIso(),
+-        comments: [],
+-        progress_updates: [],
+-      };
+-      data.tasks.push(task);
+-      saveData(data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-
+-    case 'update_task_status': {
+-      if (!VALID_STATUSES.includes(args.status)) throw new Error(`Invalid status: ${args.status}`);
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      task.status = args.status;
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-
+-    case 'update_task_fields': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (args.title !== undefined) task.title = args.title;
+-      if (args.description !== undefined) task.description = args.description;
+-      if (args.detail_text !== undefined) task.detail_text = args.detail_text;
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(task, null, 2);
+-    }
+-
+-    case 'delete_task': {
+-      const idx = data.tasks.findIndex(t => t.id === args.task_id);
+-      if (idx === -1) throw new Error(`Task not found: ${args.task_id}`);
+-      const removed = data.tasks.splice(idx, 1)[0];
+-      saveData(data);
+-      return JSON.stringify({ deleted: removed.id });
+-    }
+-
+-    case 'add_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (!task.comments) task.comments = [];
+-      const comment = {
+-        id: data.nextCommentId++,
+-        author: args.author || 'agent',
+-        text: args.text,
+-        created_at: nowIso(),
+-      };
+-      task.comments.push(comment);
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(comment, null, 2);
+-    }
+-
+-    case 'add_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      if (!task.progress_updates) task.progress_updates = [];
+-      const update = {
+-        id: data.nextProgressId++,
+-        author: args.author || 'agent',
+-        text: args.text,
+-        created_at: nowIso(),
+-      };
+-      task.progress_updates.push(update);
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(update, null, 2);
+-    }
+-
+-    case 'edit_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const comment = (task.comments || []).find(c => c.id === args.comment_id);
+-      if (!comment) throw new Error(`Comment not found: ${args.comment_id}`);
+-      comment.text = args.text;
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(comment, null, 2);
+-    }
+-
+-    case 'delete_comment': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const idx = (task.comments || []).findIndex(c => c.id === args.comment_id);
+-      if (idx === -1) throw new Error(`Comment not found: ${args.comment_id}`);
+-      task.comments.splice(idx, 1);
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ deleted: args.comment_id });
+-    }
+-
+-    case 'edit_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const update = (task.progress_updates || []).find(p => p.id === args.progress_id);
+-      if (!update) throw new Error(`Progress update not found: ${args.progress_id}`);
+-      update.text = args.text;
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(update, null, 2);
+-    }
+-
+-    case 'delete_progress_update': {
+-      const task = data.tasks.find(t => t.id === args.task_id);
+-      if (!task) throw new Error(`Task not found: ${args.task_id}`);
+-      const idx = (task.progress_updates || []).findIndex(p => p.id === args.progress_id);
+-      if (idx === -1) throw new Error(`Progress update not found: ${args.progress_id}`);
+-      task.progress_updates.splice(idx, 1);
+-      task.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ deleted: args.progress_id });
+-    }
+-
+-    case 'display_task':
+-      return 'Displayed task card.';
+-
+-    default:
+-      throw new Error(`Unknown tool: ${name}`);
+-  }
+-}
+-
+-// ─── JSON-RPC / MCP protocol ───────────────────────────────────────────────
+-
+-function send(msg) {
+-  process.stdout.write(JSON.stringify(msg) + '\n');
++function send(message) {
++  process.stdout.write(JSON.stringify(message) + '\n');
+ }
+ 
+ function makeResult(id, result) {
+@@ -418,40 +27,40 @@ function makeError(id, code, message) {
+   return { jsonrpc: '2.0', id, error: { code, message } };
+ }
+ 
+-function handleMessage(msg) {
+-  const { id, method, params } = msg;
++async function handleMessage(message) {
++  const { id, method, params } = message;
+ 
+   switch (method) {
+     case 'initialize':
+       send(makeResult(id, {
+         protocolVersion: '2024-11-05',
+         capabilities: { tools: {} },
+-        serverInfo: { name: 'cc-tasks', version: '1.0.0' },
++        serverInfo: { name: 'cc-tasks', version: '1.1.0' },
+       }));
+-      break;
++      return;
+ 
+     case 'notifications/initialized':
+-      break;
++      return;
+ 
+     case 'tools/list':
+-      send(makeResult(id, { tools: TOOLS }));
+-      break;
++      send(makeResult(id, { tools: TASK_TOOLS }));
++      return;
+ 
+     case 'tools/call': {
+       const toolName = params?.name;
+       const args = params?.arguments || {};
+       try {
+-        const text = handleToolCall(toolName, args);
++        const text = handleTaskToolCall(TASKS_FILE, { name: toolName, args, testsFile: TESTS_FILE || null });
+         send(makeResult(id, {
+           content: [{ type: 'text', text }],
+         }));
+-      } catch (e) {
++      } catch (error) {
+         send(makeResult(id, {
+-          content: [{ type: 'text', text: `Error: ${e.message}` }],
++          content: [{ type: 'text', text: `Error: ${error.message}` }],
+           isError: true,
+         }));
+       }
+-      break;
++      return;
+     }
+ 
+     default:
+@@ -461,17 +70,22 @@ function handleMessage(msg) {
+   }
+ }
+ 
+-// ─── Main ───────────────────────────────────────────────────────────────────
+-
+ const rl = readline.createInterface({ input: process.stdin });
+ rl.on('line', (line) => {
+-  if (!line.trim()) return;
++  let message;
+   try {
+-    const msg = JSON.parse(line);
+-    handleMessage(msg);
+-  } catch (e) {
+-    send(makeError(null, -32700, `Parse error: ${e.message}`));
++    message = JSON.parse(line);
++  } catch {
++    return;
+   }
++  handleMessage(message).catch((error) => {
++    if (message && message.id !== undefined) {
++      send(makeResult(message.id, {
++        content: [{ type: 'text', text: `Error: ${error.message}` }],
++        isError: true,
++      }));
++    }
++  });
+ });
+ 
+ process.stderr.write(`[cc-tasks-mcp] Server started, tasks file: ${TASKS_FILE}\n`);
+diff --git a/extension/tests-domain.js b/extension/tests-domain.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e78cce319426274730ab0f742ea840f20c0d8b9a
+--- /dev/null
++++ b/extension/tests-domain.js
+@@ -0,0 +1,369 @@
++const { rankSearchResults } = require('./mcp-search');
++const {
++  VALID_STEP_STATUSES,
++  VALID_ENVIRONMENTS,
++  nowIso,
++  loadTestsDoc,
++  saveTestsDoc,
++  loadTasksDoc,
++  saveTasksDoc,
++  computeOverallStatus,
++  computeRunStatus,
++  updateTestStatus,
++  syncTestStepsFromRun,
++  ensureTaskTestLink,
++  removeTaskTestLink,
++  cleanupDeletedTest,
++  findTask,
++  findTest,
++  findRun,
++  buildFailingBugDescription,
++  buildTestCardPayload,
++  normalizeSeverity,
++} = require('./qa-state-store');
++
++const RUN_RESULT_STATUSES = ['pass', 'fail', 'skip'];
++
++const TEST_TOOLS = [
++  { name: 'list_tests', description: 'List tests, optionally filtered by status, environment, or tag', inputSchema: { type: 'object', properties: { status: { type: 'string', description: 'Filter: untested, passing, failing, partial' }, environment: { type: 'string', description: 'Filter: browser, computer' }, tag: { type: 'string', description: 'Filter by tag' } } } },
++  { name: 'get_test', description: 'Get full test details including steps, runs, and linked tasks', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
++  { name: 'search_tests', description: 'Search for likely reusable existing tests before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string' }, environment: { type: 'string', description: 'Optional environment filter: browser or computer' }, limit: { type: 'number', description: 'Maximum results to return (default 5)' } }, required: ['query'] } },
++  { name: 'create_test', description: 'Create a new test case', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string', description: 'browser or computer' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['title', 'environment'] } },
++  { name: 'update_test', description: 'Update test fields (title, description, environment, tags)', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['test_id'] } },
++  { name: 'delete_test', description: 'Delete a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
++  { name: 'add_test_step', description: 'Add a step to a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'description', 'expectedResult'] } },
++  { name: 'update_test_step', description: 'Update a test step definition', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'step_id'] } },
++  { name: 'delete_test_step', description: 'Delete a step from a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' } }, required: ['test_id', 'step_id'] } },
++  { name: 'run_test', description: 'Start a new test run for a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, agent: { type: 'string', description: 'Agent name performing the test' } }, required: ['test_id'] } },
++  { name: 'reset_test_steps', description: 'Reset stored step results on a test before rerunning it', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, clear_actual_results: { type: 'boolean', description: 'Clear stored actual results (default true)' } }, required: ['test_id'] } },
++  { name: 'update_step_result', description: 'Record pass/fail result for a step in a test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, step_id: { type: 'number' }, status: { type: 'string', description: 'pass, fail, or skip' }, actualResult: { type: 'string', description: 'Actual result if different from expected' } }, required: ['test_id', 'run_id', 'step_id', 'status'] } },
++  { name: 'complete_test_run', description: 'Finalize a test run and compute overall status', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, notes: { type: 'string' } }, required: ['test_id', 'run_id'] } },
++  { name: 'link_test_to_task', description: 'Link a test to a task (bug ticket)', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
++  { name: 'unlink_test_from_task', description: 'Remove link between test and task', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
++  { name: 'create_bug_from_test', description: 'Create a bug ticket (task) from a failing test and auto-link them', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, severity: { type: 'string', description: 'Optional bug severity: critical, high, medium, low' } }, required: ['test_id', 'title'] } },
++  { name: 'get_test_history', description: 'Get all run history for a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
++  { name: 'get_test_summary', description: 'Get overall test suite statistics', inputSchema: { type: 'object', properties: {} } },
++  { name: 'display_test_summary', description: 'Display a styled test summary card in the chat. Call this after completing a test run to show results visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Test name' }, passed: { type: 'number', description: 'Number of passed steps' }, failed: { type: 'number', description: 'Number of failed steps' }, skipped: { type: 'number', description: 'Number of skipped steps' }, steps: { type: 'array', description: 'Individual step results', items: { type: 'object', properties: { name: { type: 'string', description: 'Step name' }, status: { type: 'string', enum: ['pass', 'fail', 'skip'], description: 'Step result: pass, fail, or skip' } }, required: ['name', 'status'] } } }, required: ['title'] } },
++  { name: 'display_bug_report', description: 'Display a styled bug report card in the chat. Call this when filing a bug to show it visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Bug title' }, task_id: { type: 'string', description: 'Task ID if already created' }, description: { type: 'string', description: 'Bug description' }, severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'], description: 'Bug severity' } }, required: ['title'] } },
++];
++
++function withTestCard(payload, test, includeCards) {
++  if (!includeCards) return payload;
++  return { ...payload, _testCard: buildTestCardPayload(test) };
++}
++
++function requireTasksFile(tasksFile) {
++  if (!tasksFile) throw new Error('TASKS_FILE is required for this operation');
++}
++
++function handleTestToolCall({ testsFile, tasksFile, name, args = {}, includeCards = false }) {
++  const data = loadTestsDoc(testsFile);
++
++  switch (name) {
++    case 'list_tests': {
++      let tests = data.tests;
++      if (args.status) tests = tests.filter((test) => test.status === args.status);
++      if (args.environment) tests = tests.filter((test) => test.environment === args.environment);
++      if (args.tag) tests = tests.filter((test) => test.tags && test.tags.includes(args.tag));
++      const summary = tests.map((test) => ({
++        id: test.id,
++        title: test.title,
++        description: test.description,
++        environment: test.environment,
++        status: test.status,
++        steps_count: (test.steps || []).length,
++        steps_passing: (test.steps || []).filter((step) => step.status === 'pass').length,
++        tags: test.tags || [],
++        linkedTaskIds: test.linkedTaskIds || [],
++        lastTestedAt: test.lastTestedAt,
++        created_at: test.created_at,
++      }));
++      return JSON.stringify(summary, null, 2);
++    }
++
++    case 'get_test': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test not found: ${args.test_id}`);
++      return JSON.stringify(test, null, 2);
++    }
++
++    case 'search_tests': {
++      let tests = data.tests;
++      if (args.environment) tests = tests.filter((test) => test.environment === args.environment);
++      const matches = rankSearchResults(
++        tests,
++        args.query,
++        (test) => ([
++          { label: 'title', value: test.title, weight: 5 },
++          { label: 'description', value: test.description, weight: 3 },
++          { label: 'tags', value: (test.tags || []).join(' '), weight: 2 },
++          { label: 'steps', value: (test.steps || []).map((step) => `${step.description} ${step.expectedResult}`).join(' '), weight: 2 },
++        ]),
++        args.limit || 5,
++      );
++      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
++        id: item.id,
++        title: item.title,
++        description: item.description,
++        environment: item.environment,
++        status: item.status,
++        tags: item.tags || [],
++        linkedTaskIds: item.linkedTaskIds || [],
++        updated_at: item.updated_at,
++        match_score: score,
++        match_reason: matchReason,
++      })), null, 2);
++    }
++
++    case 'create_test': {
++      const environment = VALID_ENVIRONMENTS.includes(args.environment) ? args.environment : null;
++      if (!environment) throw new Error(`Invalid environment: ${args.environment}`);
++      const id = `test-${data.nextId++}`;
++      const test = {
++        id,
++        title: args.title,
++        description: args.description || '',
++        environment,
++        status: 'untested',
++        steps: [],
++        linkedTaskIds: [],
++        tags: Array.isArray(args.tags) ? args.tags : [],
++        lastTestedAt: null,
++        lastTestedBy: null,
++        created_at: nowIso(),
++        updated_at: nowIso(),
++        runs: [],
++      };
++      data.tests.push(test);
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(test, null, 2);
++    }
++
++    case 'update_test': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test not found: ${args.test_id}`);
++      if (args.title !== undefined) test.title = args.title;
++      if (args.description !== undefined) test.description = args.description;
++      if (args.environment !== undefined) {
++        if (!VALID_ENVIRONMENTS.includes(args.environment)) throw new Error(`Invalid environment: ${args.environment}`);
++        test.environment = args.environment;
++      }
++      if (args.tags !== undefined) test.tags = Array.isArray(args.tags) ? args.tags : [];
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(test, null, 2);
++    }
++
++    case 'delete_test': {
++      const index = data.tests.findIndex((test) => String(test.id) === String(args.test_id));
++      if (index === -1) throw new Error(`Test not found: ${args.test_id}`);
++      const removed = data.tests.splice(index, 1)[0];
++      saveTestsDoc(testsFile, data);
++      if (tasksFile) {
++        const tasksDoc = loadTasksDoc(tasksFile);
++        cleanupDeletedTest(removed.id, tasksDoc);
++        saveTasksDoc(tasksFile, tasksDoc);
++      }
++      return JSON.stringify({ deleted: removed.id }, null, 2);
++    }
++
++    case 'add_test_step': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test not found: ${args.test_id}`);
++      const step = {
++        id: data.nextStepId++,
++        description: args.description,
++        expectedResult: args.expectedResult,
++        status: 'untested',
++        actualResult: null,
++      };
++      test.steps.push(step);
++      updateTestStatus(test);
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(step, null, 2);
++    }
++
++    case 'update_test_step': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test not found: ${args.test_id}`);
++      const step = test.steps.find((item) => Number(item.id) === Number(args.step_id));
++      if (!step) throw new Error(`Step ${args.step_id} not found`);
++      if (args.description !== undefined) step.description = args.description;
++      if (args.expectedResult !== undefined) step.expectedResult = args.expectedResult;
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(step, null, 2);
++    }
++
++    case 'delete_test_step': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test not found: ${args.test_id}`);
++      const nextSteps = test.steps.filter((step) => Number(step.id) !== Number(args.step_id));
++      if (nextSteps.length === test.steps.length) throw new Error(`Step ${args.step_id} not found`);
++      test.steps = nextSteps;
++      updateTestStatus(test);
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({ deleted: args.step_id }, null, 2);
++    }
++
++    case 'run_test': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      for (const step of test.steps) {
++        step.status = 'untested';
++        step.actualResult = null;
++      }
++      test.status = 'untested';
++      const run = {
++        id: data.nextRunId++,
++        date: nowIso(),
++        agent: args.agent || 'agent',
++        status: 'running',
++        stepResults: test.steps.map((step) => ({ stepId: step.id, status: 'untested', actualResult: null })),
++        notes: null,
++      };
++      test.runs.push(run);
++      test.lastTestedAt = run.date;
++      test.lastTestedBy = run.agent;
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({ run_id: run.id, test_id: test.id, steps_to_test: test.steps.length }, null, 2);
++    }
++
++    case 'reset_test_steps': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const clearActualResults = args.clear_actual_results !== false;
++      for (const step of test.steps || []) {
++        step.status = 'untested';
++        if (clearActualResults) step.actualResult = null;
++      }
++      test.status = 'untested';
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({
++        test_id: test.id,
++        reset_steps: (test.steps || []).length,
++        clear_actual_results: clearActualResults,
++        status: test.status,
++      }, null, 2);
++    }
++
++    case 'update_step_result': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const run = findRun(test, args.run_id);
++      if (!run) throw new Error(`Run ${args.run_id} not found`);
++      if (!RUN_RESULT_STATUSES.includes(args.status)) throw new Error(`Invalid status: ${args.status}`);
++      const stepResult = run.stepResults.find((result) => Number(result.stepId) === Number(args.step_id));
++      if (!stepResult) throw new Error(`Step ${args.step_id} not in this run`);
++      stepResult.status = args.status;
++      if (args.actualResult !== undefined) stepResult.actualResult = args.actualResult;
++      syncTestStepsFromRun(test, run);
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(withTestCard({ step_id: args.step_id, status: stepResult.status }, test, includeCards));
++    }
++
++    case 'complete_test_run': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const run = findRun(test, args.run_id);
++      if (!run) throw new Error(`Run ${args.run_id} not found`);
++      if (args.notes) run.notes = args.notes;
++      run.status = computeRunStatus(run.stepResults);
++      syncTestStepsFromRun(test, run);
++      test.updated_at = nowIso();
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify(withTestCard({ test_id: test.id, run_id: run.id, status: run.status, test_status: test.status }, test, includeCards), null, 2);
++    }
++
++    case 'link_test_to_task': {
++      requireTasksFile(tasksFile);
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const tasksDoc = loadTasksDoc(tasksFile);
++      const task = findTask(tasksDoc, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      ensureTaskTestLink(task, test);
++      task.updated_at = nowIso();
++      test.updated_at = nowIso();
++      saveTasksDoc(tasksFile, tasksDoc);
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({ test_id: test.id, task_id: task.id, linkedTaskIds: test.linkedTaskIds, linkedTestIds: task.linkedTestIds }, null, 2);
++    }
++
++    case 'unlink_test_from_task': {
++      requireTasksFile(tasksFile);
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const tasksDoc = loadTasksDoc(tasksFile);
++      const task = findTask(tasksDoc, args.task_id);
++      if (!task) throw new Error(`Task not found: ${args.task_id}`);
++      removeTaskTestLink(task, test);
++      task.updated_at = nowIso();
++      test.updated_at = nowIso();
++      saveTasksDoc(tasksFile, tasksDoc);
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({ test_id: test.id, task_id: task.id, linkedTaskIds: test.linkedTaskIds, linkedTestIds: task.linkedTestIds }, null, 2);
++    }
++
++    case 'create_bug_from_test': {
++      requireTasksFile(tasksFile);
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      const tasksDoc = loadTasksDoc(tasksFile);
++      const taskId = `task-${tasksDoc.nextId++}`;
++      const task = {
++        id: taskId,
++        title: args.title,
++        description: args.description || buildFailingBugDescription(test),
++        detail_text: '',
++        severity: normalizeSeverity(args.severity),
++        status: 'todo',
++        created_at: nowIso(),
++        updated_at: nowIso(),
++        comments: [],
++        progress_updates: [],
++        linkedTestIds: [],
++      };
++      ensureTaskTestLink(task, test);
++      test.updated_at = nowIso();
++      tasksDoc.tasks.push(task);
++      saveTasksDoc(tasksFile, tasksDoc);
++      saveTestsDoc(testsFile, data);
++      return JSON.stringify({ task_id: taskId, test_id: test.id, title: args.title, severity: task.severity }, null, 2);
++    }
++
++    case 'get_test_history': {
++      const test = findTest(data, args.test_id);
++      if (!test) throw new Error(`Test ${args.test_id} not found`);
++      return JSON.stringify(test.runs || [], null, 2);
++    }
++
++    case 'get_test_summary': {
++      const total = data.tests.length;
++      const passing = data.tests.filter((test) => test.status === 'passing').length;
++      const failing = data.tests.filter((test) => test.status === 'failing').length;
++      const partial = data.tests.filter((test) => test.status === 'partial').length;
++      const untested = data.tests.filter((test) => test.status === 'untested').length;
++      return JSON.stringify({ total, passing, failing, partial, untested }, null, 2);
++    }
++
++    case 'display_test_summary':
++      return 'Displayed test summary card.';
++
++    case 'display_bug_report':
++      return 'Displayed bug report card.';
++
++    default:
++      throw new Error(`Unknown tool: ${name}`);
++  }
++}
++
++module.exports = {
++  TEST_TOOLS,
++  handleTestToolCall,
++};
+diff --git a/extension/tests-mcp-http.js b/extension/tests-mcp-http.js
+index 8f39656cbdee805410130a1d8034c3198d78e716..dfedccc9be66db46505d2104c0380a7b049a4130 100644
+--- a/extension/tests-mcp-http.js
++++ b/extension/tests-mcp-http.js
+@@ -1,155 +1,35 @@
+ /**
+  * HTTP wrapper for cc-tests MCP server.
+- * Same pattern as tasks-mcp-http.js.
++ * Shares the same domain logic as the stdio server.
+  */
+-const fs = require('node:fs');
+-const path = require('node:path');
+ const { createMcpHttpServer } = require('./mcp-http-server');
+-const { rankSearchResults } = require('./mcp-search');
++const { TEST_TOOLS, handleTestToolCall } = require('./tests-domain');
+ 
+-// Import tool definitions and handler from the stdio server inline
+-// (we duplicate the tool list and handler to keep them in sync)
+-
+-const VALID_TEST_STATUSES = ['untested', 'passing', 'failing', 'partial'];
+-const VALID_STEP_STATUSES = ['untested', 'pass', 'fail', 'skip'];
+-const VALID_ENVIRONMENTS = ['browser', 'computer'];
+-
+-function nowIso() { return new Date().toISOString(); }
+-
+-function computeOverallStatus(steps) {
+-  if (!steps || steps.length === 0) return 'untested';
+-  const statuses = steps.map(s => s.status);
+-  if (statuses.every(s => s === 'untested')) return 'untested';
+-  if (statuses.every(s => s === 'pass' || s === 'skip')) return 'passing';
+-  if (statuses.every(s => s === 'fail')) return 'failing';
+-  if (statuses.some(s => s === 'fail')) return 'partial';
+-  if (statuses.some(s => s === 'pass')) return 'partial';
+-  return 'untested';
+-}
+-
+-// We define the tools inline here because requiring the stdio server would auto-start it.
+-
+-let _testsFile = '';
+-let _tasksFile = '';
+ let _server = null;
+ 
+-function loadData() {
+-  try { return JSON.parse(fs.readFileSync(_testsFile, 'utf8')); }
+-  catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
+-}
+-
+-function saveData(data) {
+-  const dir = path.dirname(_testsFile);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(_testsFile, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-function loadTasksData() {
+-  try { return JSON.parse(fs.readFileSync(_tasksFile, 'utf8')); }
+-  catch { return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] }; }
+-}
+-
+-function saveTasksData(data) {
+-  const dir = path.dirname(_tasksFile);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(_tasksFile, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-// Same tools as tests-mcp-server.js
+-const HTTP_TOOLS = [
+-  { name: 'list_tests', description: 'List tests, optionally filtered', inputSchema: { type: 'object', properties: { status: { type: 'string' }, environment: { type: 'string' }, tag: { type: 'string' } } } },
+-  { name: 'get_test', description: 'Get full test details', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'search_tests', description: 'Search for likely reusable existing tests before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string' }, environment: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
+-  { name: 'create_test', description: 'Create a new test case', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['title', 'environment'] } },
+-  { name: 'update_test', description: 'Update test fields', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['test_id'] } },
+-  { name: 'delete_test', description: 'Delete a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'add_test_step', description: 'Add step to test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'description', 'expectedResult'] } },
+-  { name: 'update_test_step', description: 'Update step', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'step_id'] } },
+-  { name: 'delete_test_step', description: 'Delete step', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' } }, required: ['test_id', 'step_id'] } },
+-  { name: 'run_test', description: 'Start a test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, agent: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'reset_test_steps', description: 'Reset stored step results on a test before rerunning it', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, clear_actual_results: { type: 'boolean' } }, required: ['test_id'] } },
+-  { name: 'update_step_result', description: 'Record step pass/fail', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, step_id: { type: 'number' }, status: { type: 'string' }, actualResult: { type: 'string' } }, required: ['test_id', 'run_id', 'step_id', 'status'] } },
+-  { name: 'complete_test_run', description: 'Finalize test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, notes: { type: 'string' } }, required: ['test_id', 'run_id'] } },
+-  { name: 'link_test_to_task', description: 'Link test to task', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
+-  { name: 'unlink_test_from_task', description: 'Unlink test from task', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
+-  { name: 'create_bug_from_test', description: 'Create bug ticket from failing test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['test_id', 'title'] } },
+-  { name: 'get_test_history', description: 'Get test run history', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'get_test_summary', description: 'Get test suite statistics', inputSchema: { type: 'object', properties: {} } },
+-  { name: 'display_test_summary', description: 'Display a styled test summary card in the chat. Call this after completing a test run to show results visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Test name' }, passed: { type: 'number', description: 'Number of passed steps' }, failed: { type: 'number', description: 'Number of failed steps' }, skipped: { type: 'number', description: 'Number of skipped steps' }, steps: { type: 'array', description: 'Individual step results', items: { type: 'object', properties: { name: { type: 'string', description: 'Step name' }, status: { type: 'string', enum: ['pass', 'fail', 'skip'], description: 'Step result: pass, fail, or skip' } }, required: ['name', 'status'] } } }, required: ['title'] } },
+-  { name: 'display_bug_report', description: 'Display a styled bug report card in the chat. Call this when filing a bug to show it visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Bug title' }, task_id: { type: 'string', description: 'Task ID if already created' }, description: { type: 'string', description: 'Bug description' }, severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'], description: 'Bug severity' } }, required: ['title'] } },
+-];
+-
+-// Handler — mirrors tests-mcp-server.js handleToolCall
+-function handleToolCall(name, args) {
+-  const data = loadData();
+-  switch (name) {
+-    case 'list_tests': { let tests = data.tests; if (args.status) tests = tests.filter(t => t.status === args.status); if (args.environment) tests = tests.filter(t => t.environment === args.environment); if (args.tag) tests = tests.filter(t => t.tags && t.tags.includes(args.tag)); return JSON.stringify(tests.map(t => ({ id: t.id, title: t.title, description: t.description, environment: t.environment, status: t.status, steps_count: (t.steps||[]).length, steps_passing: (t.steps||[]).filter(s=>s.status==='pass').length, tags: t.tags||[], linkedTaskIds: t.linkedTaskIds||[], lastTestedAt: t.lastTestedAt, created_at: t.created_at })), null, 2); }
+-    case 'get_test': { const t = data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t,null,2) : JSON.stringify({error:'Not found'}); }
+-    case 'search_tests': {
+-      let tests = data.tests;
+-      if (args.environment) tests = tests.filter(t => t.environment === args.environment);
+-      const matches = rankSearchResults(
+-        tests,
+-        args.query,
+-        (test) => ([
+-          { label: 'title', value: test.title, weight: 5 },
+-          { label: 'description', value: test.description, weight: 3 },
+-          { label: 'tags', value: (test.tags || []).join(' '), weight: 2 },
+-          { label: 'steps', value: (test.steps || []).map((step) => `${step.description} ${step.expectedResult}`).join(' '), weight: 2 },
+-        ]),
+-        args.limit || 5
+-      );
+-      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+-        id: item.id,
+-        title: item.title,
+-        description: item.description,
+-        environment: item.environment,
+-        status: item.status,
+-        tags: item.tags || [],
+-        steps_count: (item.steps || []).length,
+-        lastTestedAt: item.lastTestedAt || null,
+-        linkedTaskIds: item.linkedTaskIds || [],
+-        match_score: score,
+-        match_reason: matchReason,
+-      })), null, 2);
+-    }
+-    case 'create_test': { const id='test-'+data.nextId++; const t={id,title:args.title,description:args.description||'',environment:VALID_ENVIRONMENTS.includes(args.environment)?args.environment:'browser',status:'untested',steps:[],linkedTaskIds:[],tags:args.tags||[],lastTestedAt:null,lastTestedBy:null,created_at:nowIso(),updated_at:nowIso(),runs:[]}; data.tests.push(t); saveData(data); return JSON.stringify(t,null,2); }
+-    case 'update_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t) return JSON.stringify({error:'Not found'}); if(args.title!==undefined)t.title=args.title; if(args.description!==undefined)t.description=args.description; if(args.environment!==undefined&&VALID_ENVIRONMENTS.includes(args.environment))t.environment=args.environment; if(args.tags!==undefined)t.tags=args.tags; t.updated_at=nowIso(); saveData(data); return JSON.stringify(t,null,2); }
+-    case 'delete_test': { data.tests=data.tests.filter(t=>t.id!==args.test_id); saveData(data); return JSON.stringify({deleted:args.test_id}); }
+-    case 'add_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s={id:data.nextStepId++,description:args.description,expectedResult:args.expectedResult,status:'untested',actualResult:null}; t.steps.push(s); t.updated_at=nowIso(); saveData(data); return JSON.stringify(s,null,2); }
+-    case 'update_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s=t.steps.find(s=>s.id===args.step_id); if(!s)return JSON.stringify({error:'Step not found'}); if(args.description!==undefined)s.description=args.description; if(args.expectedResult!==undefined)s.expectedResult=args.expectedResult; t.updated_at=nowIso(); saveData(data); return JSON.stringify(s,null,2); }
+-    case 'delete_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.steps=t.steps.filter(s=>s.id!==args.step_id); t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({deleted:args.step_id}); }
+-    case 'run_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r={id:data.nextRunId++,date:nowIso(),agent:args.agent||'agent',status:'running',stepResults:t.steps.map(s=>({stepId:s.id,status:'untested',actualResult:null})),notes:null}; t.runs.push(r); t.lastTestedAt=r.date; t.lastTestedBy=r.agent; t.updated_at=nowIso(); saveData(data); return JSON.stringify({run_id:r.id,test_id:t.id,steps_to_test:t.steps.length},null,2); }
+-    case 'reset_test_steps': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const clearActualResults=args.clear_actual_results!==false; for (const s of (t.steps||[])) { s.status='untested'; if (clearActualResults) s.actualResult=null; } t.status='untested'; t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,reset_steps:(t.steps||[]).length,clear_actual_results:clearActualResults,status:t.status},null,2); }
+-    case 'update_step_result': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); const sr=r.stepResults.find(sr=>sr.stepId===args.step_id); if(!sr)return JSON.stringify({error:'Step not in run'}); if(VALID_STEP_STATUSES.includes(args.status))sr.status=args.status; if(args.actualResult!==undefined)sr.actualResult=args.actualResult; const step=t.steps.find(s=>s.id===args.step_id); if(step){step.status=sr.status; if(args.actualResult!==undefined)step.actualResult=args.actualResult;} t.updated_at=nowIso(); saveData(data); return JSON.stringify({step_id:args.step_id,status:sr.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
+-    case 'complete_test_run': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); if(args.notes)r.notes=args.notes; const sts=r.stepResults.map(sr=>sr.status); if(sts.every(s=>s==='pass'||s==='skip'))r.status='passing'; else if(sts.every(s=>s==='fail'))r.status='failing'; else if(sts.some(s=>s==='fail'))r.status='partial'; else r.status='untested'; t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,run_id:r.id,status:r.status,test_status:t.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
+-    case 'link_test_to_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); if(!t.linkedTaskIds)t.linkedTaskIds=[]; if(!t.linkedTaskIds.includes(args.task_id))t.linkedTaskIds.push(args.task_id); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
+-    case 'unlink_test_from_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.linkedTaskIds=(t.linkedTaskIds||[]).filter(id=>id!==args.task_id); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
+-    case 'create_bug_from_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const td=loadTasksData(); const taskId='task-'+td.nextId++; const failingSteps=t.steps.filter(s=>s.status==='fail'); const desc=args.description||`Bug from test: ${t.title}\n\nFailing steps:\n${failingSteps.map(s=>`- ${s.description}: expected "${s.expectedResult}", got "${s.actualResult||'N/A'}"`).join('\n')}`; td.tasks.push({id:taskId,title:args.title,description:desc,detail_text:'',status:'todo',created_at:nowIso(),updated_at:nowIso(),comments:[],progress_updates:[],linkedTestIds:[t.id]}); saveTasksData(td); if(!t.linkedTaskIds)t.linkedTaskIds=[]; t.linkedTaskIds.push(taskId); t.updated_at=nowIso(); saveData(data); return JSON.stringify({task_id:taskId,test_id:t.id,title:args.title},null,2); }
+-    case 'get_test_history': { const t=data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t.runs||[],null,2) : JSON.stringify({error:'Not found'}); }
+-    case 'get_test_summary': { const total=data.tests.length; return JSON.stringify({total,passing:data.tests.filter(t=>t.status==='passing').length,failing:data.tests.filter(t=>t.status==='failing').length,partial:data.tests.filter(t=>t.status==='partial').length,untested:data.tests.filter(t=>t.status==='untested').length},null,2); }
+-    case 'display_test_summary': return 'Displayed test summary card.';
+-    case 'display_bug_report': return 'Displayed bug report card.';
+-    default: throw new Error(`Unknown tool: ${name}`);
+-  }
+-}
+-
+ async function startTestsMcpServer(testsFile, tasksFile) {
+   if (_server) return _server;
+-  _testsFile = testsFile;
+-  _tasksFile = tasksFile || testsFile.replace('tests.json', 'tasks.json');
+   const result = await createMcpHttpServer({
+-    tools: HTTP_TOOLS,
+-    handleToolCall,
++    tools: TEST_TOOLS,
++    handleToolCall: (name, args) => handleTestToolCall({
++      testsFile,
++      tasksFile: tasksFile || null,
++      name,
++      args,
++      includeCards: true,
++    }),
+     serverName: 'cc-tests',
+   });
+   _server = result;
+-  console.error(`[cc-tests-http] Started on port ${result.port}, tests file: ${_testsFile}`);
++  console.error(`[cc-tests-http] Started on port ${result.port}, tests file: ${testsFile}`);
+   return result;
+ }
+ 
+ function stopTestsMcpServer() {
+-  if (_server) { _server.close(); _server = null; }
++  if (_server) {
++    _server.close();
++    _server = null;
++  }
+ }
+ 
+ module.exports = { startTestsMcpServer, stopTestsMcpServer };
+diff --git a/extension/tests-mcp-server.js b/extension/tests-mcp-server.js
+index 327d14330d18a64956681bcf45eaa38d3a658b15..c4e76a2f713bf311aaff46c656ee8ebb1356c2a4 100644
+--- a/extension/tests-mcp-server.js
++++ b/extension/tests-mcp-server.js
+@@ -7,383 +7,60 @@
+  *
+  * Env vars:
+  *   TESTS_FILE — absolute path to the tests.json file
+- *   TASKS_FILE — absolute path to the tasks.json file (for create_bug_from_test)
++ *   TASKS_FILE — absolute path to the tasks.json file (for create_bug_from_test and linking)
+  */
+ 
+-const fs = require('node:fs');
+ const readline = require('node:readline');
+-const path = require('node:path');
+-const { rankSearchResults } = require('./mcp-search');
++const { TEST_TOOLS, handleTestToolCall } = require('./tests-domain');
+ 
+ const TESTS_FILE = process.env.TESTS_FILE || '';
+ const TASKS_FILE = process.env.TASKS_FILE || '';
+ 
+-const VALID_TEST_STATUSES = ['untested', 'passing', 'failing', 'partial'];
+-const VALID_STEP_STATUSES = ['untested', 'pass', 'fail', 'skip'];
+-const VALID_ENVIRONMENTS = ['browser', 'computer'];
+-
+-// ─── Data helpers ────────────────────────────────────────────────
+-
+-function loadData() {
+-  try { return JSON.parse(fs.readFileSync(TESTS_FILE, 'utf8')); }
+-  catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
+-}
+-
+-function saveData(data) {
+-  const dir = path.dirname(TESTS_FILE);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(TESTS_FILE, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-function loadTasksData() {
+-  try { return JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8')); }
+-  catch { return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] }; }
+-}
+-
+-function saveTasksData(data) {
+-  const dir = path.dirname(TASKS_FILE);
+-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-  fs.writeFileSync(TASKS_FILE, JSON.stringify(data, null, 2), 'utf8');
+-}
+-
+-function nowIso() { return new Date().toISOString(); }
+-
+-function computeOverallStatus(steps) {
+-  if (!steps || steps.length === 0) return 'untested';
+-  const statuses = steps.map(s => s.status);
+-  if (statuses.every(s => s === 'untested')) return 'untested';
+-  if (statuses.every(s => s === 'pass' || s === 'skip')) return 'passing';
+-  if (statuses.every(s => s === 'fail')) return 'failing';
+-  if (statuses.some(s => s === 'fail')) return 'partial';
+-  if (statuses.some(s => s === 'pass')) return 'partial';
+-  return 'untested';
+-}
+-
+-// ─── Tool definitions ────────────────────────────────────────────
+-
+-const TOOLS = [
+-  // CRUD
+-  { name: 'list_tests', description: 'List tests, optionally filtered by status, environment, or tag', inputSchema: { type: 'object', properties: { status: { type: 'string', description: 'Filter: untested, passing, failing, partial' }, environment: { type: 'string', description: 'Filter: browser, computer' }, tag: { type: 'string', description: 'Filter by tag' } } } },
+-  { name: 'get_test', description: 'Get full test details including steps, runs, and linked tasks', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'search_tests', description: 'Search for likely reusable existing tests before creating a new one', inputSchema: { type: 'object', properties: { query: { type: 'string' }, environment: { type: 'string', description: 'Optional environment filter: browser or computer' }, limit: { type: 'number', description: 'Maximum results to return (default 5)' } }, required: ['query'] } },
+-  { name: 'create_test', description: 'Create a new test case', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string', description: 'browser or computer' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['title', 'environment'] } },
+-  { name: 'update_test', description: 'Update test fields (title, description, environment, tags)', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, environment: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['test_id'] } },
+-  { name: 'delete_test', description: 'Delete a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  // Steps
+-  { name: 'add_test_step', description: 'Add a step to a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'description', 'expectedResult'] } },
+-  { name: 'update_test_step', description: 'Update a test step definition', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' }, description: { type: 'string' }, expectedResult: { type: 'string' } }, required: ['test_id', 'step_id'] } },
+-  { name: 'delete_test_step', description: 'Delete a step from a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, step_id: { type: 'number' } }, required: ['test_id', 'step_id'] } },
+-  // Execution
+-  { name: 'run_test', description: 'Start a new test run for a test case', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, agent: { type: 'string', description: 'Agent name performing the test' } }, required: ['test_id'] } },
+-  { name: 'reset_test_steps', description: 'Reset stored step results on a test before rerunning it', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, clear_actual_results: { type: 'boolean', description: 'Clear stored actual results (default true)' } }, required: ['test_id'] } },
+-  { name: 'update_step_result', description: 'Record pass/fail result for a step in a test run', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, step_id: { type: 'number' }, status: { type: 'string', description: 'pass, fail, or skip' }, actualResult: { type: 'string', description: 'Actual result if different from expected' } }, required: ['test_id', 'run_id', 'step_id', 'status'] } },
+-  { name: 'complete_test_run', description: 'Finalize a test run and compute overall status', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, run_id: { type: 'number' }, notes: { type: 'string' } }, required: ['test_id', 'run_id'] } },
+-  // Linking
+-  { name: 'link_test_to_task', description: 'Link a test to a task (bug ticket)', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
+-  { name: 'unlink_test_from_task', description: 'Remove link between test and task', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['test_id', 'task_id'] } },
+-  { name: 'create_bug_from_test', description: 'Create a bug ticket (task) from a failing test and auto-link them', inputSchema: { type: 'object', properties: { test_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['test_id', 'title'] } },
+-  // Queries
+-  { name: 'get_test_history', description: 'Get all run history for a test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } }, required: ['test_id'] } },
+-  { name: 'get_test_summary', description: 'Get overall test suite statistics', inputSchema: { type: 'object', properties: {} } },
+-  // Display cards (rendered as styled cards in the chat UI)
+-  { name: 'display_test_summary', description: 'Display a styled test summary card in the chat. Call this after completing a test run to show results visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Test name' }, passed: { type: 'number', description: 'Number of passed steps' }, failed: { type: 'number', description: 'Number of failed steps' }, skipped: { type: 'number', description: 'Number of skipped steps' }, steps: { type: 'array', description: 'Individual step results', items: { type: 'object', properties: { name: { type: 'string', description: 'Step name' }, status: { type: 'string', enum: ['pass', 'fail', 'skip'], description: 'Step result: pass, fail, or skip' } }, required: ['name', 'status'] } } }, required: ['title'] } },
+-  { name: 'display_bug_report', description: 'Display a styled bug report card in the chat. Call this when filing a bug to show it visually.', inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Bug title' }, task_id: { type: 'string', description: 'Task ID if already created' }, description: { type: 'string', description: 'Bug description' }, severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'], description: 'Bug severity' } }, required: ['title'] } },
+-];
+-
+-// ─── Tool handlers ───────────────────────────────────────────────
+-
+-function handleToolCall(name, args) {
+-  const data = loadData();
+-
+-  switch (name) {
+-    case 'list_tests': {
+-      let tests = data.tests;
+-      if (args.status) tests = tests.filter(t => t.status === args.status);
+-      if (args.environment) tests = tests.filter(t => t.environment === args.environment);
+-      if (args.tag) tests = tests.filter(t => t.tags && t.tags.includes(args.tag));
+-      const summary = tests.map(t => ({
+-        id: t.id, title: t.title, description: t.description, environment: t.environment,
+-        status: t.status, steps_count: (t.steps || []).length,
+-        steps_passing: (t.steps || []).filter(s => s.status === 'pass').length,
+-        tags: t.tags || [], linkedTaskIds: t.linkedTaskIds || [],
+-        lastTestedAt: t.lastTestedAt, created_at: t.created_at,
+-      }));
+-      return JSON.stringify(summary, null, 2);
+-    }
+-
+-    case 'get_test': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      return JSON.stringify(test, null, 2);
+-    }
+-
+-    case 'search_tests': {
+-      let tests = data.tests;
+-      if (args.environment) tests = tests.filter(t => t.environment === args.environment);
+-      const matches = rankSearchResults(
+-        tests,
+-        args.query,
+-        (test) => ([
+-          { label: 'title', value: test.title, weight: 5 },
+-          { label: 'description', value: test.description, weight: 3 },
+-          { label: 'tags', value: (test.tags || []).join(' '), weight: 2 },
+-          { label: 'steps', value: (test.steps || []).map((step) => `${step.description} ${step.expectedResult}`).join(' '), weight: 2 },
+-        ]),
+-        args.limit || 5
+-      );
+-      return JSON.stringify(matches.map(({ item, score, matchReason }) => ({
+-        id: item.id,
+-        title: item.title,
+-        description: item.description,
+-        environment: item.environment,
+-        status: item.status,
+-        tags: item.tags || [],
+-        steps_count: (item.steps || []).length,
+-        lastTestedAt: item.lastTestedAt || null,
+-        linkedTaskIds: item.linkedTaskIds || [],
+-        match_score: score,
+-        match_reason: matchReason,
+-      })), null, 2);
+-    }
+-
+-    case 'create_test': {
+-      const id = 'test-' + data.nextId++;
+-      const test = {
+-        id, title: args.title, description: args.description || '',
+-        environment: VALID_ENVIRONMENTS.includes(args.environment) ? args.environment : 'browser',
+-        status: 'untested', steps: [], linkedTaskIds: [], tags: args.tags || [],
+-        lastTestedAt: null, lastTestedBy: null,
+-        created_at: nowIso(), updated_at: nowIso(), runs: [],
+-      };
+-      data.tests.push(test);
+-      saveData(data);
+-      return JSON.stringify(test, null, 2);
+-    }
+-
+-    case 'update_test': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      if (args.title !== undefined) test.title = args.title;
+-      if (args.description !== undefined) test.description = args.description;
+-      if (args.environment !== undefined && VALID_ENVIRONMENTS.includes(args.environment)) test.environment = args.environment;
+-      if (args.tags !== undefined) test.tags = args.tags;
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(test, null, 2);
+-    }
+-
+-    case 'delete_test': {
+-      data.tests = data.tests.filter(t => t.id !== args.test_id);
+-      saveData(data);
+-      return JSON.stringify({ deleted: args.test_id });
+-    }
+-
+-    case 'add_test_step': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const step = {
+-        id: data.nextStepId++, description: args.description,
+-        expectedResult: args.expectedResult, status: 'untested', actualResult: null,
+-      };
+-      test.steps.push(step);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(step, null, 2);
+-    }
+-
+-    case 'update_test_step': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const step = test.steps.find(s => s.id === args.step_id);
+-      if (!step) return JSON.stringify({ error: `Step ${args.step_id} not found` });
+-      if (args.description !== undefined) step.description = args.description;
+-      if (args.expectedResult !== undefined) step.expectedResult = args.expectedResult;
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify(step, null, 2);
+-    }
+-
+-    case 'delete_test_step': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      test.steps = test.steps.filter(s => s.id !== args.step_id);
+-      test.status = computeOverallStatus(test.steps);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ deleted: args.step_id });
+-    }
+-
+-    case 'run_test': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const run = {
+-        id: data.nextRunId++, date: nowIso(), agent: args.agent || 'agent',
+-        status: 'running',
+-        stepResults: test.steps.map(s => ({ stepId: s.id, status: 'untested', actualResult: null })),
+-        notes: null,
+-      };
+-      test.runs.push(run);
+-      test.lastTestedAt = run.date;
+-      test.lastTestedBy = run.agent;
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ run_id: run.id, test_id: test.id, steps_to_test: test.steps.length }, null, 2);
+-    }
+-
+-    case 'reset_test_steps': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const clearActualResults = args.clear_actual_results !== false;
+-      for (const step of (test.steps || [])) {
+-        step.status = 'untested';
+-        if (clearActualResults) step.actualResult = null;
+-      }
+-      test.status = 'untested';
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({
+-        test_id: test.id,
+-        reset_steps: (test.steps || []).length,
+-        clear_actual_results: clearActualResults,
+-        status: test.status,
+-      }, null, 2);
+-    }
+-
+-    case 'update_step_result': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const run = test.runs.find(r => r.id === args.run_id);
+-      if (!run) return JSON.stringify({ error: `Run ${args.run_id} not found` });
+-      const stepResult = run.stepResults.find(sr => sr.stepId === args.step_id);
+-      if (!stepResult) return JSON.stringify({ error: `Step ${args.step_id} not in this run` });
+-      if (VALID_STEP_STATUSES.includes(args.status)) stepResult.status = args.status;
+-      if (args.actualResult !== undefined) stepResult.actualResult = args.actualResult;
+-      // Also update the step's latest status on the test itself
+-      const step = test.steps.find(s => s.id === args.step_id);
+-      if (step) {
+-        step.status = stepResult.status;
+-        if (args.actualResult !== undefined) step.actualResult = args.actualResult;
+-      }
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ step_id: args.step_id, status: stepResult.status });
+-    }
+-
+-    case 'complete_test_run': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      const run = test.runs.find(r => r.id === args.run_id);
+-      if (!run) return JSON.stringify({ error: `Run ${args.run_id} not found` });
+-      if (args.notes) run.notes = args.notes;
+-      // Compute run status from step results
+-      const statuses = run.stepResults.map(sr => sr.status);
+-      if (statuses.every(s => s === 'pass' || s === 'skip')) run.status = 'passing';
+-      else if (statuses.every(s => s === 'fail')) run.status = 'failing';
+-      else if (statuses.some(s => s === 'fail')) run.status = 'partial';
+-      else run.status = 'untested';
+-      // Update overall test status
+-      test.status = computeOverallStatus(test.steps);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ test_id: test.id, run_id: run.id, status: run.status, test_status: test.status }, null, 2);
+-    }
+-
+-    case 'link_test_to_task': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      if (!test.linkedTaskIds) test.linkedTaskIds = [];
+-      if (!test.linkedTaskIds.includes(args.task_id)) test.linkedTaskIds.push(args.task_id);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ test_id: test.id, linkedTaskIds: test.linkedTaskIds });
+-    }
+-
+-    case 'unlink_test_from_task': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      test.linkedTaskIds = (test.linkedTaskIds || []).filter(id => id !== args.task_id);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ test_id: test.id, linkedTaskIds: test.linkedTaskIds });
+-    }
+-
+-    case 'create_bug_from_test': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      // Create task in tasks.json
+-      const tasksData = loadTasksData();
+-      const taskId = 'task-' + tasksData.nextId++;
+-      const failingSteps = test.steps.filter(s => s.status === 'fail');
+-      const bugDescription = args.description || `Bug from test: ${test.title}\n\nFailing steps:\n${failingSteps.map(s => `- ${s.description}: expected "${s.expectedResult}", got "${s.actualResult || 'N/A'}"`).join('\n')}`;
+-      const task = {
+-        id: taskId, title: args.title, description: bugDescription, detail_text: '',
+-        status: 'todo', created_at: nowIso(), updated_at: nowIso(),
+-        comments: [], progress_updates: [], linkedTestIds: [test.id],
+-      };
+-      tasksData.tasks.push(task);
+-      saveTasksData(tasksData);
+-      // Link test to task
+-      if (!test.linkedTaskIds) test.linkedTaskIds = [];
+-      test.linkedTaskIds.push(taskId);
+-      test.updated_at = nowIso();
+-      saveData(data);
+-      return JSON.stringify({ task_id: taskId, test_id: test.id, title: args.title }, null, 2);
+-    }
+-
+-    case 'get_test_history': {
+-      const test = data.tests.find(t => t.id === args.test_id);
+-      if (!test) return JSON.stringify({ error: `Test ${args.test_id} not found` });
+-      return JSON.stringify(test.runs || [], null, 2);
+-    }
+-
+-    case 'get_test_summary': {
+-      const total = data.tests.length;
+-      const passing = data.tests.filter(t => t.status === 'passing').length;
+-      const failing = data.tests.filter(t => t.status === 'failing').length;
+-      const partial = data.tests.filter(t => t.status === 'partial').length;
+-      const untested = data.tests.filter(t => t.status === 'untested').length;
+-      return JSON.stringify({ total, passing, failing, partial, untested }, null, 2);
+-    }
+-
+-    // Display cards — these are rendered visually in the chat UI via tool call interception
+-    case 'display_test_summary':
+-      return 'Displayed test summary card.';
+-    case 'display_bug_report':
+-      return 'Displayed bug report card.';
+-
+-    default:
+-      throw new Error(`Unknown tool: ${name}`);
+-  }
+-}
+-
+-// ─── JSON-RPC protocol ───────────────────────────────────────────
+-
+-function handleRequest(msg) {
+-  if (msg.method === 'initialize') {
+-    return { jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'cc-tests', version: '1.0.0' } } };
++function handleRequest(message) {
++  if (message.method === 'initialize') {
++    return {
++      jsonrpc: '2.0',
++      id: message.id,
++      result: {
++        protocolVersion: '2024-11-05',
++        capabilities: { tools: {} },
++        serverInfo: { name: 'cc-tests', version: '1.1.0' },
++      },
++    };
+   }
+-  if (msg.method === 'notifications/initialized') return null;
+-  if (msg.method === 'tools/list') {
+-    return { jsonrpc: '2.0', id: msg.id, result: { tools: TOOLS } };
++  if (message.method === 'notifications/initialized') return null;
++  if (message.method === 'tools/list') {
++    return { jsonrpc: '2.0', id: message.id, result: { tools: TEST_TOOLS } };
+   }
+-  if (msg.method === 'tools/call') {
++  if (message.method === 'tools/call') {
+     try {
+-      const text = handleToolCall(msg.params.name, msg.params.arguments || {});
+-      return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+-    } catch (e) {
+-      return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: e.message }) }], isError: true } };
++      const text = handleTestToolCall({
++        testsFile: TESTS_FILE,
++        tasksFile: TASKS_FILE || null,
++        name: message.params?.name,
++        args: message.params?.arguments || {},
++        includeCards: false,
++      });
++      return { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text }] } };
++    } catch (error) {
++      return {
++        jsonrpc: '2.0',
++        id: message.id,
++        result: {
++          content: [{ type: 'text', text: JSON.stringify({ error: error.message }) }],
++          isError: true,
++        },
++      };
+     }
+   }
+-  return { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Unknown method: ${msg.method}` } };
++  return { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Unknown method: ${message.method}` } };
+ }
+ 
+-// ─── Startup ─────────────────────────────────────────────────────
+-
+ const rl = readline.createInterface({ input: process.stdin });
+ rl.on('line', (line) => {
+-  let msg;
+-  try { msg = JSON.parse(line); } catch { return; }
+-  const response = handleRequest(msg);
++  let message;
++  try { message = JSON.parse(line); } catch { return; }
++  const response = handleRequest(message);
+   if (response) process.stdout.write(JSON.stringify(response) + '\n');
+ });
+ 
+diff --git a/extension/webview/main.js b/extension/webview/main.js
+index 6dbf5bac800efca7e0e3a48046d3ed0ecf92e4a6..53bb488698a0cda0f5627d3e0996e2b037912032 100644
+--- a/extension/webview/main.js
++++ b/extension/webview/main.js
+@@ -2515,6 +2515,13 @@
+     vscode.postMessage({ type: msgType, ...extra, _actionId: instancesActionId });
+   }
+ 
++  function getLinkedInstanceName() {
++    for (const inst of instancesList || []) {
++      if (inst && inst.isLinked) return inst.name || null;
++    }
++    return null;
++  }
++
+   function renderInstances() {
+     const listEl = document.getElementById('instance-list');
+     if (!listEl) return;
+@@ -2651,7 +2658,7 @@
+       if (!btn || btn.disabled) return;
+       const action = btn.dataset.action;
+       if (action === 'start') instanceAction('instanceStart');
+-      if (action === 'restartLinked') instanceAction('instanceStart');
++      if (action === 'restartLinked') instanceAction('instanceRestart', { name: getLinkedInstanceName() });
+       if (action === 'stopAll') instanceAction('instanceStopAll');
+       if (action === 'restartAll') instanceAction('instanceRestartAll');
+     });
+@@ -4926,6 +4933,9 @@
+       if (msg.panelId && !panelId) {
+         panelId = msg.panelId;
+       }
++      if (Object.prototype.hasOwnProperty.call(msg, 'runId')) {
++        currentRunId = msg.runId || null;
++      }
+       if (msg.mcpServers) {
+         mcpGlobal = msg.mcpServers.global || {};
+         mcpProject = msg.mcpServers.project || {};
+@@ -5026,6 +5036,22 @@
+       renderInstances();
+     },
+ 
++    qaReportExported(msg) {
++      if (!msg || !msg.url) return;
++      try {
++        const link = document.createElement('a');
++        link.href = msg.url;
++        if (msg.fileName) link.download = msg.fileName;
++        link.target = '_blank';
++        link.rel = 'noopener';
++        document.body.appendChild(link);
++        link.click();
++        link.remove();
++      } catch (e) {
++        _dbg('qaReportExported failed: ' + (e && e.message || e));
++      }
++    },
++
+     desktopReady(msg) {
+       novncPort = msg.novncPort || null;
+       updateComputerTab();
+diff --git a/src/mcp-injector.js b/src/mcp-injector.js
+index c646d36368d20853b5fec158629b9927cfb5edea..7ee9ce3f970ebb9727d625cf85b3e729486f5687 100644
+--- a/src/mcp-injector.js
++++ b/src/mcp-injector.js
+@@ -135,7 +135,10 @@ function mcpServersForRole(role, options = {}) {
+       result['cc-tasks'] = {
+         command: 'node',
+         args: [tasksPath],
+-        env: { TASKS_FILE: path.join(repoRoot, '.qpanda', 'tasks.json') },
++        env: {
++          TASKS_FILE: path.join(repoRoot, '.qpanda', 'tasks.json'),
++          TESTS_FILE: path.join(repoRoot, '.qpanda', 'tests.json'),
++        },
+       };
+     }
+   }
+diff --git a/src/qa-report.js b/src/qa-report.js
+index dd4825055a3cc15bdf911b69206992e3b205e569..924fffccd4c8ee9fb3158dd08418d1e2c61f63cb 100644
+--- a/src/qa-report.js
++++ b/src/qa-report.js
+@@ -121,6 +121,7 @@ function buildQaReportTaskItem(task) {
+     title: (task && task.title) || 'Task',
+     status: (task && task.status) || 'todo',
+     itemType,
++    severity: (task && task.severity) || null,
+     linkedTestIds,
+     description: (task && task.description) || '',
+     detail: clone(task || {}),
+diff --git a/src/remote-desktop.js b/src/remote-desktop.js
+index d723796cc5f1637cdf7110c13885bb50793bdf29..2a26bece688c9d2f9c90bc4b9f0605ae9dd3d94d 100644
+--- a/src/remote-desktop.js
++++ b/src/remote-desktop.js
+@@ -132,6 +132,9 @@ async function ensureDesktop(repoRoot, panelId, useSnapshot = true) {
+       vncPort: info.vnc_port,
+       novncPort: info.novnc_port,
+       containerId: info.container_id,
++      repoRoot,
++      panelId: panelId || null,
++      useSnapshot,
+     };
+ 
+     _cache.set(cacheKey, desktop);
+@@ -202,9 +205,15 @@ async function listInstances(currentPanelId, workspace) {
+     if (result.code !== 0) return [];
+     const instances = JSON.parse(result.stdout.trim());
+ 
+-    const nameToPanel = {};
+-    for (const [panelId, desktop] of _cache.entries()) {
+-      nameToPanel[desktop.name] = panelId;
++    const nameToMeta = {};
++    for (const [cacheKey, desktop] of _cache.entries()) {
++      if (!desktop || !desktop.name) continue;
++      nameToMeta[desktop.name] = {
++        cacheKey,
++        panelId: desktop.panelId != null ? desktop.panelId : (cacheKey !== desktop.repoRoot ? cacheKey : null),
++        repoRoot: desktop.repoRoot || null,
++        useSnapshot: desktop.useSnapshot,
++      };
+     }
+ 
+     let snapshotExists = false;
+@@ -215,13 +224,17 @@ async function listInstances(currentPanelId, workspace) {
+       snapshotTag = snap.tag;
+     }
+ 
+-    return instances.map((inst) => ({
+-      ...inst,
+-      linkedPanelId: nameToPanel[inst.name] || null,
+-      isLinked: nameToPanel[inst.name] === currentPanelId,
+-      snapshotExists,
+-      snapshotTag,
+-    }));
++    return instances.map((inst) => {
++      const metadata = nameToMeta[inst.name] || null;
++      return {
++        ...inst,
++        linkedPanelId: metadata ? metadata.panelId : null,
++        linkedRepoRoot: metadata ? metadata.repoRoot : null,
++        isLinked: !!metadata && metadata.panelId === currentPanelId,
++        snapshotExists,
++        snapshotTag,
++      };
++    });
+   } catch {
+     return [];
+   }
+@@ -233,20 +246,42 @@ async function listInstances(currentPanelId, workspace) {
+ async function stopInstance(name) {
+   const result = await _qaExec(['down', name]);
+   for (const [key, desktop] of _cache.entries()) {
+-    if (desktop.name === name) {
++    if (desktop && desktop.name === name) {
+       _cache.delete(key);
+-      break;
+     }
+   }
+   return result.code === 0;
+ }
+ 
++function _resolveRestartTarget(name, repoRoot, panelId, useSnapshot = true) {
++  for (const desktop of _cache.values()) {
++    if (desktop && desktop.name === name) {
++      return {
++        repoRoot: desktop.repoRoot || repoRoot,
++        panelId: desktop.panelId != null ? desktop.panelId : panelId || null,
++        useSnapshot: desktop.useSnapshot !== undefined ? desktop.useSnapshot : useSnapshot,
++      };
++    }
++  }
++
++  if (instanceName(repoRoot, panelId) === name) {
++    return { repoRoot, panelId: panelId || null, useSnapshot };
++  }
++
++  return null;
++}
++
+ /**
+  * Restart an instance: stop then start, wait for healthy.
+  */
+-async function restartInstance(name, repoRoot, panelId) {
++async function restartInstance(name, repoRoot, panelId, useSnapshot = true) {
++  const target = _resolveRestartTarget(name, repoRoot, panelId, useSnapshot);
++  if (!target) {
++    console.warn(`[remote-desktop] Cannot restart unlinked instance '${name}' without cached metadata`);
++    return null;
++  }
+   await stopInstance(name);
+-  return ensureDesktop(repoRoot, panelId);
++  return ensureDesktop(target.repoRoot, target.panelId, target.useSnapshot);
+ }
+ 
+ /**
+@@ -279,6 +314,8 @@ async function findExistingDesktop(repoRoot, panelId) {
+       vncPort: match.vnc_port,
+       novncPort: match.novnc_port,
+       containerId: match.container_id,
++      repoRoot,
++      panelId: panelId || null,
+     };
+     _cache.set(cacheKey, desktop);
+     return desktop;
+diff --git a/web/server.js b/web/server.js
+index 34c5d8ae09bfeb4056391d28d1ca48e0e1553835..735c27c67a6d7a1e35f0df91a544aea4cc79647f 100644
+--- a/web/server.js
++++ b/web/server.js
+@@ -3,7 +3,8 @@
+  * QA Panda — Standalone Web Server
+  *
+  * Serves the same webview UI as the VSCode extension over HTTP + WebSocket.
+- * Each browser tab gets its own SessionManager (like a VSCode panel).
++ * Each browser tab gets its own SessionManager (like a VSCode panel), and
++ * reconnects reuse the same session identity when the browser restores panelId.
+  *
+  * Usage:
+  *   node web/server.js [repoRoot]
+@@ -16,9 +17,10 @@ const os = require('node:os');
+ const crypto = require('node:crypto');
+ 
+ const EXTENSION_DIR = path.resolve(__dirname, '..', 'extension');
++const EXPORTS_DIR = path.join(process.argv[2] || process.cwd(), '.qpanda', 'exports');
++const SESSION_GRACE_MS = parseInt(process.env.WEB_SESSION_GRACE_MS || '60000', 10);
+ 
+ // ── Imports from extension (all pure Node.js, no VSCode) ─────────────
+-// webview-html is require()'d fresh per request for hot-reload (see HTTP handler below)
+ const WebviewRenderer = require(path.join(EXTENSION_DIR, 'webview-renderer')).WebviewRenderer
+   || require(path.join(EXTENSION_DIR, 'webview-renderer'));
+ const SessionManager = require(path.join(EXTENSION_DIR, 'session-manager')).SessionManager
+@@ -29,6 +31,9 @@ const { loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboardi
+ const handlers = require(path.join(EXTENSION_DIR, 'message-handlers'));
+ const { loadSettings, saveSettings } = require(path.join(EXTENSION_DIR, 'settings-store'));
+ const { buildSelfTestingPrompt } = require(path.join(__dirname, '..', 'src', 'prompts'));
++const { buildApiCatalogPayload } = require(path.join(__dirname, '..', 'src', 'model-catalog'));
++const { loadFeatureFlags } = require(path.join(__dirname, '..', 'src', 'feature-flags'));
++const { findExistingDesktop } = require(path.join(__dirname, '..', 'src', 'remote-desktop'));
+ const { startTasksMcpServer } = require(path.join(EXTENSION_DIR, 'tasks-mcp-http'));
+ const { startTestsMcpServer } = require(path.join(EXTENSION_DIR, 'tests-mcp-http'));
+ const { startMemoryMcpServer } = require(path.join(EXTENSION_DIR, 'memory-mcp-http'));
+@@ -48,6 +53,7 @@ const MIME = {
+   '.json': 'application/json',
+   '.png': 'image/png',
+   '.ico': 'image/x-icon',
++  '.pdf': 'application/pdf',
+ };
+ 
+ // ── MCP HTTP servers (started once, shared across sessions) ──────────
+@@ -60,35 +66,79 @@ async function startMcpServers() {
+   const tasksFile = path.join(repoRoot, '.qpanda', 'tasks.json');
+   const testsFile = path.join(repoRoot, '.qpanda', 'tests.json');
+   try {
+-    const r = await startTasksMcpServer(tasksFile);
+-    _tasksMcpPort = r.port;
+-    console.log(`  Tasks MCP on port ${r.port}`);
+-  } catch (e) { console.error('Failed to start tasks MCP:', e.message); }
++    const result = await startTasksMcpServer(tasksFile, testsFile);
++    _tasksMcpPort = result.port;
++    console.log(`  Tasks MCP on port ${result.port}`);
++  } catch (error) { console.error('Failed to start tasks MCP:', error.message); }
+   try {
+-    const r = await startTestsMcpServer(testsFile, tasksFile);
+-    _testsMcpPort = r.port;
+-    console.log(`  Tests MCP on port ${r.port}`);
+-  } catch (e) { console.error('Failed to start tests MCP:', e.message); }
++    const result = await startTestsMcpServer(testsFile, tasksFile);
++    _testsMcpPort = result.port;
++    console.log(`  Tests MCP on port ${result.port}`);
++  } catch (error) { console.error('Failed to start tests MCP:', error.message); }
+   try {
+-    const r = await startMemoryMcpServer(path.join(repoRoot, '.qpanda', 'MEMORY.md'));
+-    _memoryMcpPort = r.port;
+-    console.log(`  Memory MCP on port ${r.port}`);
+-  } catch (e) { console.error('Failed to start memory MCP:', e.message); }
++    const result = await startMemoryMcpServer(path.join(repoRoot, '.qpanda', 'MEMORY.md'));
++    _memoryMcpPort = result.port;
++    console.log(`  Memory MCP on port ${result.port}`);
++  } catch (error) { console.error('Failed to start memory MCP:', error.message); }
+   try {
+-    const r = await startQaDesktopMcpServer(repoRoot);
+-    _qaDesktopMcpPort = r.port;
+-    console.log(`  QA Desktop MCP on port ${r.port}`);
+-  } catch (e) { console.error('Failed to start qa-desktop MCP:', e.message); }
++    const result = await startQaDesktopMcpServer(repoRoot);
++    _qaDesktopMcpPort = result.port;
++    console.log(`  QA Desktop MCP on port ${result.port}`);
++  } catch (error) { console.error('Failed to start qa-desktop MCP:', error.message); }
+ }
+ 
+-// ── HTML template (generated fresh per request for hot-reload) ──────
++function serveFile(res, filePath) {
++  try {
++    const content = fs.readFileSync(filePath);
++    const ext = path.extname(filePath);
++    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
++    res.end(content);
++  } catch {
++    res.writeHead(404);
++    res.end('Not found');
++  }
++}
++
++function exportRouteForFile(filePath) {
++  return `/exports/${encodeURIComponent(path.basename(filePath))}`;
++}
++
++async function handleQaReportExportMessage(msg, postMessage) {
++  if (!msg || msg.type !== 'qaReportExportPdf') return false;
++  try {
++    const { writeQaReportPdf, defaultQaReportPdfFileName } = require(path.join(EXTENSION_DIR, 'qa-report-export'));
++    fs.mkdirSync(EXPORTS_DIR, { recursive: true });
++    const baseName = defaultQaReportPdfFileName({ label: msg.label, scope: msg.scope, updatedAt: msg.updatedAt });
++    let filePath = path.join(EXPORTS_DIR, baseName);
++    let counter = 1;
++    while (fs.existsSync(filePath)) {
++      const parsed = path.parse(baseName);
++      filePath = path.join(EXPORTS_DIR, `${parsed.name} (${counter++})${parsed.ext || '.pdf'}`);
++    }
++    await writeQaReportPdf(filePath, {
++      label: msg.label || 'QA Report',
++      scope: msg.scope || 'run',
++      updatedAt: msg.updatedAt || '',
++      section: msg.section || {},
++    });
++    postMessage({
++      type: 'qaReportExported',
++      filePath,
++      fileName: path.basename(filePath),
++      url: exportRouteForFile(filePath),
++    });
++    postMessage({ type: 'banner', text: `QA report saved to ${filePath}` });
++  } catch (error) {
++    postMessage({ type: 'error', label: 'QA Report', text: `Failed to export QA report PDF: ${error && error.message ? error.message : String(error)}` });
++  }
++  return true;
++}
+ 
+ // ── HTTP server ──────────────────────────────────────────────────────
+ const server = http.createServer((req, res) => {
+   const url = req.url.split('?')[0];
+ 
+   if (url === '/' || url === '/index.html') {
+-    // Re-require webview-html.js to pick up changes (delete cache first for hot-reload)
+     delete require.cache[require.resolve('../extension/webview-html')];
+     const { getWebviewHtml: freshHtml } = require('../extension/webview-html');
+     res.writeHead(200, { 'Content-Type': 'text/html' });
+@@ -96,18 +146,15 @@ const server = http.createServer((req, res) => {
+     return;
+   }
+ 
+-  // Serve webview static files
+   if (url === '/main.js' || url === '/style.css') {
+     const filePath = path.join(EXTENSION_DIR, 'webview', url === '/main.js' ? 'main.js' : 'style.css');
+-    try {
+-      const content = fs.readFileSync(filePath);
+-      const ext = path.extname(filePath);
+-      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+-      res.end(content);
+-    } catch {
+-      res.writeHead(404);
+-      res.end('Not found');
+-    }
++    serveFile(res, filePath);
++    return;
++  }
++
++  if (url.startsWith('/exports/')) {
++    const fileName = path.basename(decodeURIComponent(url.slice('/exports/'.length)));
++    serveFile(res, path.join(EXPORTS_DIR, fileName));
+     return;
+   }
+ 
+@@ -125,32 +172,29 @@ try {
+ }
+ 
+ const wss = new WebSocketServer({ server, path: '/ws' });
++const sessions = new Map();
+ 
+-wss.on('connection', (ws) => {
+-  const panelId = crypto.randomUUID();
+-  console.log(`[${panelId.slice(0, 8)}] Client connected`);
+-
+-  // Duck-typed panel for WebviewRenderer
++function createSessionEntry(panelId, connectionState, initialConfig = {}) {
++  const panelConfig = { ...initialConfig };
+   const fakePanel = {
+     webview: {
+-      postMessage(msg) {
+-        if (ws.readyState === 1) { // WebSocket.OPEN
+-          try { ws.send(JSON.stringify(msg)); } catch {}
++      postMessage(message) {
++        const ws = connectionState.ws;
++        if (ws && ws.readyState === 1) {
++          try { ws.send(JSON.stringify(message)); } catch {}
+         }
+       },
+     },
+   };
+ 
+-  const renderer = new WebviewRenderer(fakePanel);
+-  const panelConfig = {};
+-
+-  function postMessage(msg) {
+-    if (msg && msg.type === 'syncConfig' && msg.config) {
+-      Object.assign(panelConfig, msg.config);
++  function postMessage(message) {
++    if (message && message.type === 'syncConfig' && message.config) {
++      Object.assign(panelConfig, message.config);
+     }
+-    fakePanel.webview.postMessage(msg);
++    fakePanel.webview.postMessage(message);
+   }
+ 
++  const renderer = new WebviewRenderer(fakePanel);
+   const session = new SessionManager(renderer, {
+     repoRoot,
+     panelId,
+@@ -165,21 +209,98 @@ wss.on('connection', (ws) => {
+   session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
+   session.setAgents(loadMergedAgents(repoRoot, extensionPath));
+   session.setModes(loadMergedModes(repoRoot, extensionPath));
+-  session.prestart();
++
++  return {
++    panelId,
++    panelConfig,
++    connectionState,
++    renderer,
++    session,
++    disposeTimer: null,
++  };
++}
++
++function attachSession(entry, ws) {
++  if (entry.disposeTimer) {
++    clearTimeout(entry.disposeTimer);
++    entry.disposeTimer = null;
++  }
++  entry.connectionState.ws = ws;
++}
++
++function detachSession(entry) {
++  entry.connectionState.ws = null;
++  if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
++  entry.disposeTimer = setTimeout(() => {
++    try { entry.session.dispose(); } catch {}
++    sessions.delete(entry.panelId);
++  }, SESSION_GRACE_MS);
++}
++
++async function initializeReadyState(entry, msg) {
++  const mcpData = handlers.loadMergedMcpServers(repoRoot);
++  const agentsData = loadMergedAgents(repoRoot, extensionPath);
++  const modesData = loadMergedModes(repoRoot, extensionPath);
++  const onboardingData = loadOnboarding();
++  entry.session.setMcpServers(mcpData);
++  entry.session.setAgents(agentsData);
++  entry.session.setModes(modesData);
++
++  const requestedRunId = msg.runId || null;
++  const activeRunId = entry.session.getRunId() || null;
++  if (requestedRunId && activeRunId !== requestedRunId) {
++    const ok = await entry.session.reattachRun(requestedRunId);
++    if (ok) {
++      entry.renderer.banner(`Reattached to run ${entry.session.getRunId()}`);
++    } else {
++      entry.renderer.banner(`Previous run ${requestedRunId} no longer exists. Starting fresh.`);
++    }
++  }
++
++  const runId = entry.session.getRunId() || null;
++  entry.connectionState.ws && entry.connectionState.ws.readyState === 1 && entry.connectionState.ws.send(JSON.stringify({
++    type: 'initConfig',
++    config: entry.panelConfig,
++    mcpServers: mcpData,
++    agents: agentsData,
++    modes: modesData,
++    panelId: entry.session.panelId,
++    runId,
++    onboarding: { complete: isOnboardingComplete(), data: onboardingData },
++    featureFlags: loadFeatureFlags(),
++    apiCatalog: buildApiCatalogPayload(),
++  }));
++
++  findExistingDesktop(repoRoot, entry.session.panelId).then((desktop) => {
++    if (desktop) {
++      entry.session._postMessage({ type: 'desktopReady', novncPort: desktop.novncPort });
++    }
++  }).catch(() => {});
++
++  entry.session.prestart();
++
++  if (runId) {
++    await entry.session.sendTranscript();
++    await entry.session.sendProgress();
++    entry.session._restoreWaitTimer();
++  } else {
++    entry.session._postMessage({ type: 'progressFull', text: '' });
++  }
++}
++
++wss.on('connection', (ws) => {
++  const connectionId = crypto.randomUUID();
++  console.log(`[${connectionId.slice(0, 8)}] Client connected`);
++
++  const connectionState = { ws };
++  let activeEntry = null;
++  const pendingConfig = {};
+ 
+   ws.on('message', async (data) => {
+     let msg;
+     try { msg = JSON.parse(String(data)); } catch { return; }
+     if (!msg || !msg.type) return;
+ 
+-    // ── Config ──
+-    if (msg.type === 'configChanged') {
+-      session.applyConfig(msg.config);
+-      Object.assign(panelConfig, msg.config);
+-      return;
+-    }
+-
+-    // ── Debug logging ──
+     if (msg.type === '_debugLog') {
+       const logPath = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
+       try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
+@@ -187,19 +308,48 @@ wss.on('connection', (ws) => {
+       return;
+     }
+ 
+-    // ── Onboarding ──
++    if (msg.type === 'configChanged') {
++      Object.assign(pendingConfig, msg.config || {});
++      if (activeEntry) {
++        Object.assign(activeEntry.panelConfig, msg.config || {});
++        activeEntry.session.applyConfig(msg.config || {});
++      }
++      return;
++    }
++
++    if (msg.type === 'ready') {
++      const desiredPanelId = msg.panelId || crypto.randomUUID();
++      activeEntry = sessions.get(desiredPanelId) || null;
++      if (!activeEntry) {
++        activeEntry = createSessionEntry(desiredPanelId, connectionState, pendingConfig);
++        sessions.set(desiredPanelId, activeEntry);
++      } else {
++        attachSession(activeEntry, ws);
++        Object.assign(activeEntry.panelConfig, pendingConfig);
++        if (Object.keys(pendingConfig).length > 0) {
++          activeEntry.session.applyConfig(pendingConfig);
++        }
++      }
++      await initializeReadyState(activeEntry, msg);
++      return;
++    }
++
++    if (!activeEntry) {
++      return;
++    }
++
+     if (msg.type === 'onboardingDetect') {
+-      runFullDetection().then(detected => {
+-        postMessage({ type: 'onboardingDetected', detected });
++      runFullDetection().then((detected) => {
++        activeEntry.session._postMessage({ type: 'onboardingDetected', detected });
+       }).catch(() => {
+-        postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' });
++        activeEntry.session._postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' });
+       });
+       return;
+     }
+     if (msg.type === 'onboardingAutoFix') {
+       runAutoFix(msg.step,
+-        (text) => postMessage({ type: 'onboardingFixProgress', step: msg.step, text }),
+-        (success, error) => postMessage({ type: 'onboardingFixDone', step: msg.step, success, error })
++        (text) => activeEntry.session._postMessage({ type: 'onboardingFixProgress', step: msg.step, text }),
++        (success, error) => activeEntry.session._postMessage({ type: 'onboardingFixDone', step: msg.step, success, error }),
+       );
+       return;
+     }
+@@ -208,88 +358,69 @@ wss.on('connection', (ws) => {
+       const bundledAgents = loadAgentsFile(bundledPath);
+       const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
+       const agentsData = loadMergedAgents(repoRoot, extensionPath);
+-      session.setAgents(agentsData);
+-      postMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
+-      postMessage({ type: 'agentsData', agents: agentsData });
+-      return;
+-    }
+-
+-    // ── Ready (init) ──
+-    if (msg.type === 'ready') {
+-      const mcpData = handlers.loadMergedMcpServers(repoRoot);
+-      const agentsData = loadMergedAgents(repoRoot, extensionPath);
+-      const modesData = loadMergedModes(repoRoot, extensionPath);
+-      const onboardingData = loadOnboarding();
+-      postMessage({
+-        type: 'initConfig',
+-        config: panelConfig,
+-        mcpServers: mcpData,
+-        agents: agentsData,
+-        modes: modesData,
+-        panelId,
+-        runId: msg.runId || null,
+-        onboarding: { complete: isOnboardingComplete(), data: onboardingData },
+-        featureFlags: require(path.join(__dirname, '..', 'src', 'feature-flags')).loadFeatureFlags(),
+-      });
++      activeEntry.session.setAgents(agentsData);
++      activeEntry.session._postMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
++      activeEntry.session._postMessage({ type: 'agentsData', agents: agentsData });
+       return;
+     }
+ 
+-    // ── MCP server config ──
+     if (msg.type === 'mcpServersChanged') {
+       const scope = msg.scope;
+       const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(repoRoot);
+       handlers.saveMcpFile(filePath, msg.servers);
+       const mcpData = handlers.loadMergedMcpServers(repoRoot);
+-      session.setMcpServers(mcpData);
++      activeEntry.session.setMcpServers(mcpData);
+       return;
+     }
+     if (msg.type === 'settingsLoad') {
+-      postMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS });
++      activeEntry.session._postMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS });
+       return;
+     }
+     if (msg.type === 'settingsSave') {
+       const updated = saveSettings(msg.settings || {});
+-      session._selfTesting = !!updated.selfTesting;
+-      postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS });
++      activeEntry.session._selfTesting = !!updated.selfTesting;
++      activeEntry.session._postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS });
+       return;
+     }
+ 
+-    // ── Panel title (no-op in web) ──
+     const projectContextReply = handlers.handleProjectContextMessage(msg, repoRoot);
+-    if (projectContextReply) { postMessage(projectContextReply); return; }
++    if (projectContextReply) { activeEntry.session._postMessage(projectContextReply); return; }
++    if (await handleQaReportExportMessage(msg, (message) => activeEntry.session._postMessage(message))) {
++      return;
++    }
+     if (msg.type === 'setPanelTitle') return;
+ 
+-    // ── CRUD handlers ──
+     const taskReply = handlers.handleTaskMessage(msg, repoRoot);
+-    if (taskReply) { postMessage(taskReply); return; }
++    if (taskReply) { activeEntry.session._postMessage(taskReply); return; }
+ 
+     const testReply = handlers.handleTestMessage(msg, repoRoot);
+-    if (testReply) { postMessage(testReply); return; }
++    if (testReply) { activeEntry.session._postMessage(testReply); return; }
+ 
+     const agentReply = handlers.handleAgentMessage(msg, repoRoot, extensionPath);
+     if (agentReply) {
+-      postMessage(agentReply);
+-      session.setAgents(loadMergedAgents(repoRoot, extensionPath));
++      activeEntry.session._postMessage(agentReply);
++      activeEntry.session.setAgents(loadMergedAgents(repoRoot, extensionPath));
+       return;
+     }
+ 
+     const modeReply = handlers.handleModeMessage(msg, repoRoot, extensionPath);
+     if (modeReply) {
+-      postMessage(modeReply);
+-      session.setModes(loadMergedModes(repoRoot, extensionPath));
++      activeEntry.session._postMessage(modeReply);
++      activeEntry.session.setModes(loadMergedModes(repoRoot, extensionPath));
+       return;
+     }
+ 
+-    const instanceReply = await handlers.handleInstanceMessage(msg, repoRoot, panelId, postMessage, extensionPath);
+-    if (instanceReply) { postMessage(instanceReply); return; }
++    const instanceReply = await handlers.handleInstanceMessage(msg, repoRoot, activeEntry.session.panelId, (message) => activeEntry.session._postMessage(message), extensionPath);
++    if (instanceReply) { activeEntry.session._postMessage(instanceReply); return; }
+ 
+-    // ── Fallthrough to SessionManager ──
+-    session.handleMessage(msg);
++    activeEntry.session.handleMessage(msg);
+   });
+ 
+   ws.on('close', () => {
+-    console.log(`[${panelId.slice(0, 8)}] Client disconnected`);
+-    session.dispose();
++    console.log(`[${connectionId.slice(0, 8)}] Client disconnected`);
++    if (activeEntry) {
++      detachSession(activeEntry);
++    }
+   });
+ });
+ 
+@@ -297,7 +428,7 @@ wss.on('connection', (ws) => {
+ function startFileWatcher() {
+   const watchDirs = [
+     path.join(EXTENSION_DIR, 'webview'),
+-    EXTENSION_DIR,                          // webview-html.js, session-manager.js, etc.
++    EXTENSION_DIR,
+     path.join(__dirname, '..', 'src'),
+   ];
+   for (const dir of watchDirs) {
+@@ -322,12 +453,12 @@ async function main() {
+ 
+   startFileWatcher();
+ 
+-  server.listen(PORT, () => {
++  server.listen(PORT, '127.0.0.1', () => {
+     console.log(`\n  Ready: http://localhost:${PORT}\n`);
+   });
+ }
+ 
+-main().catch(err => {
+-  console.error('Failed to start:', err);
++main().catch((error) => {
++  console.error('Failed to start:', error);
+   process.exit(1);
+ });

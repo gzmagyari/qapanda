@@ -1,0 +1,921 @@
+diff --git a/extension/session-manager.js b/extension/session-manager.js
+index 623683d..826eb1a 100644
+--- a/extension/session-manager.js
++++ b/extension/session-manager.js
+@@ -81,6 +81,7 @@ class SessionManager {
+     this._executingAgentStack = [];
+     this._postMessage = options.postMessage || (() => {});
+     this._waitTimer = null;
++    this._loopContinueTimer = null;
+     // Model/thinking overrides (load from persisted config if available)
+     const init = options.initialConfig || {};
+     this._controllerModel = init.controllerModel || null;
+@@ -771,6 +772,13 @@ class SessionManager {
+     }
+   }
+ 
++  _clearLoopContinueTimer() {
++    if (this._loopContinueTimer) {
++      clearTimeout(this._loopContinueTimer);
++      this._loopContinueTimer = null;
++    }
++  }
++
+   _scheduleNextPass() {
+     this._clearWaitTimer();
+     if (!this._activeManifest || this._activeManifest.status !== 'running') return;
+@@ -926,6 +934,7 @@ class SessionManager {
+     if (msg.type === 'continueInput') {
+       // Continue button: send to controller with optional guidance
+       const guidance = (msg.text || '').trim();
++      this._clearLoopContinueTimer();
+       this._handleContinue(guidance);
+       return;
+     }
+@@ -933,11 +942,13 @@ class SessionManager {
+     if (msg.type === 'orchestrateInput') {
+       // Orchestrate button: full controller orchestration with persistent session
+       const text = (msg.text || '').trim();
++      this._clearLoopContinueTimer();
+       await this._handleOrchestrate(text);
+       return;
+     }
+ 
+     if (msg.type === 'userInput') {
++      this._clearLoopContinueTimer();
+       await this._handleInput(String(msg.text || '').trim());
+       return;
+     }
+@@ -985,6 +996,7 @@ class SessionManager {
+   }
+ 
+   abort() {
++    this._clearLoopContinueTimer();
+     if (this._abortController) {
+       this._abortController.abort();
+     }
+@@ -1914,6 +1926,7 @@ class SessionManager {
+     this._syncMcpToManifest();
+     const endActivity = this._beginActivity('foreground');
+     this._abortController = new AbortController();
++    let shouldScheduleLoopContinue = false;
+     try {
+       const { runManagerLoop } = require('./src/orchestrator');
+       // The user message for the controller is always a neutral "decide next step" instruction.
+@@ -1929,18 +1942,21 @@ class SessionManager {
+         ...this._workerRunHooks(),
+       });
+       this._syncLoopConfigToManifest();
+-      await saveManifest(this._activeManifest);
+-      // If loop mode is on and the run didn't stop, auto-continue
+-      if (this._loopMode && this._activeManifest && this._activeManifest.status === 'running') {
+-        this._scheduleLoopContinue();
+-      }
++      shouldScheduleLoopContinue = !!(this._loopMode && this._activeManifest && this._activeManifest.status === 'running');
+     } finally {
+-      // Restore original prompt and controller session ID
+-      this._activeManifest.controllerSystemPrompt = originalPrompt;
+-      this._activeManifest.controller.sessionId = savedControllerSessionId;
++      // Restore original prompt and controller session ID before the manifest is persisted again.
++      if (this._activeManifest && this._activeManifest.controller) {
++        this._activeManifest.controllerSystemPrompt = originalPrompt;
++        this._activeManifest.controller.sessionId = savedControllerSessionId;
++      }
+       this._abortController = null;
+       endActivity();
+     }
++
++    await saveManifest(this._activeManifest);
++    if (shouldScheduleLoopContinue) {
++      this._scheduleLoopContinue();
++    }
+   }
+ 
+   /** Base copilot prompt — delegates to shared builder in prompts.js */
+@@ -1961,10 +1977,12 @@ class SessionManager {
+    */
+   _scheduleLoopContinue() {
+     if (!this._loopMode) return;
++    this._clearLoopContinueTimer();
+     // Small delay to let UI update before next cycle
+-    setTimeout(() => {
++    this._loopContinueTimer = setTimeout(() => {
++      this._loopContinueTimer = null;
+       if (!this._loopMode || this._running) return;
+-      this._handleContinue('');
++      Promise.resolve(this._handleContinue('')).catch(() => {});
+     }, 500);
+   }
+ 
+@@ -1987,6 +2005,7 @@ class SessionManager {
+       // Always loop until the controller says STOP — that's the point of Orchestrate
+       await this._runLoop({
+         userMessage: text || '[ORCHESTRATE] Decide the next step based on the conversation transcript.',
++        singlePass: false,
+       });
+     } catch (error) {
+       if (!isAbortError(error)) {
+@@ -2006,12 +2025,14 @@ class SessionManager {
+     this._abortController = new AbortController();
+ 
+     const delayMs = parseWaitDelay(this._waitDelay);
+-    const useSinglePass = Boolean(delayMs && options.singlePass !== false);
++    const useSinglePass = options.singlePass === false
++      ? false
++      : Boolean(options.singlePass || delayMs);
+ 
+     try {
+       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
+         ...options,
+-        singlePass: useSinglePass || options.singlePass,
++        singlePass: useSinglePass,
+         abortSignal: this._abortController.signal,
+         ...this._workerRunHooks(),
+       });
+@@ -2027,6 +2048,7 @@ class SessionManager {
+   }
+ 
+   dispose() {
++    this._clearLoopContinueTimer();
+     this._stopWaitTimer();
+     this.abort();
+     this._stopAgentDelegateMcp();
+diff --git a/tests/session-manager-critical.test.js b/tests/session-manager-critical.test.js
+new file mode 100644
+index 0000000..fa22dba
+--- /dev/null
++++ b/tests/session-manager-critical.test.js
+@@ -0,0 +1,184 @@
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const extDir = path.resolve(__dirname, '..', 'extension');
++const repoSrcDir = path.resolve(__dirname, '..', 'src');
++const generatedSrcDir = path.join(extDir, 'src');
++let createdGeneratedSrc = false;
++if (!fs.existsSync(generatedSrcDir)) {
++  fs.cpSync(repoSrcDir, generatedSrcDir, { recursive: true });
++  createdGeneratedSrc = true;
++  process.on('exit', () => {
++    try { fs.rmSync(generatedSrcDir, { recursive: true, force: true }); } catch {}
++  });
++}
++const smPath = path.join(extDir, 'session-manager.js');
++const statePath = path.join(extDir, 'src', 'state.js');
++const orchPath = path.join(extDir, 'src', 'orchestrator.js');
++const promptsPath = path.join(extDir, 'src', 'prompts.js');
++const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
++const chromePath = path.join(extDir, 'chrome-manager.js');
++
++const origState = require(statePath);
++const origPrompts = require(promptsPath);
++
++function stubRenderer() {
++  const calls = [];
++  return new Proxy({ __calls: calls }, {
++    get(target, prop) {
++      if (prop in target) return target[prop];
++      return (...args) => { calls.push({ method: prop, args }); };
++    },
++    set(target, prop, value) {
++      target[prop] = value;
++      return true;
++    },
++  });
++}
++
++function buildSession({ manifest = null, runManagerLoopImpl = null } = {}) {
++  const posted = [];
++  const captured = {
++    saveManifestCalls: [],
++    runManagerLoopCalls: [],
++  };
++
++  const fakeManifest = manifest || {
++    runId: 'critical-run-1',
++    status: 'running',
++    controllerSystemPrompt: 'original system prompt',
++    controller: { model: null, config: [], sessionId: 'controller-session-1' },
++    worker: { model: null },
++    files: { progress: '/tmp/fake-progress.md' },
++  };
++
++  delete require.cache[smPath];
++
++  require.cache[statePath] = {
++    id: statePath, filename: statePath, loaded: true,
++    exports: {
++      ...origState,
++      prepareNewRun: async () => ({ ...fakeManifest }),
++      saveManifest: async (value) => {
++        captured.saveManifestCalls.push(JSON.parse(JSON.stringify(value)));
++      },
++    },
++  };
++
++  require.cache[orchPath] = {
++    id: orchPath, filename: orchPath, loaded: true,
++    exports: {
++      runManagerLoop: async (manifestValue, renderer, options) => {
++        captured.runManagerLoopCalls.push({ options: { ...options } });
++        if (typeof runManagerLoopImpl === 'function') {
++          return runManagerLoopImpl(manifestValue, renderer, options);
++        }
++        return { ...manifestValue, status: 'running' };
++      },
++    },
++  };
++
++  require.cache[promptsPath] = {
++    id: promptsPath, filename: promptsPath, loaded: true,
++    exports: {
++      ...origPrompts,
++      loadWorkflows: () => [],
++      buildCopilotBasePrompt: () => 'base copilot prompt',
++      buildContinueDirective: () => 'continue directive',
++    },
++  };
++
++  const { SessionManager } = require(smPath);
++  const renderer = stubRenderer();
++  const session = new SessionManager(renderer, {
++    repoRoot: '/tmp/fake-repo',
++    stateRoot: '/tmp/fake-state',
++    postMessage: (msg) => posted.push(msg),
++  });
++
++  session._activeManifest = JSON.parse(JSON.stringify(fakeManifest));
++  session._startAgentDelegateMcp = async () => {};
++  session._syncMcpToManifest = () => {};
++  session._workerRunHooks = () => ({});
++  session._beginActivity = () => () => {};
++  session._applyWorkerThinking = () => {};
++  session._stopAgentDelegateMcp = () => {};
++
++  const cleanup = () => {
++    session.dispose();
++    delete require.cache[smPath];
++    require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
++    delete require.cache[orchPath];
++    require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
++    delete require.cache[compactionPath];
++    delete require.cache[chromePath];
++  };
++
++  return { session, renderer, posted, captured, cleanup };
++}
++
++test('_runControllerContinue saves the restored controller state, not the temporary continue state', async () => {
++  const { session, captured, cleanup } = buildSession({
++    manifest: {
++      runId: 'continue-run',
++      status: 'running',
++      controllerSystemPrompt: 'persistent prompt',
++      controller: { model: null, config: [], sessionId: 'controller-session-42' },
++      worker: { model: null },
++      files: { progress: '/tmp/fake-progress.md' },
++    },
++  });
++
++  try {
++    session._loopMode = false;
++    await session._runControllerContinue('keep going');
++
++    assert.equal(captured.saveManifestCalls.length, 1);
++    const saved = captured.saveManifestCalls[0];
++    assert.equal(saved.controllerSystemPrompt, 'persistent prompt');
++    assert.equal(saved.controller.sessionId, 'controller-session-42');
++  } finally {
++    cleanup();
++  }
++});
++
++test('_handleOrchestrate keeps multi-pass mode even when wait delay is enabled', async () => {
++  const { session, captured, cleanup } = buildSession({
++    manifest: {
++      runId: 'orchestrate-run',
++      status: 'running',
++      controllerSystemPrompt: 'orchestrate prompt',
++      controller: { model: null, config: [], sessionId: 'controller-session-99' },
++      worker: { model: null },
++      files: { progress: '/tmp/fake-progress.md' },
++    },
++  });
++
++  try {
++    session._waitDelay = '5m';
++    await session._handleOrchestrate('continue until done');
++
++    assert.equal(captured.runManagerLoopCalls.length, 1);
++    assert.equal(captured.runManagerLoopCalls[0].options.singlePass, false);
++  } finally {
++    cleanup();
++  }
++});
++
++test('dispose cancels any scheduled loop-continue timer', async () => {
++  const { session, cleanup } = buildSession();
++  let continueCalls = 0;
++
++  try {
++    session._loopMode = true;
++    session._handleContinue = async () => { continueCalls += 1; };
++    session._scheduleLoopContinue();
++    session.dispose();
++    await new Promise((resolve) => setTimeout(resolve, 700));
++    assert.equal(continueCalls, 0);
++  } finally {
++    cleanup();
++  }
++});
+diff --git a/tests/unit/web-session-registry.test.js b/tests/unit/web-session-registry.test.js
+new file mode 100644
+index 0000000..5f16362
+--- /dev/null
++++ b/tests/unit/web-session-registry.test.js
+@@ -0,0 +1,69 @@
++const test = require('node:test');
++const assert = require('node:assert/strict');
++
++const { SessionRegistry } = require('../../web/session-registry');
++
++test('reattach within grace period reuses the same session entry', async () => {
++  const registry = new SessionRegistry({ graceMs: 40 });
++  const wsA = { id: 'ws-a' };
++  const wsB = { id: 'ws-b' };
++  let createCalls = 0;
++  let disposeCalls = 0;
++
++  const first = registry.attach('panel-1', {
++    ws: wsA,
++    createEntry(panelId, connection) {
++      createCalls += 1;
++      return {
++        connectionSeen: connection,
++        session: { dispose() { disposeCalls += 1; } },
++        panelConfig: {},
++      };
++    },
++  });
++
++  assert.equal(first.created, true);
++  assert.equal(createCalls, 1);
++  assert.equal(first.entry.connection.ws, wsA);
++
++  registry.detach('panel-1');
++  await new Promise((resolve) => setTimeout(resolve, 10));
++
++  const second = registry.attach('panel-1', {
++    ws: wsB,
++    createEntry() {
++      throw new Error('should not create a new session during the reconnect grace period');
++    },
++  });
++
++  assert.equal(second.created, false);
++  assert.equal(second.entry, first.entry);
++  assert.equal(second.entry.connection.ws, wsB);
++  assert.equal(createCalls, 1);
++  assert.equal(disposeCalls, 0);
++
++  registry.disposeAll();
++  assert.equal(disposeCalls, 1);
++});
++
++test('detached sessions are disposed after the reconnect grace period', async () => {
++  const registry = new SessionRegistry({ graceMs: 20 });
++  let disposeCalls = 0;
++
++  registry.attach('panel-2', {
++    ws: { id: 'ws-a' },
++    createEntry(_panelId, connection) {
++      return {
++        connectionSeen: connection,
++        session: { dispose() { disposeCalls += 1; } },
++        panelConfig: {},
++      };
++    },
++  });
++
++  registry.detach('panel-2');
++  await new Promise((resolve) => setTimeout(resolve, 50));
++
++  assert.equal(disposeCalls, 1);
++  assert.equal(registry.get('panel-2'), null);
++});
+diff --git a/web/server.js b/web/server.js
+index 34c5d8a..8428259 100644
+--- a/web/server.js
++++ b/web/server.js
+@@ -33,11 +33,18 @@ const { startTasksMcpServer } = require(path.join(EXTENSION_DIR, 'tasks-mcp-http
+ const { startTestsMcpServer } = require(path.join(EXTENSION_DIR, 'tests-mcp-http'));
+ const { startMemoryMcpServer } = require(path.join(EXTENSION_DIR, 'memory-mcp-http'));
+ const { startQaDesktopMcpServer } = require(path.join(EXTENSION_DIR, 'qa-desktop-mcp-server'));
++const { loadFeatureFlags } = require(path.join(__dirname, '..', 'src', 'feature-flags'));
++const { buildApiCatalogPayload } = require(path.join(__dirname, '..', 'src', 'model-catalog'));
++const { findExistingDesktop } = require(path.join(__dirname, '..', 'src', 'remote-desktop'));
++const { defaultQaReportPdfFileName, writeQaReportPdf } = require(path.join(EXTENSION_DIR, 'qa-report-export'));
++const { SessionRegistry } = require(path.join(__dirname, 'session-registry'));
+ 
+ // ── Config ───────────────────────────────────────────────────────────
+ const PORT = parseInt(process.env.PORT || '3000', 10);
+ const repoRoot = process.argv[2] || process.cwd();
+ const extensionPath = EXTENSION_DIR;
++const SESSION_RECONNECT_GRACE_MS = parseInt(process.env.WS_RECONNECT_GRACE_MS || '15000', 10);
++const WEB_EXPORTS_DIR = path.join(repoRoot, '.qpanda', 'exports');
+ 
+ // ── MIME types ───────────────────────────────────────────────────────
+ const MIME = {
+@@ -124,172 +131,252 @@ try {
+   process.exit(1);
+ }
+ 
++const sessionRegistry = new SessionRegistry({ graceMs: SESSION_RECONNECT_GRACE_MS });
++
++function sendWs(ws, msg) {
++  if (ws && ws.readyState === 1) {
++    try { ws.send(JSON.stringify(msg)); } catch {}
++  }
++}
++
++async function exportQaReportPdfForWeb(msg) {
++  const filePath = path.join(
++    WEB_EXPORTS_DIR,
++    defaultQaReportPdfFileName({ label: msg.label, scope: msg.scope, updatedAt: msg.updatedAt })
++  );
++  await writeQaReportPdf(filePath, {
++    label: msg.label || 'QA Report',
++    scope: msg.scope || 'run',
++    updatedAt: msg.updatedAt || '',
++    section: msg.section || {},
++  });
++  return filePath;
++}
++
+ const wss = new WebSocketServer({ server, path: '/ws' });
+ 
+ wss.on('connection', (ws) => {
+-  const panelId = crypto.randomUUID();
+-  console.log(`[${panelId.slice(0, 8)}] Client connected`);
+-
+-  // Duck-typed panel for WebviewRenderer
+-  const fakePanel = {
+-    webview: {
+-      postMessage(msg) {
+-        if (ws.readyState === 1) { // WebSocket.OPEN
+-          try { ws.send(JSON.stringify(msg)); } catch {}
+-        }
+-      },
+-    },
+-  };
++  const tempConnectionId = crypto.randomUUID();
++  console.log(`[${tempConnectionId.slice(0, 8)}] Client connected`);
+ 
+-  const renderer = new WebviewRenderer(fakePanel);
+-  const panelConfig = {};
++  let attachedEntry = null;
++  let pendingConfig = {};
+ 
+-  function postMessage(msg) {
+-    if (msg && msg.type === 'syncConfig' && msg.config) {
+-      Object.assign(panelConfig, msg.config);
+-    }
+-    fakePanel.webview.postMessage(msg);
++  function entryPostMessage(msg) {
++    const socket = attachedEntry && attachedEntry.connection ? attachedEntry.connection.ws : ws;
++    sendWs(socket, msg);
+   }
+ 
+-  const session = new SessionManager(renderer, {
+-    repoRoot,
+-    panelId,
+-    postMessage,
+-    initialConfig: panelConfig,
+-    extensionPath,
+-  });
+-  session._tasksMcpPort = _tasksMcpPort;
+-  session._testsMcpPort = _testsMcpPort;
+-  session._memoryMcpPort = _memoryMcpPort;
+-  session._qaDesktopMcpPort = _qaDesktopMcpPort;
+-  session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
+-  session.setAgents(loadMergedAgents(repoRoot, extensionPath));
+-  session.setModes(loadMergedModes(repoRoot, extensionPath));
+-  session.prestart();
+-
+   ws.on('message', async (data) => {
+     let msg;
+     try { msg = JSON.parse(String(data)); } catch { return; }
+     if (!msg || !msg.type) return;
+ 
+-    // ── Config ──
+-    if (msg.type === 'configChanged') {
+-      session.applyConfig(msg.config);
+-      Object.assign(panelConfig, msg.config);
+-      return;
+-    }
+-
+-    // ── Debug logging ──
+-    if (msg.type === '_debugLog') {
+-      const logPath = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
+-      try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
+-      try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
+-      return;
+-    }
++    try {
++      if (msg.type === '_debugLog') {
++        const logPath = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
++        try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
++        try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
++        return;
++      }
++
++      if (msg.type === 'configChanged') {
++        if (attachedEntry) {
++          attachedEntry.session.applyConfig(msg.config);
++          Object.assign(attachedEntry.panelConfig, msg.config || {});
++        } else {
++          Object.assign(pendingConfig, msg.config || {});
++        }
++        return;
++      }
++
++      if (msg.type === 'ready') {
++        const restoredPanelId = typeof msg.panelId === 'string' && msg.panelId.trim()
++          ? msg.panelId.trim()
++          : crypto.randomUUID();
++        const pendingConfigFromSocket = { ...pendingConfig };
++        const attachResult = sessionRegistry.attach(restoredPanelId, {
++          ws,
++          createEntry(panelId, connection) {
++            const fakePanel = {
++              webview: {
++                postMessage(outbound) {
++                  sendWs(connection.ws, outbound);
++                },
++              },
++            };
++            const renderer = new WebviewRenderer(fakePanel);
++            const panelConfig = { ...pendingConfig };
++            const session = new SessionManager(renderer, {
++              repoRoot,
++              panelId,
++              postMessage(outbound) {
++                if (outbound && outbound.type === 'syncConfig' && outbound.config) {
++                  Object.assign(panelConfig, outbound.config);
++                }
++                sendWs(connection.ws, outbound);
++              },
++              initialConfig: panelConfig,
++              extensionPath,
++            });
++            session._tasksMcpPort = _tasksMcpPort;
++            session._testsMcpPort = _testsMcpPort;
++            session._memoryMcpPort = _memoryMcpPort;
++            session._qaDesktopMcpPort = _qaDesktopMcpPort;
++            session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
++            session.setAgents(loadMergedAgents(repoRoot, extensionPath));
++            session.setModes(loadMergedModes(repoRoot, extensionPath));
++            return { session, renderer, panelConfig };
++          },
++        });
++
++        attachedEntry = attachResult.entry;
++        if (!attachResult.created && Object.keys(pendingConfigFromSocket).length > 0) {
++          Object.assign(attachedEntry.panelConfig, pendingConfigFromSocket);
++          attachedEntry.session.applyConfig(pendingConfigFromSocket);
++        }
++        pendingConfig = attachedEntry.panelConfig;
++
++        const mcpData = handlers.loadMergedMcpServers(repoRoot);
++        const agentsData = loadMergedAgents(repoRoot, extensionPath);
++        const modesData = loadMergedModes(repoRoot, extensionPath);
++        const onboardingData = loadOnboarding();
++        const requestedRunId = msg.runId || attachedEntry.session.getRunId() || null;
++        const reattached = requestedRunId
++          ? await attachedEntry.session.reattachRun(requestedRunId, { suppressUi: true })
++          : false;
++        if (reattached) Object.assign(attachedEntry.panelConfig, attachedEntry.session.getConfig());
++
++        entryPostMessage({
++          type: 'initConfig',
++          config: reattached ? attachedEntry.session.getConfig() : attachedEntry.panelConfig,
++          mcpServers: mcpData,
++          agents: agentsData,
++          modes: modesData,
++          panelId: attachedEntry.session.panelId,
++          runId: reattached ? attachedEntry.session.getRunId() : null,
++          onboarding: { complete: isOnboardingComplete(), data: onboardingData },
++          featureFlags: loadFeatureFlags(path.join(__dirname, '..')),
++          apiCatalog: buildApiCatalogPayload(),
++        });
++
++        if (msg.panelId || reattached) {
++          findExistingDesktop(repoRoot, attachedEntry.session.panelId).then((desktop) => {
++            if (desktop) entryPostMessage({ type: 'desktopReady', novncPort: desktop.novncPort });
++          }).catch(() => {});
++        }
++        if (reattached) {
++          attachedEntry.session.syncAttachedRunState();
++          await attachedEntry.session.sendTranscript();
++          attachedEntry.renderer.banner(`Reattached to run ${attachedEntry.session.getRunId()}`);
++          await attachedEntry.session.sendProgress();
++          attachedEntry.session._restoreWaitTimer();
++        } else if (requestedRunId) {
++          attachedEntry.renderer.banner(`Previous run ${requestedRunId} no longer exists. Starting fresh.`);
++        }
+ 
+-    // ── Onboarding ──
+-    if (msg.type === 'onboardingDetect') {
+-      runFullDetection().then(detected => {
+-        postMessage({ type: 'onboardingDetected', detected });
+-      }).catch(() => {
+-        postMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' });
+-      });
+-      return;
+-    }
+-    if (msg.type === 'onboardingAutoFix') {
+-      runAutoFix(msg.step,
+-        (text) => postMessage({ type: 'onboardingFixProgress', step: msg.step, text }),
+-        (success, error) => postMessage({ type: 'onboardingFixDone', step: msg.step, success, error })
++        if (attachResult.created) {
++          attachedEntry.session.prestart();
++        }
++        return;
++      }
++
++      if (!attachedEntry) return;
++
++      if (msg.type === 'onboardingDetect') {
++        runFullDetection().then((detected) => {
++          entryPostMessage({ type: 'onboardingDetected', detected });
++        }).catch(() => {
++          entryPostMessage({ type: 'onboardingDetected', detected: null, error: 'Detection failed' });
++        });
++        return;
++      }
++      if (msg.type === 'onboardingAutoFix') {
++        runAutoFix(
++          msg.step,
++          (text) => entryPostMessage({ type: 'onboardingFixProgress', step: msg.step, text }),
++          (success, error) => entryPostMessage({ type: 'onboardingFixDone', step: msg.step, success, error }),
++        );
++        return;
++      }
++      if (msg.type === 'onboardingSave') {
++        const bundledPath = path.join(extensionPath, 'resources', 'system-agents.json');
++        const bundledAgents = loadAgentsFile(bundledPath);
++        const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
++        const agentsData = loadMergedAgents(repoRoot, extensionPath);
++        attachedEntry.session.setAgents(agentsData);
++        entryPostMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
++        entryPostMessage({ type: 'agentsData', agents: agentsData });
++        return;
++      }
++
++      if (msg.type === 'mcpServersChanged') {
++        const scope = msg.scope;
++        const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(repoRoot);
++        handlers.saveMcpFile(filePath, msg.servers);
++        attachedEntry.session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
++        return;
++      }
++      if (msg.type === 'settingsLoad') {
++        entryPostMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS });
++        return;
++      }
++      if (msg.type === 'settingsSave') {
++        const updated = saveSettings(msg.settings || {});
++        attachedEntry.session._selfTesting = !!updated.selfTesting;
++        entryPostMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS });
++        return;
++      }
++      const projectContextReply = handlers.handleProjectContextMessage(msg, repoRoot);
++      if (projectContextReply) { entryPostMessage(projectContextReply); return; }
++      if (msg.type === 'setPanelTitle') return;
++      if (msg.type === 'qaReportExportPdf') {
++        const filePath = await exportQaReportPdfForWeb(msg);
++        attachedEntry.renderer.banner(`QA report saved to ${filePath}`);
++        return;
++      }
++
++      const taskReply = handlers.handleTaskMessage(msg, repoRoot);
++      if (taskReply) { entryPostMessage(taskReply); return; }
++
++      const testReply = handlers.handleTestMessage(msg, repoRoot);
++      if (testReply) { entryPostMessage(testReply); return; }
++
++      const agentReply = handlers.handleAgentMessage(msg, repoRoot, extensionPath);
++      if (agentReply) {
++        entryPostMessage(agentReply);
++        attachedEntry.session.setAgents(loadMergedAgents(repoRoot, extensionPath));
++        return;
++      }
++
++      const modeReply = handlers.handleModeMessage(msg, repoRoot, extensionPath);
++      if (modeReply) {
++        entryPostMessage(modeReply);
++        attachedEntry.session.setModes(loadMergedModes(repoRoot, extensionPath));
++        return;
++      }
++
++      const instanceReply = await handlers.handleInstanceMessage(
++        msg,
++        repoRoot,
++        attachedEntry.session.panelId,
++        entryPostMessage,
++        extensionPath,
+       );
+-      return;
+-    }
+-    if (msg.type === 'onboardingSave') {
+-      const bundledPath = path.join(extensionPath, 'resources', 'system-agents.json');
+-      const bundledAgents = loadAgentsFile(bundledPath);
+-      const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
+-      const agentsData = loadMergedAgents(repoRoot, extensionPath);
+-      session.setAgents(agentsData);
+-      postMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
+-      postMessage({ type: 'agentsData', agents: agentsData });
+-      return;
+-    }
+-
+-    // ── Ready (init) ──
+-    if (msg.type === 'ready') {
+-      const mcpData = handlers.loadMergedMcpServers(repoRoot);
+-      const agentsData = loadMergedAgents(repoRoot, extensionPath);
+-      const modesData = loadMergedModes(repoRoot, extensionPath);
+-      const onboardingData = loadOnboarding();
+-      postMessage({
+-        type: 'initConfig',
+-        config: panelConfig,
+-        mcpServers: mcpData,
+-        agents: agentsData,
+-        modes: modesData,
+-        panelId,
+-        runId: msg.runId || null,
+-        onboarding: { complete: isOnboardingComplete(), data: onboardingData },
+-        featureFlags: require(path.join(__dirname, '..', 'src', 'feature-flags')).loadFeatureFlags(),
+-      });
+-      return;
+-    }
+-
+-    // ── MCP server config ──
+-    if (msg.type === 'mcpServersChanged') {
+-      const scope = msg.scope;
+-      const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(repoRoot);
+-      handlers.saveMcpFile(filePath, msg.servers);
+-      const mcpData = handlers.loadMergedMcpServers(repoRoot);
+-      session.setMcpServers(mcpData);
+-      return;
+-    }
+-    if (msg.type === 'settingsLoad') {
+-      postMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS });
+-      return;
+-    }
+-    if (msg.type === 'settingsSave') {
+-      const updated = saveSettings(msg.settings || {});
+-      session._selfTesting = !!updated.selfTesting;
+-      postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS });
+-      return;
+-    }
++      if (instanceReply) { entryPostMessage(instanceReply); return; }
+ 
+-    // ── Panel title (no-op in web) ──
+-    const projectContextReply = handlers.handleProjectContextMessage(msg, repoRoot);
+-    if (projectContextReply) { postMessage(projectContextReply); return; }
+-    if (msg.type === 'setPanelTitle') return;
+-
+-    // ── CRUD handlers ──
+-    const taskReply = handlers.handleTaskMessage(msg, repoRoot);
+-    if (taskReply) { postMessage(taskReply); return; }
+-
+-    const testReply = handlers.handleTestMessage(msg, repoRoot);
+-    if (testReply) { postMessage(testReply); return; }
+-
+-    const agentReply = handlers.handleAgentMessage(msg, repoRoot, extensionPath);
+-    if (agentReply) {
+-      postMessage(agentReply);
+-      session.setAgents(loadMergedAgents(repoRoot, extensionPath));
+-      return;
+-    }
+-
+-    const modeReply = handlers.handleModeMessage(msg, repoRoot, extensionPath);
+-    if (modeReply) {
+-      postMessage(modeReply);
+-      session.setModes(loadMergedModes(repoRoot, extensionPath));
+-      return;
++      await attachedEntry.session.handleMessage(msg);
++    } catch (error) {
++      console.error('[web] handler error:', error);
++      entryPostMessage({ type: 'banner', text: `Error: ${error && error.message ? error.message : String(error)}` });
+     }
+-
+-    const instanceReply = await handlers.handleInstanceMessage(msg, repoRoot, panelId, postMessage, extensionPath);
+-    if (instanceReply) { postMessage(instanceReply); return; }
+-
+-    // ── Fallthrough to SessionManager ──
+-    session.handleMessage(msg);
+   });
+ 
+   ws.on('close', () => {
+-    console.log(`[${panelId.slice(0, 8)}] Client disconnected`);
+-    session.dispose();
++    const panelId = attachedEntry && attachedEntry.panelId;
++    const label = panelId || tempConnectionId;
++    console.log(`[${label.slice(0, 8)}] Client disconnected`);
++    if (panelId) sessionRegistry.detach(panelId);
+   });
+ });
+ 
+@@ -327,6 +414,15 @@ async function main() {
+   });
+ }
+ 
++process.on('SIGINT', () => {
++  sessionRegistry.disposeAll();
++  process.exit(130);
++});
++process.on('SIGTERM', () => {
++  sessionRegistry.disposeAll();
++  process.exit(143);
++});
++
+ main().catch(err => {
+   console.error('Failed to start:', err);
+   process.exit(1);
+diff --git a/web/session-registry.js b/web/session-registry.js
+new file mode 100644
+index 0000000..9d32f21
+--- /dev/null
++++ b/web/session-registry.js
+@@ -0,0 +1,69 @@
++class SessionRegistry {
++  constructor(options = {}) {
++    this._entries = new Map();
++    this._graceMs = Number.isFinite(options.graceMs) ? Math.max(0, options.graceMs) : 15_000;
++  }
++
++  attach(panelId, options = {}) {
++    if (!panelId || typeof panelId !== 'string') {
++      throw new Error('panelId is required');
++    }
++    const ws = options.ws || null;
++    const createEntry = options.createEntry;
++
++    let entry = this._entries.get(panelId);
++    if (entry) {
++      if (entry.disposeTimer) {
++        clearTimeout(entry.disposeTimer);
++        entry.disposeTimer = null;
++      }
++      entry.connection.ws = ws;
++      return { entry, created: false };
++    }
++
++    if (typeof createEntry !== 'function') {
++      throw new Error('createEntry callback is required for new sessions');
++    }
++
++    const connection = { ws };
++    const createdEntry = createEntry(panelId, connection) || {};
++    entry = {
++      panelId,
++      connection,
++      disposeTimer: null,
++      ...createdEntry,
++    };
++    this._entries.set(panelId, entry);
++    return { entry, created: true };
++  }
++
++  get(panelId) {
++    return this._entries.get(panelId) || null;
++  }
++
++  detach(panelId) {
++    const entry = this._entries.get(panelId);
++    if (!entry) return;
++    entry.connection.ws = null;
++    if (entry.disposeTimer) return;
++    entry.disposeTimer = setTimeout(() => {
++      entry.disposeTimer = null;
++      if (this._entries.get(panelId) !== entry) return;
++      try { entry.session && entry.session.dispose && entry.session.dispose(); } catch {}
++      this._entries.delete(panelId);
++    }, this._graceMs);
++  }
++
++  disposeAll() {
++    for (const [panelId, entry] of this._entries.entries()) {
++      if (entry.disposeTimer) {
++        clearTimeout(entry.disposeTimer);
++        entry.disposeTimer = null;
++      }
++      try { entry.session && entry.session.dispose && entry.session.dispose(); } catch {}
++      this._entries.delete(panelId);
++    }
++  }
++}
++
++module.exports = { SessionRegistry };
