@@ -1,0 +1,12 @@
+{
+  "tokens": {
+    "accessToken": "disk-a",
+    "refreshToken": "disk-r",
+    "accessExpiresAt": "2026-04-04T18:53:06.612Z",
+    "refreshExpiresAt": "2026-04-04T18:54:06.612Z"
+  },
+  "actorId": "user-1",
+  "workspaceId": "workspace-1",
+  "email": "demo@qapanda.local",
+  "updatedAt": "2026-04-04T18:53:06.612Z"
+}

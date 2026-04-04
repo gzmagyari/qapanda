@@ -13,7 +13,7 @@ let WebviewRenderer, SessionManager;
 let globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents;
 let loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile;
 let findExistingDesktop, instanceName, stopInstance, clearPanel;
-let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
+let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, queueProjectMcpSyncChanges, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
 let startTasksMcpServer, stopTasksMcpServer;
 let startTestsMcpServer, stopTestsMcpServer;
 let startMemoryMcpServer, stopMemoryMcpServer;
@@ -24,9 +24,14 @@ let buildSelfTestingPrompt;
 let loadFeatureFlags;
 let exportQaReportPdf;
 let buildApiCatalogPayload;
+let createCloudBoundary;
+let loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState;
 let killChrome, killAllChrome;
 let closeAllCodexConnections;
 let cleanupPanelSession, shutdownExtensionResources;
+let _cloudSyncRuntime = null;
+let _cloudSyncStartPromise = null;
+let _cloudStatusBarItem = null;
 
 try {
   ({ WebviewRenderer } = require('./webview-renderer'));
@@ -39,7 +44,7 @@ try {
   _aDbg('require OK: modes-store');
   ({ findExistingDesktop, instanceName, stopInstance, clearPanel } = require('./src/remote-desktop'));
   _aDbg('require OK: remote-desktop');
-  ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
+  ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, queueProjectMcpSyncChanges, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
   _aDbg('require OK: message-handlers');
   ({ startTasksMcpServer, stopTasksMcpServer } = require('./tasks-mcp-http'));
   _aDbg('require OK: tasks-mcp-http');
@@ -58,6 +63,7 @@ try {
   ({ buildApiCatalogPayload } = require('./src/model-catalog'));
   _aDbg('require OK: model-catalog');
   ({ loadFeatureFlags } = require('./src/feature-flags'));
+  ({ createCloudBoundary, loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState } = require('./src/cloud'));
   ({ exportQaReportPdf } = require('./qa-report-export'));
   ({ killChrome, killAll: killAllChrome } = require('./chrome-manager'));
   ({ closeAllConnections: closeAllCodexConnections } = require('./src/codex-app-server'));
@@ -127,6 +133,229 @@ function getRepoRoot(extensionUri) {
   return path.dirname(extensionUri.fsPath);
 }
 
+function createVsCodeOpenExternal() {
+  return async (url) => vscode.env.openExternal(vscode.Uri.parse(String(url)));
+}
+
+function createExtensionCloudOptions(context) {
+  return {
+    secretStorage: context.secrets,
+    openExternal: createVsCodeOpenExternal(),
+    appName: 'VS Code',
+    appVersion: vscode.version,
+  };
+}
+
+async function buildCloudSessionPayload(cloudBoundary, context) {
+  try {
+    return await resolveExtensionCloudState(cloudBoundary, createExtensionCloudOptions(context));
+  } catch (error) {
+    return buildFallbackCloudSessionPayload(cloudBoundary, error);
+  }
+}
+
+function buildFallbackCloudSessionPayload(cloudBoundary, error = null) {
+  return {
+    target: 'extension',
+    loggedIn: false,
+    authMode: cloudBoundary.config.authMode,
+    authEnabled: cloudBoundary.config.authMode !== 'disabled',
+    storageMode: 'vscode-secret-storage',
+    secretKey: 'qapanda.cloud.session',
+    appBaseUrl: cloudBoundary.config.appBaseUrl,
+    apiBaseUrl: cloudBoundary.config.apiBaseUrl,
+    actor: null,
+    workspace: null,
+    session: null,
+    refreshed: false,
+    error: error && error.message ? error.message : (error ? String(error) : null),
+  };
+}
+
+function defaultCloudRuntimeState(sessionState) {
+  const loggedIn = Boolean(sessionState && sessionState.loggedIn);
+  return {
+    started: false,
+    enabled: false,
+    indicator: {
+      status: loggedIn ? 'idle' : 'disabled',
+      label: loggedIn ? 'Starting sync' : 'Signed out',
+      detail: loggedIn
+        ? 'Preparing repository sync for this workspace.'
+        : 'Sign in to enable hosted repository sync.',
+      tone: 'neutral',
+    },
+    conflicts: [],
+    repository: null,
+    pendingMutationCount: 0,
+    lastSyncedAt: null,
+    lastError: null,
+    openConflictCount: 0,
+    notificationSummary: null,
+    unreadNotificationCount: 0,
+    hasUnreadNotifications: false,
+    notificationError: null,
+    registered: false,
+  };
+}
+
+async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = null) {
+  const [packages, sessionState] = await Promise.all([
+    cloudBoundary.loadPackages(),
+    buildCloudSessionPayload(cloudBoundary, context),
+  ]);
+  const status = runtimeStatus || (_cloudSyncRuntime ? _cloudSyncRuntime.getStatus() : defaultCloudRuntimeState(sessionState));
+  const notificationSummary = status.notificationSummary || { unreadCount: 0, latest: [] };
+  return {
+    session: sessionState,
+    sync: {
+      started: Boolean(status.started),
+      registered: Boolean(status.registered),
+      badge: packages.clientCloud.createExtensionSyncBadge(status.indicator),
+      indicator: status.indicator,
+      contextMode: status.repository && status.repository.projectConfig ? status.repository.projectConfig.contextMode : null,
+      contextLabel: status.repository && status.repository.projectConfig ? status.repository.projectConfig.contextLabel || null : null,
+      pendingMutationCount: Number(status.pendingMutationCount || 0),
+      openConflictCount: Number(status.openConflictCount || 0),
+      lastSyncedAt: status.lastSyncedAt || null,
+      lastError: status.lastError || null,
+    },
+    notifications: {
+      summary: notificationSummary,
+      badge: packages.clientCloud.createExtensionNotificationBadge(notificationSummary),
+      unreadCount: Number(notificationSummary.unreadCount || 0),
+      hasUnread: Number(notificationSummary.unreadCount || 0) > 0,
+      error: status.notificationError || null,
+    },
+  };
+}
+
+function buildFallbackCloudStatusPayload(cloudBoundary, sessionState = null) {
+  const state = sessionState || buildFallbackCloudSessionPayload(cloudBoundary);
+  const runtime = defaultCloudRuntimeState(state);
+  const notificationSummary = runtime.notificationSummary || { unreadCount: 0, latest: [] };
+  return {
+    session: state,
+    sync: {
+      started: Boolean(runtime.started),
+      registered: Boolean(runtime.registered),
+      badge: null,
+      indicator: runtime.indicator,
+      contextMode: null,
+      contextLabel: null,
+      pendingMutationCount: Number(runtime.pendingMutationCount || 0),
+      openConflictCount: Number(runtime.openConflictCount || 0),
+      lastSyncedAt: runtime.lastSyncedAt || null,
+      lastError: runtime.lastError || null,
+    },
+    notifications: {
+      summary: notificationSummary,
+      badge: null,
+      unreadCount: Number(notificationSummary.unreadCount || 0),
+      hasUnread: Number(notificationSummary.unreadCount || 0) > 0,
+      error: runtime.notificationError || null,
+    },
+  };
+}
+
+function updateCloudStatusBar(payload) {
+  if (!_cloudStatusBarItem) return;
+  const unreadCount = payload && payload.notifications ? Number(payload.notifications.unreadCount || 0) : 0;
+  const syncLabel = payload && payload.sync && payload.sync.badge ? payload.sync.badge.label : 'Signed out';
+  if (!payload || !payload.session || !payload.session.loggedIn) {
+    _cloudStatusBarItem.text = '$(cloud) Sign in';
+    _cloudStatusBarItem.tooltip = 'QA Panda Cloud is signed out. Open QA Panda settings to sign in.';
+    _cloudStatusBarItem.color = undefined;
+    _cloudStatusBarItem.show();
+    return;
+  }
+
+  const notificationText = unreadCount > 0 ? ` $(bell-dot) ${unreadCount}` : ' $(bell)';
+  _cloudStatusBarItem.text = `$(cloud) ${syncLabel}${notificationText}`;
+  _cloudStatusBarItem.tooltip = [
+    `QA Panda Cloud`,
+    `${payload.sync.indicator.detail}`,
+    `Context: ${payload.sync.contextMode || 'shared'}${payload.sync.contextLabel ? ` (${payload.sync.contextLabel})` : ''}`,
+    `Pending mutations: ${payload.sync.pendingMutationCount}`,
+    `Unread notifications: ${unreadCount}`,
+    payload.sync.openConflictCount > 0 ? `Open conflicts: ${payload.sync.openConflictCount}` : null,
+    payload.sync.lastError ? `Last sync error: ${payload.sync.lastError}` : null,
+    payload.notifications.error ? `Notification error: ${payload.notifications.error}` : null,
+  ].filter(Boolean).join('\n');
+  if (payload.sync.lastError) {
+    _cloudStatusBarItem.color = new vscode.ThemeColor('errorForeground');
+  } else if (payload.sync.openConflictCount > 0 || unreadCount > 0) {
+    _cloudStatusBarItem.color = new vscode.ThemeColor('statusBarItem.warningForeground');
+  } else {
+    _cloudStatusBarItem.color = undefined;
+  }
+  _cloudStatusBarItem.show();
+}
+
+async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtimeStatus = null) {
+  const payload = await buildCloudStatusPayload(cloudBoundary, context, runtimeStatus);
+  updateCloudStatusBar(payload);
+  for (const panel of activePanels) {
+    try {
+      panel.webview.postMessage({ type: 'cloudStatusData', cloudStatus: payload });
+    } catch {}
+  }
+  return payload;
+}
+
+async function postSettingsData(panel, session, cloudBoundary, context) {
+  const payload = {
+    type: 'settingsData',
+    settings: loadSettings(),
+    defaults: buildSelfTestingPrompt.DEFAULTS,
+    cloudSession: await buildCloudSessionPayload(cloudBoundary, context),
+    cloudStatus: await buildCloudStatusPayload(cloudBoundary, context),
+  };
+  try { panel.webview.postMessage(payload); } catch {}
+}
+
+async function ensureExtensionCloudSyncRuntime(cloudBoundary, context) {
+  if (_cloudSyncRuntime) return _cloudSyncRuntime;
+  if (_cloudSyncStartPromise) return _cloudSyncStartPromise;
+  _cloudSyncStartPromise = (async () => {
+    const runtime = await cloudBoundary.createRepositorySyncRuntime({
+      secretStorage: context.secrets,
+      appName: 'VS Code',
+      appVersion: vscode.version,
+      onError(error) {
+        console.warn('[cloud-sync] runtime tick failed:', error && error.message ? error.message : error);
+        void refreshExtensionCloudStatusSurface(cloudBoundary, context);
+      },
+      onStatus(status) {
+        void refreshExtensionCloudStatusSurface(cloudBoundary, context, status);
+      },
+    });
+    const started = await runtime.start();
+    if (!started.started) {
+      await refreshExtensionCloudStatusSurface(cloudBoundary, context, started);
+      return null;
+    }
+    _cloudSyncRuntime = runtime;
+    await refreshExtensionCloudStatusSurface(cloudBoundary, context, started);
+    return runtime;
+  })();
+  try {
+    return await _cloudSyncStartPromise;
+  } finally {
+    _cloudSyncStartPromise = null;
+  }
+}
+
+async function stopExtensionCloudSyncRuntime() {
+  if (_cloudSyncStartPromise) {
+    try { await _cloudSyncStartPromise; } catch {}
+  }
+  if (_cloudSyncRuntime) {
+    await _cloudSyncRuntime.stop();
+    _cloudSyncRuntime = null;
+  }
+}
+
 function activate(context) {
   _aDbg('activate() called');
   try { return _activateInner(context); } catch (e) {
@@ -154,13 +383,23 @@ function _activateInner(context) {
 
   // Start HTTP MCP servers (singletons shared across all panels)
   _aDbg('checkpoint: starting MCP servers');
-  const defaultTasksFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tasks.json');
-  startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
-  const defaultTestsFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'tests.json');
-  startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
-  const defaultMemoryFile = path.join(getRepoRoot(context.extensionUri), '.qpanda', 'MEMORY.md');
-  startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
+  const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot: defaultRepoRoot });
+  const cloudBootstrapPromise = cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
+  if (!_cloudStatusBarItem) {
+    _cloudStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+    _cloudStatusBarItem.name = 'QA Panda Cloud';
+    _cloudStatusBarItem.command = 'qapanda.open';
+    context.subscriptions.push(_cloudStatusBarItem);
+  }
+  void refreshExtensionCloudStatusSurface(cloudBoundary, context);
+  void ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+  const defaultTasksFile = path.join(defaultRepoRoot, '.qpanda', 'tasks.json');
+  startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
+  const defaultTestsFile = path.join(defaultRepoRoot, '.qpanda', 'tests.json');
+  startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
+  const defaultMemoryFile = path.join(defaultRepoRoot, '.qpanda', 'MEMORY.md');
+  startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
   _aDbg('checkpoint: calling loadFeatureFlags');
   if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
     startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
@@ -270,6 +509,9 @@ function _activateInner(context) {
           return;
         }
         if (msg.type === 'ready') {
+          const cloud = await cloudBootstrapPromise;
+          const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
+          const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
           // Debug: log that we got ready message
           const _dlog = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
           try { fs.mkdirSync(path.dirname(_dlog), { recursive: true }); } catch {}
@@ -296,7 +538,17 @@ function _activateInner(context) {
             onboarding: { complete: isOnboardingComplete(), data: onboardingData },
             featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
             apiCatalog: buildApiCatalogPayload(),
+            cloud,
+            cloudSession: initialCloudSession,
+            cloudStatus: initialCloudStatus,
           });
+          void (async () => {
+            const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+            const cloudStatus = await buildCloudStatusPayload(cloudBoundary, context);
+            try {
+              panel.webview.postMessage({ type: 'cloudSessionData', cloudSession, cloudStatus });
+            } catch {}
+          })();
           // Re-link to existing container if still running (don't create a new one)
           if (msg.panelId || reattached) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -319,23 +571,65 @@ function _activateInner(context) {
           session.prestart();
           return;
         }
+        if (msg.type === 'cloudSessionLogin') {
+          const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
+          await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+          await postSettingsData(panel, session, cloudBoundary, context);
+          await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+          try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Signed into QA Panda Cloud via ${result.method}.` }); } catch {}
+          return;
+        }
+        if (msg.type === 'cloudSessionLogout') {
+          const result = await logoutExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
+          await stopExtensionCloudSyncRuntime();
+          await postSettingsData(panel, session, cloudBoundary, context);
+          await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+          try {
+            panel.webview.postMessage({
+              type: 'cloudSessionNotice',
+              level: 'info',
+              text: result.hadSession
+                ? `Signed out of QA Panda Cloud.${result.revokedRemotely ? ' Remote revoke: ok.' : ''}`
+                : 'No stored QA Panda Cloud session was present.',
+            });
+          } catch {}
+          return;
+        }
+        if (msg.type === 'cloudSessionRefresh') {
+          await postSettingsData(panel, session, cloudBoundary, context);
+          await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+          return;
+        }
+        if (msg.type === 'cloudSessionOpen') {
+          const result = await openExtensionCloudTarget(cloudBoundary, {
+            ...createExtensionCloudOptions(context),
+            target: msg.target || 'app',
+            id: msg.id || null,
+          });
+          try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
+          return;
+        }
         if (msg.type === 'mcpServersChanged') {
           const scope = msg.scope;
           const servers = msg.servers;
           const filePath = scope === 'global' ? globalMcpPath() : projectMcpPath(repoRoot);
+          const previousServers = scope === 'project' ? loadMcpFile(filePath) : null;
           saveMcpFile(filePath, servers);
+          if (scope === 'project') {
+            void queueProjectMcpSyncChanges(repoRoot, previousServers, servers);
+          }
           const mcpData = loadMergedMcpServers(repoRoot);
           session.setMcpServers(mcpData);
           return;
         }
         if (msg.type === 'settingsLoad') {
-          try { panel.webview.postMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
+          await postSettingsData(panel, session, cloudBoundary, context);
           return;
         }
         if (msg.type === 'settingsSave') {
           const updated = saveSettings(msg.settings || {});
           session._selfTesting = !!updated.selfTesting;
-          try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
+          await postSettingsData(panel, session, cloudBoundary, context);
           return;
         }
         const projectContextReply = handleProjectContextMessage(msg, repoRoot);
@@ -344,10 +638,10 @@ function _activateInner(context) {
           return;
         }
         // Task CRUD messages
-        const taskReply = handleTaskMessage(msg, repoRoot);
+        const taskReply = await handleTaskMessage(msg, repoRoot);
         if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
         // Test CRUD messages
-        const testReply = handleTestMessage(msg, repoRoot);
+        const testReply = await handleTestMessage(msg, repoRoot);
         if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
         // Agent CRUD messages
         const agentReply = handleAgentMessage(msg, repoRoot, extensionPath1);
@@ -431,6 +725,8 @@ async function _deserializeInner(panel, state, context) {
 
       const renderer = new WebviewRenderer(panel);
       const repoRoot = getRepoRoot(context.extensionUri);
+      const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot });
+      const cloudBootstrapPromise = cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
       // Per-panel config restored from webview state (per-panel, not shared)
       const panelConfig = (state && state.config) || {};
       const savedRunId = (state && state.runId) || null;
@@ -509,19 +805,58 @@ async function _deserializeInner(panel, state, context) {
             const scope = msg.scope;
             const servers = msg.servers;
             const filePath = scope === 'global' ? globalMcpPath() : projectMcpPath(repoRoot);
+            const previousServers = scope === 'project' ? loadMcpFile(filePath) : null;
             saveMcpFile(filePath, servers);
+            if (scope === 'project') {
+              void queueProjectMcpSyncChanges(repoRoot, previousServers, servers);
+            }
             const mcpData = loadMergedMcpServers(repoRoot);
             session.setMcpServers(mcpData);
             return;
           }
+          if (msg.type === 'cloudSessionLogin') {
+            const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
+            await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+            await postSettingsData(panel, session, cloudBoundary, context);
+            try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Signed into QA Panda Cloud via ${result.method}.` }); } catch {}
+            return;
+          }
+          if (msg.type === 'cloudSessionLogout') {
+            const result = await logoutExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
+            await stopExtensionCloudSyncRuntime();
+            await postSettingsData(panel, session, cloudBoundary, context);
+            try {
+              panel.webview.postMessage({
+                type: 'cloudSessionNotice',
+                level: 'info',
+                text: result.hadSession
+                  ? `Signed out of QA Panda Cloud.${result.revokedRemotely ? ' Remote revoke: ok.' : ''}`
+                  : 'No stored QA Panda Cloud session was present.',
+              });
+            } catch {}
+            return;
+          }
+          if (msg.type === 'cloudSessionRefresh') {
+            await postSettingsData(panel, session, cloudBoundary, context);
+            return;
+          }
+          if (msg.type === 'cloudSessionOpen') {
+            const result = await openExtensionCloudTarget(cloudBoundary, {
+              ...createExtensionCloudOptions(context),
+              target: msg.target || 'app',
+              id: msg.id || null,
+            });
+            try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
+            return;
+          }
           if (msg.type === 'settingsLoad') {
-            try { panel.webview.postMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
+            await postSettingsData(panel, session, cloudBoundary, context);
             return;
           }
           if (msg.type === 'settingsSave') {
             const updated = saveSettings(msg.settings || {});
             session._selfTesting = !!updated.selfTesting;
-            try { panel.webview.postMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS }); } catch {}
+            await postSettingsData(panel, session, cloudBoundary, context);
             return;
           }
           const projectContextReply = handleProjectContextMessage(msg, repoRoot);
@@ -530,10 +865,10 @@ async function _deserializeInner(panel, state, context) {
             return;
           }
           // Task CRUD messages
-          const taskReply = handleTaskMessage(msg, repoRoot);
+          const taskReply = await handleTaskMessage(msg, repoRoot);
           if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
           // Test CRUD messages
-          const testReply = handleTestMessage(msg, repoRoot);
+          const testReply = await handleTestMessage(msg, repoRoot);
           if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
           // Agent CRUD messages
           const agentReply = handleAgentMessage(msg, repoRoot, extensionPath2);
@@ -565,6 +900,9 @@ async function _deserializeInner(panel, state, context) {
             return;
           }
           if (msg.type === 'ready') {
+            const cloud = await cloudBootstrapPromise;
+            const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
+            const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
             // Debug: log that we got ready message (deserialized)
             const _dlog2 = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
             try { fs.mkdirSync(path.dirname(_dlog2), { recursive: true }); } catch {}
@@ -591,7 +929,17 @@ async function _deserializeInner(panel, state, context) {
               onboarding: { complete: isOnboardingComplete(), data: onboardingData2 },
               featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
               apiCatalog: buildApiCatalogPayload(),
+              cloud,
+              cloudSession: initialCloudSession,
+              cloudStatus: initialCloudStatus,
             });
+            void (async () => {
+              const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+              const cloudStatus = await buildCloudStatusPayload(cloudBoundary, context);
+              try {
+                panel.webview.postMessage({ type: 'cloudSessionData', cloudSession, cloudStatus });
+              } catch {}
+            })();
             // Re-link to existing container if still running (don't create a new one)
             if (msg.panelId || reattached) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {
@@ -642,6 +990,7 @@ async function _deserializeInner(panel, state, context) {
 }
 
 async function deactivate() {
+  await stopExtensionCloudSyncRuntime();
   await shutdownExtensionResources({
     stopTasksMcpServer,
     stopTestsMcpServer,

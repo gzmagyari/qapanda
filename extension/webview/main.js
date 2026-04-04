@@ -104,6 +104,9 @@
 
   // ── Tab switching ───────────────────────────────────────────────────
   const tabBar = document.getElementById('tab-bar');
+  const cloudEntryScreen = document.getElementById('cloud-entry-screen');
+  const cloudEntryLogin = document.getElementById('cloud-entry-login');
+  const cloudEntryGuest = document.getElementById('cloud-entry-guest');
   const tabPanels = {
     agent: document.getElementById('tab-agent'),
     tasks: document.getElementById('tab-tasks'),
@@ -153,6 +156,7 @@
       }
       vscode.postMessage({ type: 'browserStart' });
     }
+    renderCloudEntryScreen();
   });
 
   // ── Settings tab ────────────────────────────────────────────────────
@@ -163,6 +167,22 @@
   const settingPromptAgent = document.getElementById('setting-prompt-agent');
   const settingsPromptsSave = document.getElementById('settings-prompts-save');
   const settingsPromptsReset = document.getElementById('settings-prompts-reset');
+  const cloudAccountSection = document.getElementById('cloud-account-section');
+  const cloudAccountState = document.getElementById('cloud-account-state');
+  const cloudAccountDesc = document.getElementById('cloud-account-desc');
+  const cloudAccountWorkspace = document.getElementById('cloud-account-workspace');
+  const cloudAccountSession = document.getElementById('cloud-account-session');
+  const cloudAccountMeta = document.getElementById('cloud-account-meta');
+  const cloudAccountStatus = document.getElementById('cloud-account-status');
+  const cloudSyncState = document.getElementById('cloud-sync-state');
+  const cloudSyncMeta = document.getElementById('cloud-sync-meta');
+  const cloudNotificationState = document.getElementById('cloud-notification-state');
+  const cloudNotificationMeta = document.getElementById('cloud-notification-meta');
+  const cloudAccountLogin = document.getElementById('cloud-account-login');
+  const cloudAccountRefresh = document.getElementById('cloud-account-refresh');
+  const cloudAccountOpenApp = document.getElementById('cloud-account-open-app');
+  const cloudAccountOpenNotifications = document.getElementById('cloud-account-open-notifications');
+  const cloudAccountLogout = document.getElementById('cloud-account-logout');
   const appInfoText = document.getElementById('app-info-text');
   const appInfoEnabled = document.getElementById('app-info-enabled');
   const appInfoSave = document.getElementById('app-info-save');
@@ -171,6 +191,12 @@
   const memoryEnabled = document.getElementById('memory-enabled');
   const memorySave = document.getElementById('memory-save');
   const memoryStatus = document.getElementById('memory-status');
+  let cloudBootstrap = null;
+  let cloudSessionState = null;
+  let cloudStatusState = null;
+  let cloudPendingAction = '';
+  let cloudNoticeText = '';
+  let guestModeDismissed = false;
 
   const promptsExpander = document.getElementById('settings-prompts-expander');
   const promptsContent = document.getElementById('settings-prompts-content');
@@ -189,6 +215,159 @@
         settingsPromptsSection.classList.add('settings-prompts-hidden');
       }
     }
+  }
+
+  function formatCloudTime(value) {
+    if (!value) return 'Unknown';
+    try { return new Date(value).toLocaleString(); } catch (_) { return String(value); }
+  }
+
+  function setCloudAccountStatus(text) {
+    if (cloudAccountStatus) cloudAccountStatus.textContent = text || '';
+  }
+
+  function isExtensionCloudTarget() {
+    const target = cloudBootstrap && cloudBootstrap.target;
+    return !target || target === 'extension';
+  }
+
+  function getActiveTabKey() {
+    const active = tabBar ? tabBar.querySelector('.tab-btn.active') : null;
+    return active && active.dataset && active.dataset.tab ? active.dataset.tab : 'agent';
+  }
+
+  function shouldShowCloudEntryScreen() {
+    return Boolean(
+      cloudEntryScreen &&
+      getActiveTabKey() === 'agent' &&
+      isExtensionCloudTarget() &&
+      cloudSessionState &&
+      cloudSessionState.loggedIn === false &&
+      !guestModeDismissed
+    );
+  }
+
+  function renderCloudEntryScreen() {
+    if (!cloudEntryScreen) return;
+    cloudEntryScreen.classList.toggle('visible', shouldShowCloudEntryScreen());
+  }
+
+  function renderCloudAccount() {
+    const target = cloudBootstrap && cloudBootstrap.target;
+    const isExtension = !target || target === 'extension';
+    if (cloudAccountSection) cloudAccountSection.style.display = isExtension ? '' : 'none';
+    if (!isExtension) return;
+
+    const state = cloudSessionState;
+    const loggedIn = !!(state && state.loggedIn);
+    const busy = !!cloudPendingAction;
+    const authMode = state && state.authMode ? state.authMode : (cloudBootstrap && cloudBootstrap.auth && cloudBootstrap.auth.authMode) || 'disabled';
+    const actor = state && state.actor;
+    const workspace = state && state.workspace;
+    const session = state && state.session;
+    const runtime = cloudStatusState && cloudStatusState.sync ? cloudStatusState.sync : null;
+    const notifications = cloudStatusState && cloudStatusState.notifications ? cloudStatusState.notifications : null;
+    const unreadCount = notifications ? Number(notifications.unreadCount || 0) : 0;
+
+    if (cloudAccountState) {
+      if (loggedIn) {
+        const primary = actor && actor.email ? actor.email : 'Signed in';
+        cloudAccountState.textContent = actor && actor.displayName ? `${primary} (${actor.displayName})` : primary;
+      } else {
+        cloudAccountState.textContent = 'Signed out';
+      }
+    }
+
+    if (cloudAccountDesc) {
+      cloudAccountDesc.textContent = loggedIn && workspace
+        ? `Workspace role: ${workspace.roleKey || 'member'} • Plan: ${workspace.planTier || 'unknown'}`
+        : 'Sign in to QA Panda Cloud to use hosted sessions from the extension.';
+    }
+
+    if (cloudAccountWorkspace) {
+      cloudAccountWorkspace.textContent = loggedIn && workspace
+        ? `${workspace.name} (${workspace.slug})`
+        : 'No hosted workspace is currently linked.';
+    }
+
+    if (cloudAccountSession) {
+      const parts = [];
+      if (state && state.storageMode) parts.push(`Storage: ${state.storageMode}`);
+      if (authMode) parts.push(`Auth: ${authMode === 'disabled' ? 'pkce (extension default)' : authMode}`);
+      if (session && session.updatedAt) parts.push(`Updated: ${formatCloudTime(session.updatedAt)}`);
+      cloudAccountSession.textContent = parts.join(' • ') || 'Auth state will appear here after the extension loads cloud status.';
+    }
+
+    if (cloudAccountMeta) {
+      const meta = [];
+      if (workspace && workspace.planTier) meta.push(`Plan ${workspace.planTier}`);
+      if (state && state.refreshed) meta.push('Session refreshed');
+      if (busy) meta.push(cloudPendingAction);
+      cloudAccountMeta.textContent = meta.join('\n');
+    }
+
+    if (cloudSyncState) {
+      if (!loggedIn) {
+        cloudSyncState.textContent = 'Sign in to start repository sync for this workspace.';
+      } else if (runtime) {
+        const detail = runtime.badge && runtime.badge.detail ? runtime.badge.detail : runtime.indicator && runtime.indicator.detail;
+        cloudSyncState.textContent = `${runtime.badge ? runtime.badge.label : 'Sync'}${detail ? ` — ${detail}` : ''}`;
+      } else {
+        cloudSyncState.textContent = 'Preparing repository sync for this workspace.';
+      }
+    }
+
+    if (cloudSyncMeta) {
+      const syncMeta = [];
+      if (runtime && runtime.contextMode) syncMeta.push(`Context ${runtime.contextMode}${runtime.contextLabel ? ` (${runtime.contextLabel})` : ''}`);
+      if (runtime && Number.isFinite(runtime.pendingMutationCount)) syncMeta.push(`Pending ${runtime.pendingMutationCount}`);
+      if (runtime && runtime.openConflictCount > 0) syncMeta.push(`Conflicts ${runtime.openConflictCount}`);
+      if (runtime && runtime.lastSyncedAt) syncMeta.push(`Last sync ${formatCloudTime(runtime.lastSyncedAt)}`);
+      cloudSyncMeta.textContent = syncMeta.join('\n');
+    }
+
+    if (cloudNotificationState) {
+      if (!loggedIn) {
+        cloudNotificationState.textContent = 'Unread hosted notifications appear here after sign-in.';
+      } else if (notifications) {
+        cloudNotificationState.textContent = unreadCount > 0
+          ? `${unreadCount} unread hosted notification${unreadCount === 1 ? '' : 's'}`
+          : 'No unread hosted notifications';
+      } else {
+        cloudNotificationState.textContent = 'Checking hosted notifications...';
+      }
+    }
+
+    if (cloudNotificationMeta) {
+      const notificationMeta = [];
+      if (notifications && notifications.summary && Array.isArray(notifications.summary.latest) && notifications.summary.latest.length > 0) {
+        const latest = notifications.summary.latest[0];
+        if (latest && latest.title) notificationMeta.push(latest.title);
+      }
+      if (notifications && notifications.error) notificationMeta.push(`Error: ${notifications.error}`);
+      cloudNotificationMeta.textContent = notificationMeta.join('\n');
+    }
+
+    if (!busy && cloudNoticeText) {
+      setCloudAccountStatus(cloudNoticeText);
+    } else if (!busy && runtime && runtime.lastError) {
+      setCloudAccountStatus(runtime.lastError);
+    } else if (!busy && notifications && notifications.error) {
+      setCloudAccountStatus(notifications.error);
+    } else if (!busy && state && state.error) {
+      setCloudAccountStatus(state.error);
+    } else if (!busy && !loggedIn) {
+      setCloudAccountStatus('VS Code SecretStorage keeps the hosted session outside your repo files.');
+    }
+
+    if (cloudAccountLogin) cloudAccountLogin.disabled = busy || loggedIn;
+    if (cloudAccountRefresh) cloudAccountRefresh.disabled = busy;
+    if (cloudAccountOpenApp) cloudAccountOpenApp.disabled = busy;
+    if (cloudAccountOpenNotifications) {
+      cloudAccountOpenNotifications.disabled = busy;
+      cloudAccountOpenNotifications.textContent = unreadCount > 0 ? `Notifications (${unreadCount})` : 'Notifications';
+    }
+    if (cloudAccountLogout) cloudAccountLogout.disabled = busy || !loggedIn;
   }
 
   if (selfTestToggle) {
@@ -215,6 +394,68 @@
       }});
       // Request fresh data to repopulate with defaults
       vscode.postMessage({ type: 'settingsLoad' });
+    });
+  }
+
+  if (cloudAccountLogin) {
+    cloudAccountLogin.addEventListener('click', () => {
+      cloudPendingAction = 'Opening browser login...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionLogin' });
+    });
+  }
+  if (cloudAccountLogout) {
+    cloudAccountLogout.addEventListener('click', () => {
+      cloudPendingAction = 'Signing out...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionLogout' });
+    });
+  }
+  if (cloudAccountRefresh) {
+    cloudAccountRefresh.addEventListener('click', () => {
+      cloudPendingAction = 'Refreshing hosted account...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionRefresh' });
+    });
+  }
+  if (cloudAccountOpenApp) {
+    cloudAccountOpenApp.addEventListener('click', () => {
+      cloudPendingAction = 'Opening QA Panda Cloud...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionOpen', target: 'app' });
+    });
+  }
+  if (cloudAccountOpenNotifications) {
+    cloudAccountOpenNotifications.addEventListener('click', () => {
+      cloudPendingAction = 'Opening notifications...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionOpen', target: 'notifications' });
+    });
+  }
+  if (cloudEntryLogin) {
+    cloudEntryLogin.addEventListener('click', () => {
+      cloudPendingAction = 'Opening browser login...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      renderCloudEntryScreen();
+      vscode.postMessage({ type: 'cloudSessionLogin' });
+    });
+  }
+  if (cloudEntryGuest) {
+    cloudEntryGuest.addEventListener('click', () => {
+      guestModeDismissed = true;
+      renderCloudEntryScreen();
     });
   }
 
@@ -2869,7 +3110,9 @@
     suppressTargetConfirm = true;
     if (config.chatTarget !== undefined && cfgChatTarget) {
       cfgChatTarget.value = config.chatTarget;
-      hasExplicitChatTarget = true;
+      if (config.chatTarget && config.chatTarget !== 'controller' && config.chatTarget !== 'claude') {
+        hasExplicitChatTarget = true;
+      }
     }
     suppressTargetConfirm = false;
     updateConfigBarForTarget(cfgChatTarget ? cfgChatTarget.value : 'controller');
@@ -3056,14 +3299,16 @@
         cfgChatTarget.appendChild(opt);
       }
     }
-    // Restore: prefer pending saved target (from vscode.getState), then current value, then 'controller'
+    // Restore: prefer pending saved target (from vscode.getState), then current value,
+    // then QA-Browser if available, otherwise controller.
     const validValues = Array.from(cfgChatTarget.options).map(o => o.value);
     const preferred = _pendingChatTarget || currentValue;
+    const defaultTarget = validValues.includes('agent-QA-Browser') ? 'agent-QA-Browser' : 'controller';
     if (_pendingChatTarget && !validValues.includes(_pendingChatTarget)) {
       hasExplicitChatTarget = false;
     }
     suppressTargetConfirm = true;
-    cfgChatTarget.value = validValues.includes(preferred) ? preferred : 'controller';
+    cfgChatTarget.value = validValues.includes(preferred) ? preferred : defaultTarget;
     suppressTargetConfirm = false;
     _pendingChatTarget = null; // consumed
     updateConfigBarForTarget(cfgChatTarget.value);
@@ -5018,6 +5263,13 @@
       if (msg.apiCatalog) {
         applyApiCatalog(msg.apiCatalog);
       }
+      cloudBootstrap = msg.cloud || cloudBootstrap;
+      cloudSessionState = msg.cloudSession || cloudSessionState;
+      cloudStatusState = msg.cloudStatus || cloudStatusState;
+      cloudPendingAction = '';
+      cloudNoticeText = '';
+      renderCloudAccount();
+      renderCloudEntryScreen();
       setConfig(msg.config);
       if (msg.panelId && msg.panelId !== panelId) {
         panelId = msg.panelId;
@@ -5067,6 +5319,7 @@
       } else {
         showInitWizard();
       }
+      renderCloudEntryScreen();
       saveState();
     },
 
@@ -5392,6 +5645,16 @@
 
     settingsData(msg) {
       if (!msg.settings) return;
+      if (msg.cloudStatus) {
+        cloudStatusState = msg.cloudStatus;
+      }
+      if (msg.cloudSession) {
+        cloudSessionState = msg.cloudSession;
+        cloudPendingAction = '';
+        cloudNoticeText = '';
+      }
+      renderCloudAccount();
+      renderCloudEntryScreen();
       const selfTestToggle = document.getElementById('setting-self-testing');
       if (selfTestToggle) {
         selfTestToggle.checked = !!msg.settings.selfTesting;
@@ -5417,6 +5680,33 @@
       });
       // Re-evaluate warnings
       updateControllerDropdowns();
+    },
+
+    cloudSessionNotice(msg) {
+      cloudPendingAction = '';
+      cloudNoticeText = msg.text || '';
+      setCloudAccountStatus(cloudNoticeText);
+      renderCloudAccount();
+      renderCloudEntryScreen();
+    },
+
+    cloudStatusData(msg) {
+      if (msg.cloudStatus) {
+        cloudStatusState = msg.cloudStatus;
+      }
+      renderCloudAccount();
+      renderCloudEntryScreen();
+    },
+
+    cloudSessionData(msg) {
+      if (msg.cloudSession) {
+        cloudSessionState = msg.cloudSession;
+      }
+      if (msg.cloudStatus) {
+        cloudStatusState = msg.cloudStatus;
+      }
+      renderCloudAccount();
+      renderCloudEntryScreen();
     },
 
     appInfoData(msg) {
@@ -5496,6 +5786,7 @@
     // Don't restore chromePort — Chrome process dies on reload and must be restarted
   }
   updateLoopObjectiveVisibility();
+  renderCloudEntryScreen();
 
   // ── Suggestions / Autocomplete ────────────────────────────────────
 

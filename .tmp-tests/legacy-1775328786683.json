@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "objectId": "test_1",
+      "title": "Smoke test",
+      "payload": {
+        "title": "Smoke test"
+      }
+    }
+  ],
+  "issues": [
+    {
+      "objectId": "issue_1",
+      "title": "Broken button",
+      "payload": {
+        "title": "Broken button"
+      }
+    }
+  ]
+}

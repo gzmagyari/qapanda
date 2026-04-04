@@ -15,6 +15,8 @@ const {
   transcriptLineSlice,
 } = require('./transcript');
 
+const CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS = 50_000;
+
 /**
  * Build transcript excerpt from chat.jsonl — the unified chat history.
  * Falls back to manifest.requests if chat.jsonl doesn't exist (backward compat).
@@ -314,6 +316,40 @@ function buildWorkflowSection(repoRoot) {
   return lines.join('\n');
 }
 
+function isContinueStyleRequest(userMessage) {
+  return typeof userMessage === 'string' && (
+    userMessage.startsWith('[AUTO-CONTINUE]') ||
+    userMessage.startsWith('[CONTROLLER GUIDANCE]')
+  );
+}
+
+function buildTranscriptTail(lines, options = {}) {
+  const allLines = Array.isArray(lines) ? lines : [];
+  const maxChars = Number.isFinite(options.maxChars) ? Math.max(0, options.maxChars) : CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS;
+  if (allLines.length === 0) {
+    return { lines: [], truncated: false, totalChars: 0 };
+  }
+
+  let start = allLines.length - 1;
+  let totalChars = 0;
+
+  for (let index = allLines.length - 1; index >= 0; index -= 1) {
+    const line = String(allLines[index] || '');
+    totalChars += line.length;
+    start = index;
+    if (totalChars >= maxChars) {
+      break;
+    }
+  }
+
+  const tail = allLines.slice(start);
+  return {
+    lines: tail,
+    truncated: start > 0,
+    totalChars,
+  };
+}
+
 function buildOverriddenControllerPrompt(manifest, request) {
   const lastLoop = request.loops[request.loops.length - 1] || null;
   let lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
@@ -328,6 +364,15 @@ function buildOverriddenControllerPrompt(manifest, request) {
   }
 
   const transcriptLines = buildTranscriptExcerpt(manifest);
+  const tailState = isContinueStyleRequest(request.userMessage)
+    ? buildTranscriptTail(transcriptLines, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS })
+    : { lines: transcriptLines, truncated: false };
+  const recentTranscript = tailState.truncated
+    ? [
+        `System: Earlier transcript omitted. Only the latest ~${CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS} characters of visible chat history are shown.`,
+        ...tailState.lines,
+      ]
+    : tailState.lines;
   const workerCli = manifest.worker.cli || manifest.worker.bin || 'codex';
 
   // For auto-continue requests, show the original user message instead of the [AUTO-CONTINUE] prefix
@@ -358,7 +403,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
     latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
     latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
     latest_worker_result: lastWorker ? (lastWorker.resultText || null) : null,
-    recent_transcript: transcriptLines,
+    recent_transcript: recentTranscript,
   };
 
   return [

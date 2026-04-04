@@ -36,6 +36,7 @@ const { loadSettings, saveSettings } = require(path.join(EXTENSION_DIR, 'setting
 const { buildSelfTestingPrompt } = require(path.join(__dirname, '..', 'src', 'prompts'));
 const { loadFeatureFlags } = require(path.join(__dirname, '..', 'src', 'feature-flags'));
 const { buildApiCatalogPayload } = require(path.join(__dirname, '..', 'src', 'model-catalog'));
+const { createCloudBoundary } = require(path.join(__dirname, '..', 'src', 'cloud'));
 const { findExistingDesktop } = require(path.join(__dirname, '..', 'src', 'remote-desktop'));
 const { startTasksMcpServer } = require(path.join(EXTENSION_DIR, 'tasks-mcp-http'));
 const { startTestsMcpServer } = require(path.join(EXTENSION_DIR, 'tests-mcp-http'));
@@ -50,6 +51,8 @@ const { SessionRegistry } = require(path.join(__dirname, 'session-registry'));
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const repoRoot = process.argv[2] || process.cwd();
 const extensionPath = EXTENSION_DIR;
+const cloudBoundary = createCloudBoundary({ target: 'web', repoRoot });
+const cloudBootstrapPromise = cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
 const SESSION_RECONNECT_GRACE_MS = parseInt(process.env.WS_RECONNECT_GRACE_MS || '15000', 10);
 const WEB_EXPORTS_DIR = path.join(repoRoot, '.qpanda', 'exports');
 
@@ -292,6 +295,7 @@ wss.on('connection', (ws) => {
           attachedEntry.session.applyConfig(pendingConfigFromSocket);
         }
 
+        const cloud = await cloudBootstrapPromise;
         const mcpData = handlers.loadMergedMcpServers(repoRoot);
         const agentsData = loadMergedAgents(repoRoot, extensionPath);
         const modesData = loadMergedModes(repoRoot, extensionPath);
@@ -324,6 +328,7 @@ wss.on('connection', (ws) => {
           onboarding: { complete: isOnboardingComplete(), data: onboardingData },
           featureFlags: loadFeatureFlags(path.join(__dirname, '..')),
           apiCatalog: buildApiCatalogPayload(),
+          cloud,
         });
 
         if (msg.panelId || reattached) {
@@ -384,7 +389,11 @@ wss.on('connection', (ws) => {
       if (msg.type === 'mcpServersChanged') {
         const scope = msg.scope;
         const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(repoRoot);
+        const previousServers = scope === 'project' ? handlers.loadMcpFile(filePath) : null;
         handlers.saveMcpFile(filePath, msg.servers);
+        if (scope === 'project') {
+          void handlers.queueProjectMcpSyncChanges(repoRoot, previousServers, msg.servers);
+        }
         attachedEntry.session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
         return;
       }
@@ -415,13 +424,13 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      const taskReply = handlers.handleTaskMessage(msg, repoRoot);
+      const taskReply = await handlers.handleTaskMessage(msg, repoRoot);
       if (taskReply) {
         entryPostMessage(taskReply);
         return;
       }
 
-      const testReply = handlers.handleTestMessage(msg, repoRoot);
+      const testReply = await handlers.handleTestMessage(msg, repoRoot);
       if (testReply) {
         entryPostMessage(testReply);
         return;

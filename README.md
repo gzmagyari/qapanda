@@ -109,6 +109,11 @@ code --install-extension qapandaapp.qapanda-vscode
 npm install -g qapanda
 ```
 
+### Hosted Platform Client Packages
+
+For the hosted-platform integration boundary and the short-term tarball workflow introduced for `B-01`, see [docs/platform-client-safe-packages.md](./docs/platform-client-safe-packages.md).
+For the CommonJS runtime cloud boundary introduced in `B-02`, see [docs/cloud-runtime-boundary.md](./docs/cloud-runtime-boundary.md).
+
 ### Prerequisites
 
 - **Node.js** >= 18

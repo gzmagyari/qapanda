@@ -29,6 +29,8 @@ const {
   isOnboardingComplete,
 } = require('./config-loader');
 const { mcpServersForRole } = require('./mcp-injector');
+const { createCloudBoundary } = require('./cloud');
+const { runCloudCommand, CLOUD_COMMAND_USAGE } = require('./cloud/cli-auth');
 
 function usage() {
   return `qapanda
@@ -46,6 +48,7 @@ Commands:
   qapanda setup                   Run first-time setup wizard
   qapanda agents                  List all available agents
   qapanda modes                   List all available modes
+  qapanda cloud <subcommand>      Cloud auth, identity, and hosted links
 
 Common options:
   --repo <path>                      Project root directory
@@ -66,6 +69,9 @@ Common options:
   --no-mcp-inject                    Disable system MCP auto-injection
   --raw-events                       Show raw streaming events
   --quiet                            Minimal output
+
+Cloud commands:
+${CLOUD_COMMAND_USAGE}
 `;
 }
 
@@ -176,7 +182,9 @@ function loadConfig(repoRoot) {
   const allAgents = enabledAgents(agentsData);
   const allModes = enabledModes(modesData);
   const defaults = getCliDefaults();
-  return { agentsData, modesData, mcpData, allAgents, allModes, defaults, resourcesDir };
+  const cloud = createCloudBoundary({ target: 'cli', repoRoot });
+  cloud.preload().catch(() => {});
+  return { agentsData, modesData, mcpData, allAgents, allModes, defaults, resourcesDir, cloud };
 }
 
 function applyApiConfigToOptions(options, agents) {
@@ -463,6 +471,7 @@ async function runOneShot(argv) {
 
   // Load config and apply mode/agent/MCP injection
   const config = loadConfig(options.repoRoot);
+  await config.cloud.preload();
   const { options: enriched, directAgent } = applyConfigToOptions(options, config);
 
   // Verify CLIs — only check binaries that are actually configured
@@ -647,6 +656,7 @@ async function main(argv) {
   if (command === 'setup') { await runSetup(); return; }
   if (command === 'agents') { await listAgentsCmd(rest); return; }
   if (command === 'modes') { await listModesCmd(rest); return; }
+  if (command === 'cloud') { await runCloudCommand(rest); return; }
   if (command === 'mcp') { await mcpCmd(rest); return; }
 
   if (command === 'help' || command === '--help' || command === '-h') {
@@ -657,4 +667,4 @@ async function main(argv) {
   throw new Error(`Unknown command: ${command}\n\n${usage()}`);
 }
 
-module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions };
+module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions, runCloudCommand };

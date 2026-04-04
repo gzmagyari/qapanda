@@ -76,6 +76,23 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
 
     </div>
 
+    <div id="cloud-entry-screen" class="cloud-entry-screen" aria-live="polite">
+      <div class="cloud-entry-card">
+        <div class="cloud-entry-eyebrow">Optional Sign-In</div>
+        <h2>Use QA Panda with or without an account</h2>
+        <p class="cloud-entry-copy">
+          Sign in to enable hosted sync, shared issues and tests, and cloud notifications for this repository. You can also continue locally as a guest exactly like today.
+        </p>
+        <div class="cloud-entry-actions">
+          <button class="mcp-btn mcp-btn-primary" id="cloud-entry-login" type="button">Sign In</button>
+          <button class="mcp-btn" id="cloud-entry-guest" type="button">Continue as Guest</button>
+        </div>
+        <div class="cloud-entry-footnote">
+          Local files in <code>.qpanda/</code> still work without a hosted account.
+        </div>
+      </div>
+    </div>
+
     <div id="tab-agent">
       <div id="progress-bubble" class="progress-bubble hidden">
         <div class="progress-header">Progress</div>
@@ -92,7 +109,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             <span class="toolbar-label">TARGET</span>
             <select id="cfg-chat-target">
               <option value="controller">Orchestrator</option>
-              <option value="claude">Worker (Default)</option>
+              <option value="agent-QA-Browser">QA Browser</option>
             </select>
           </div>
           <div id="input-toolbar-center">
@@ -355,6 +372,55 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
 
     <div id="tab-settings" class="tab-hidden">
       <div class="mcp-container">
+        <div class="mcp-section" id="cloud-account-section">
+          <div class="mcp-section-header">
+            <h3>QA Panda Cloud</h3>
+            <span class="mcp-section-path">Hosted account state for this VS Code extension. Session is stored in VS Code Secret Storage.</span>
+          </div>
+          <div class="settings-list">
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
+                <div class="settings-item-name" id="cloud-account-state">Signed out</div>
+                <div class="settings-item-desc" id="cloud-account-desc">Sign in to QA Panda Cloud to use hosted sessions from the extension.</div>
+              </div>
+              <div class="cloud-account-meta" id="cloud-account-meta"></div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Hosted Workspace</div>
+                <div class="settings-item-desc" id="cloud-account-workspace">No hosted workspace is currently linked.</div>
+              </div>
+              <div class="cloud-account-links">
+                <button class="mcp-btn mcp-btn-primary" id="cloud-account-login">Sign In</button>
+                <button class="mcp-btn" id="cloud-account-refresh">Refresh</button>
+                <button class="mcp-btn" id="cloud-account-open-app">Open App</button>
+                <button class="mcp-btn" id="cloud-account-open-notifications">Notifications</button>
+                <button class="mcp-btn" id="cloud-account-logout">Sign Out</button>
+              </div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Repository Sync</div>
+                <div class="settings-item-desc" id="cloud-sync-state">Sync state will appear here after the extension loads cloud status.</div>
+              </div>
+              <div class="cloud-account-meta" id="cloud-sync-meta"></div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Notifications</div>
+                <div class="settings-item-desc" id="cloud-notification-state">Unread hosted notifications will appear here after the extension loads cloud status.</div>
+              </div>
+              <div class="cloud-account-meta" id="cloud-notification-meta"></div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Session Details</div>
+                <div class="settings-item-desc" id="cloud-account-session">Auth state will appear here after the extension loads cloud status.</div>
+              </div>
+              <div class="cloud-account-status" id="cloud-account-status"></div>
+            </div>
+          </div>
+        </div>
         <div class="mcp-section">
           <div class="mcp-section-header">
             <h3>API Keys</h3>

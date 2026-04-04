@@ -27,6 +27,10 @@
     "ext:build": "node -e \"const fs=require('fs');try{fs.rmSync('extension/cc-manager.vsix',{force:true})}catch{}\" && npm run ext:copy-src && cd extension && npx @vscode/vsce package --allow-missing-repository -o qapanda.vsix",
     "ext:install": "npm run ext:build && node scripts/ext-install.js",
     "deploy": "npm run ext:build && node scripts/ext-install.js && npm install -g .",
+    "platform:cloud:pack": "node scripts/platform-cloud/pack-client-safe-packages.js",
+    "platform:cloud:install": "node scripts/platform-cloud/install-client-safe-packages.js",
+    "platform:cloud:verify-imports": "node scripts/platform-cloud/verify-client-safe-imports.mjs",
+    "platform:cloud:refresh": "npm run platform:cloud:pack && npm run platform:cloud:install && npm run platform:cloud:verify-imports",
     "ext:clean": "node -e \"fs.rmSync('extension/src',{recursive:true,force:true});fs.rmSync('extension/claude-parser',{recursive:true,force:true});fs.rmSync('extension/qapanda.vsix',{force:true});fs.rmSync('extension/cc-manager.vsix',{force:true})\" --input-type=commonjs"
   },
   "engines": {
@@ -39,6 +43,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@qapanda/client-cloud": "file:.qpanda/platform-client-safe/qapanda-client-cloud-1.0.0.tgz",
+    "@qapanda/cloud-sdk": "file:.qpanda/platform-client-safe/qapanda-cloud-sdk-1.0.0.tgz",
+    "@qapanda/contracts": "file:.qpanda/platform-client-safe/qapanda-contracts-1.0.0.tgz",
+    "@qapanda/run-protocol": "file:.qpanda/platform-client-safe/qapanda-run-protocol-1.0.0.tgz",
+    "@qapanda/security": "file:.qpanda/platform-client-safe/qapanda-security-1.0.0.tgz",
+    "@qapanda/sync-core": "file:.qpanda/platform-client-safe/qapanda-sync-core-1.0.0.tgz",
+    "@qapanda/ui": "file:.qpanda/platform-client-safe/qapanda-ui-1.0.0.tgz",
     "openai": "^6.33.0",
     "ws": "^8.20.0"
   }

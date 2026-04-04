@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "algorithm": "aes-256-gcm",
+  "keyDerivation": "sha256",
+  "iv": "yGEfLk+qp67UJw9K",
+  "tag": "vG0iV3/G2HUyZtyBbV9Pfg==",
+  "ciphertext": "KlR0yM4OdmvejlHHjD7ScKg6mPlsdzSa5EYcehmAKBVyXKDHPYuAMgfq03F+LVMiYoKEJzrZBQ5n7vu7mrpaP3X4oSp4fsTfXMRBoT5oLkgae5LHBbbIjMo4y9A4GdaJkoH3ZT7xPKelYFI4aBpf2G2Soo9qXA1bD9JaejdVccMDxJMhh+wL8MXZDsGQgDh3zY36dDWtC2EwjQf2YSMaR+RldOOTBMKL/DZkwTBxytboh6CTiz/z2VjH7XOy9xh59zi8Ku86fHEFMXTLs8AqpJnsmUaERd55a8IFeEdMtm3ktG5urxnWjNyqyezeHQoxOWEvKE/nG8yFvfM31wWeMm1dHt+fFHLM6g=="
+}

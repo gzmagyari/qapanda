@@ -17,6 +17,7 @@ const {
   loadMemory,
   saveMemory,
 } = require('./src/project-context');
+const { createCloudBoundary } = require('./src/cloud');
 
 // ── MCP config file helpers ─────────────────────────────────────────
 function globalMcpPath() {
@@ -67,6 +68,11 @@ function handleProjectContextMessage(msg, repoRoot) {
   if (msg.type === 'appInfoSave') {
     const content = saveAppInfo(repoRoot, msg.content || '');
     const config = saveProjectConfig(repoRoot, { appInfoEnabled: msg.enabled !== false });
+    void withRepositorySyncAdapters(repoRoot, (adapters) => adapters.appInfo.queueUpsert({
+      id: 'project-app-info',
+      content,
+      enabled: config.appInfoEnabled !== false,
+    }));
     return {
       type: 'appInfoData',
       content,
@@ -84,6 +90,11 @@ function handleProjectContextMessage(msg, repoRoot) {
   if (msg.type === 'memorySave') {
     const content = saveMemory(repoRoot, msg.content || '');
     const config = saveProjectConfig(repoRoot, { memoryEnabled: msg.enabled !== false });
+    void withRepositorySyncAdapters(repoRoot, (adapters) => adapters.memory.queueUpsert({
+      id: 'project-memory',
+      content,
+      enabled: config.memoryEnabled !== false,
+    }));
     return {
       type: 'memoryData',
       content,
@@ -115,13 +126,88 @@ function saveTasksFile(filePath, data) {
 
 function nowIso() { return new Date().toISOString(); }
 
+async function withRepositorySyncAdapters(repoRoot, action) {
+  let adapters = null;
+  try {
+    const boundary = createCloudBoundary({ target: 'extension', repoRoot });
+    adapters = await boundary.createRepositorySyncAdapters();
+    return await action(adapters);
+  } catch (error) {
+    console.warn('[cloud-sync] local mutation queue skipped:', error && error.message ? error.message : error);
+    return null;
+  } finally {
+    try { if (adapters) adapters.close(); } catch {}
+  }
+}
+
+async function queueIssueSyncMutation(repoRoot, task, action = 'upsert') {
+  return withRepositorySyncAdapters(repoRoot, (adapters) => (
+    action === 'delete'
+      ? adapters.issues.queueDelete(task.id, task)
+      : adapters.issues.queueUpsert(task)
+  ));
+}
+
+async function queueTestSyncMutation(repoRoot, test, action = 'upsert') {
+  return withRepositorySyncAdapters(repoRoot, (adapters) => (
+    action === 'delete'
+      ? adapters.tests.queueDelete(test.id, test)
+      : adapters.tests.queueUpsert(test)
+  ));
+}
+
+async function queueProjectAgentSyncChanges(repoRoot, previousAgents, nextAgents) {
+  return withRepositorySyncAdapters(repoRoot, async (adapters) => {
+    const previous = previousAgents || {};
+    const next = nextAgents || {};
+    for (const [id, agent] of Object.entries(next)) {
+      if (JSON.stringify(previous[id] || null) === JSON.stringify(agent || null)) continue;
+      await adapters.agentConfigs.queueUpsert({ id, ...(agent || {}) });
+    }
+    for (const id of Object.keys(previous)) {
+      if (Object.prototype.hasOwnProperty.call(next, id)) continue;
+      await adapters.agentConfigs.queueDelete(id, { id, ...(previous[id] || {}) });
+    }
+  });
+}
+
+async function queueProjectMcpSyncChanges(repoRoot, previousServers, nextServers) {
+  return withRepositorySyncAdapters(repoRoot, async (adapters) => {
+    const previous = previousServers || {};
+    const next = nextServers || {};
+    for (const [id, server] of Object.entries(next)) {
+      if (JSON.stringify(previous[id] || null) === JSON.stringify(server || null)) continue;
+      await adapters.mcpServers.queueUpsert({ id, ...(server || {}) });
+    }
+    for (const id of Object.keys(previous)) {
+      if (Object.prototype.hasOwnProperty.call(next, id)) continue;
+      await adapters.mcpServers.queueDelete(id, { id, ...(previous[id] || {}) });
+    }
+  });
+}
+
+async function queueProjectModeSyncChanges(repoRoot, previousModes, nextModes) {
+  return withRepositorySyncAdapters(repoRoot, async (adapters) => {
+    const previous = previousModes || {};
+    const next = nextModes || {};
+    for (const [id, mode] of Object.entries(next)) {
+      if (JSON.stringify(previous[id] || null) === JSON.stringify(mode || null)) continue;
+      await adapters.modes.queueUpsert({ id, ...(mode || {}) });
+    }
+    for (const id of Object.keys(previous)) {
+      if (Object.prototype.hasOwnProperty.call(next, id)) continue;
+      await adapters.modes.queueDelete(id, { id, ...(previous[id] || {}) });
+    }
+  });
+}
+
 // ── Tests file helpers ───────────────────────────────────────────────
 function testsFilePath(repoRoot) { return path.join(repoRoot, '.qpanda', 'tests.json'); }
 function loadTestsFile(fp) { try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; } }
 function saveTestsFile(fp, data) { const dir = path.dirname(fp); if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf8'); }
 
 // ── Task CRUD ────────────────────────────────────────────────────────
-function handleTaskMessage(msg, repoRoot) {
+async function handleTaskMessage(msg, repoRoot) {
   const fp = tasksFilePath(repoRoot);
   const data = loadTasksFile(fp);
 
@@ -137,6 +223,7 @@ function handleTaskMessage(msg, repoRoot) {
     };
     data.tasks.push(task);
     saveTasksFile(fp, data);
+    await queueIssueSyncMutation(repoRoot, task, 'upsert');
     return { type: 'tasksData', tasks: data.tasks };
   }
   if (msg.type === 'taskUpdate') {
@@ -148,12 +235,15 @@ function handleTaskMessage(msg, repoRoot) {
       if (msg.status !== undefined) task.status = msg.status;
       task.updated_at = nowIso();
       saveTasksFile(fp, data);
+      await queueIssueSyncMutation(repoRoot, task, 'upsert');
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
   if (msg.type === 'taskDelete') {
+    const removed = data.tasks.find(t => t.id === msg.task_id) || { id: msg.task_id, title: msg.task_id };
     data.tasks = data.tasks.filter(t => t.id !== msg.task_id);
     saveTasksFile(fp, data);
+    await queueIssueSyncMutation(repoRoot, removed, 'delete');
     return { type: 'tasksData', tasks: data.tasks };
   }
   if (msg.type === 'taskAddComment') {
@@ -163,6 +253,7 @@ function handleTaskMessage(msg, repoRoot) {
       task.comments.push({ id: data.nextCommentId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
       task.updated_at = nowIso();
       saveTasksFile(fp, data);
+      await queueIssueSyncMutation(repoRoot, task, 'upsert');
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -172,6 +263,7 @@ function handleTaskMessage(msg, repoRoot) {
       task.comments = task.comments.filter(c => c.id !== msg.comment_id);
       task.updated_at = nowIso();
       saveTasksFile(fp, data);
+      await queueIssueSyncMutation(repoRoot, task, 'upsert');
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -179,7 +271,12 @@ function handleTaskMessage(msg, repoRoot) {
     const task = data.tasks.find(t => t.id === msg.task_id);
     if (task && task.comments) {
       const comment = task.comments.find(c => c.id === msg.comment_id);
-      if (comment) { comment.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
+      if (comment) {
+        comment.text = msg.text;
+        task.updated_at = nowIso();
+        saveTasksFile(fp, data);
+        await queueIssueSyncMutation(repoRoot, task, 'upsert');
+      }
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -189,6 +286,7 @@ function handleTaskMessage(msg, repoRoot) {
       task.progress_updates = task.progress_updates.filter(p => p.id !== msg.progress_id);
       task.updated_at = nowIso();
       saveTasksFile(fp, data);
+      await queueIssueSyncMutation(repoRoot, task, 'upsert');
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -196,7 +294,12 @@ function handleTaskMessage(msg, repoRoot) {
     const task = data.tasks.find(t => t.id === msg.task_id);
     if (task && task.progress_updates) {
       const update = task.progress_updates.find(p => p.id === msg.progress_id);
-      if (update) { update.text = msg.text; task.updated_at = nowIso(); saveTasksFile(fp, data); }
+      if (update) {
+        update.text = msg.text;
+        task.updated_at = nowIso();
+        saveTasksFile(fp, data);
+        await queueIssueSyncMutation(repoRoot, task, 'upsert');
+      }
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -207,6 +310,7 @@ function handleTaskMessage(msg, repoRoot) {
       task.progress_updates.push({ id: data.nextProgressId++, author: msg.author || 'user', text: msg.text, created_at: nowIso() });
       task.updated_at = nowIso();
       saveTasksFile(fp, data);
+      await queueIssueSyncMutation(repoRoot, task, 'upsert');
     }
     return { type: 'tasksData', tasks: data.tasks };
   }
@@ -214,7 +318,7 @@ function handleTaskMessage(msg, repoRoot) {
 }
 
 // ── Test CRUD ────────────────────────────────────────────────────────
-function handleTestMessage(msg, repoRoot) {
+async function handleTestMessage(msg, repoRoot) {
   const fp = testsFilePath(repoRoot);
   if (msg.type === 'testsLoad') {
     const data = loadTestsFile(fp);
@@ -232,6 +336,7 @@ function handleTestMessage(msg, repoRoot) {
     };
     data.tests.push(test);
     saveTestsFile(fp, data);
+    await queueTestSyncMutation(repoRoot, test, 'upsert');
     return { type: 'testsData', tests: data.tests };
   }
   if (msg.type === 'testUpdate') {
@@ -244,13 +349,16 @@ function handleTestMessage(msg, repoRoot) {
       if (msg.tags !== undefined) test.tags = msg.tags;
       test.updated_at = nowIso();
       saveTestsFile(fp, data);
+      await queueTestSyncMutation(repoRoot, test, 'upsert');
     }
     return { type: 'testsData', tests: data.tests };
   }
   if (msg.type === 'testDelete') {
     const data = loadTestsFile(fp);
+    const removed = data.tests.find(t => t.id === msg.test_id) || { id: msg.test_id, title: msg.test_id };
     data.tests = data.tests.filter(t => t.id !== msg.test_id);
     saveTestsFile(fp, data);
+    await queueTestSyncMutation(repoRoot, removed, 'delete');
     return { type: 'testsData', tests: data.tests };
   }
   if (msg.type === 'testAddStep') {
@@ -260,6 +368,7 @@ function handleTestMessage(msg, repoRoot) {
       test.steps.push({ id: data.nextStepId++, description: msg.description || '', expectedResult: msg.expectedResult || '', status: 'untested', actualResult: null });
       test.updated_at = nowIso();
       saveTestsFile(fp, data);
+      await queueTestSyncMutation(repoRoot, test, 'upsert');
     }
     return { type: 'testsData', tests: data.tests };
   }
@@ -273,6 +382,7 @@ function handleTestMessage(msg, repoRoot) {
         if (msg.expectedResult !== undefined) step.expectedResult = msg.expectedResult;
         test.updated_at = nowIso();
         saveTestsFile(fp, data);
+        await queueTestSyncMutation(repoRoot, test, 'upsert');
       }
     }
     return { type: 'testsData', tests: data.tests };
@@ -284,6 +394,7 @@ function handleTestMessage(msg, repoRoot) {
       test.steps = test.steps.filter(s => s.id !== msg.step_id);
       test.updated_at = nowIso();
       saveTestsFile(fp, data);
+      await queueTestSyncMutation(repoRoot, test, 'upsert');
     }
     return { type: 'testsData', tests: data.tests };
   }
@@ -298,7 +409,11 @@ function handleAgentMessage(msg, repoRoot, extensionPath) {
   if (msg.type === 'agentSave') {
     const scope = msg.scope;
     const filePath = scope === 'global' ? globalAgentsPath() : projectAgentsPath(repoRoot);
+    const previousAgents = scope === 'project' ? loadAgentsFile(filePath) : null;
     saveAgentsFile(filePath, msg.agents);
+    if (scope === 'project') {
+      void queueProjectAgentSyncChanges(repoRoot, previousAgents, msg.agents);
+    }
     return { type: 'agentsData', agents: loadMergedAgents(repoRoot, extensionPath) };
   }
   if (msg.type === 'agentSaveSystem') {
@@ -326,7 +441,11 @@ function handleModeMessage(msg, repoRoot, extensionPath) {
   if (msg.type === 'modeSave') {
     const scope = msg.scope;
     const filePath = scope === 'global' ? globalModesPath() : projectModesPath(repoRoot);
+    const previousModes = scope === 'project' ? loadModesFile(filePath) : null;
     saveModesFile(filePath, msg.modes);
+    if (scope === 'project') {
+      void queueProjectModeSyncChanges(repoRoot, previousModes, msg.modes);
+    }
     return { type: 'modesData', modes: loadMergedModes(repoRoot, extensionPath) };
   }
   if (msg.type === 'modeSaveSystem') {
@@ -432,6 +551,8 @@ module.exports = {
   projectMcpPath,
   loadMcpFile,
   saveMcpFile,
+  queueProjectMcpSyncChanges,
+  queueProjectModeSyncChanges,
   loadMergedMcpServers,
   loadInstanceConfig,
   saveInstanceConfig,
