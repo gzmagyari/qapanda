@@ -624,11 +624,16 @@ Your response (turn 3 — testing complete):
  * Shared between extension (session-manager) and CLI (shell).
  * @param {string} guidance - User-provided guidance text, or empty string for auto-continue
  * @param {string|null} currentAgentId - The active agent id, or null
+ * @param {{ loopMode?: boolean, loopObjective?: string }} [options]
  */
-function buildContinueDirective(guidance, currentAgentId) {
+function buildContinueDirective(guidance, currentAgentId, options = {}) {
   const agentLine = currentAgentId
     ? `Use agent_id: "${currentAgentId}" when delegating (you may also use other agent_ids if a different agent is more appropriate).`
     : 'Delegate to the most appropriate available agent.';
+  const loopMode = !!options.loopMode;
+  const loopObjective = typeof options.loopObjective === 'string'
+    ? options.loopObjective.trim()
+    : '';
 
   if (guidance) {
     return `CONTINUE DIRECTIVE — The user clicked Continue with this guidance: "${guidance}"
@@ -647,6 +652,75 @@ RULES:
 - You MUST delegate (action: "delegate").
 - claude_message must be self-contained and actionable.
 - NEVER tell the agent to ask the user anything. The user already gave you direction — act on it.`;
+  }
+  if (loopMode && loopObjective) {
+    return `CONTINUE DIRECTIVE — The user enabled Continue loop mode with this objective: "${loopObjective}"
+${agentLine}
+
+IMPORTANT: Use the objective as an INTERNAL steering rule and stop condition. Inspect the transcript, determine how far the work has progressed toward the objective, and decide the next concrete step. Do NOT stop just because the most recent subtask or verification step finished successfully.
+
+HOW TO DECIDE:
+
+1. Agent proposed or suggested something:
+→ Tell it to START IMPLEMENTING the next concrete step toward the objective.
+
+2. Agent just completed implementation:
+→ Tell it to VERIFY the implementation, then continue toward the objective.
+
+3. Agent reported test failures or review issues:
+→ Tell it to FIX them, then re-verify.
+
+4. Agent reported a subtask complete or tests passing:
+→ Decide the NEXT concrete step toward the objective. Stop only when this objective is achieved.
+
+5. Agent asked a question or gave options:
+→ MAKE THE DECISION YOURSELF. Pick the most reasonable path that best advances the objective.
+
+6. Agent is blocked, unsafe to proceed, or truly needs missing user input:
+→ Stop and explain the blocker clearly.
+
+CRITICAL RULES:
+- You MUST delegate (action: "delegate") unless the objective is complete, blocked, unsafe, or genuinely needs user input.
+- The objective is for YOU, the controller. Do NOT simply restate the full objective back to the agent as the claude_message.
+- First inspect the transcript and infer current progress against the objective. Then delegate only the NEXT concrete step needed.
+- Break large objectives into controlled step-by-step tasks. Example: if the objective is "finish tickets 1 to 10", do NOT tell the agent "finish tickets 1 to 10"; instead tell it the next ticket or verification step to do now.
+- NEVER stop just because the latest subtask passed verification.
+- NEVER tell the agent to "ask the user" or "wait for the user" unless genuinely blocked on missing information.
+- NEVER give meta-instructions like "keep the conversation active" or "handle the next turn" — give a CONCRETE task.
+- claude_message should be something the agent can immediately act on.`;
+  }
+  if (loopMode) {
+    return `CONTINUE DIRECTIVE — The user enabled Continue loop mode. This means: KEEP DRIVING THE OVERALL TASK FORWARD.
+${agentLine}
+
+IMPORTANT: Look at the full conversation and keep progressing the overall user request. Do NOT stop just because the most recent subtask or verification step finished successfully.
+
+HOW TO DECIDE:
+
+1. Agent proposed or suggested something (feature, approach, plan):
+→ Tell it to START IMPLEMENTING the next concrete step.
+
+2. Agent just completed implementation:
+→ Tell it to VERIFY the implementation, then continue the broader task.
+
+3. Agent reported test failures:
+→ Tell it to FIX them, then re-run the tests.
+
+4. Agent reported the latest subtask complete / all tests passing:
+→ Decide the NEXT concrete step toward the overall task from the conversation transcript. Stop only if the overall task is complete.
+
+5. Agent asked a question or gave options:
+→ MAKE THE DECISION YOURSELF. Pick the most reasonable option and tell the agent to proceed.
+
+6. Agent is blocked, unsafe to proceed, or truly needs missing user input:
+→ Stop and explain the blocker clearly.
+
+CRITICAL RULES:
+- You MUST delegate (action: "delegate") unless the overall task is complete, blocked, unsafe, or genuinely needs user input.
+- NEVER stop just because the latest subtask passed verification.
+- NEVER tell the agent to "ask the user" or "wait for the user" unless genuinely blocked on missing information.
+- NEVER give meta-instructions like "keep the conversation active" or "handle the next turn" — give a CONCRETE task.
+- claude_message should be something the agent can immediately act on.`;
   }
   return `CONTINUE DIRECTIVE — The user clicked Continue (auto-continue mode). This means: PROCEED WITH WORK.
 ${agentLine}

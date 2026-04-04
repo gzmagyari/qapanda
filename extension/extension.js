@@ -12,7 +12,7 @@ const os = require('node:os');
 let WebviewRenderer, SessionManager;
 let globalAgentsPath, projectAgentsPath, systemAgentsOverridePath, loadAgentsFile, saveAgentsFile, loadSystemAgents, loadMergedAgents;
 let loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile;
-let findExistingDesktop;
+let findExistingDesktop, instanceName, stopInstance, clearPanel;
 let globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage;
 let startTasksMcpServer, stopTasksMcpServer;
 let startTestsMcpServer, stopTestsMcpServer;
@@ -24,6 +24,9 @@ let buildSelfTestingPrompt;
 let loadFeatureFlags;
 let exportQaReportPdf;
 let buildApiCatalogPayload;
+let killChrome, killAllChrome;
+let closeAllCodexConnections;
+let cleanupPanelSession, shutdownExtensionResources;
 
 try {
   ({ WebviewRenderer } = require('./webview-renderer'));
@@ -34,7 +37,7 @@ try {
   _aDbg('require OK: agents-store');
   ({ loadMergedModes, saveModesFile, globalModesPath, projectModesPath, systemModesOverridePath, loadModesFile } = require('./modes-store'));
   _aDbg('require OK: modes-store');
-  ({ findExistingDesktop } = require('./src/remote-desktop'));
+  ({ findExistingDesktop, instanceName, stopInstance, clearPanel } = require('./src/remote-desktop'));
   _aDbg('require OK: remote-desktop');
   ({ globalMcpPath, projectMcpPath, loadMcpFile, saveMcpFile, loadMergedMcpServers, handleProjectContextMessage, handleTaskMessage, handleTestMessage, handleAgentMessage, handleModeMessage, handleInstanceMessage } = require('./message-handlers'));
   _aDbg('require OK: message-handlers');
@@ -56,6 +59,9 @@ try {
   _aDbg('require OK: model-catalog');
   ({ loadFeatureFlags } = require('./src/feature-flags'));
   ({ exportQaReportPdf } = require('./qa-report-export'));
+  ({ killChrome, killAll: killAllChrome } = require('./chrome-manager'));
+  ({ closeAllConnections: closeAllCodexConnections } = require('./src/codex-app-server'));
+  ({ cleanupPanelSession, shutdownExtensionResources } = require('./lifecycle-utils'));
   _aDbg('All top-level requires succeeded');
 } catch (e) {
   _aDbg(`TOP-LEVEL REQUIRE FAILED: ${e.message}\n${e.stack}`);
@@ -276,14 +282,37 @@ function _activateInner(context) {
           const agentsData = loadMergedAgents(repoRoot, extensionPath1);
           const modesData = loadMergedModes(repoRoot, extensionPath1);
           const onboardingData = loadOnboarding();
-          panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath), apiCatalog: buildApiCatalogPayload() });
+          const runId = msg.runId || null;
+          const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
+          if (reattached) Object.assign(panelConfig, session.getConfig());
+          panel.webview.postMessage({
+            type: 'initConfig',
+            config: reattached ? session.getConfig() : panelConfig,
+            mcpServers: mcpData,
+            agents: agentsData,
+            modes: modesData,
+            panelId: session.panelId,
+            runId: reattached ? session.getRunId() : null,
+            onboarding: { complete: isOnboardingComplete(), data: onboardingData },
+            featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
+            apiCatalog: buildApiCatalogPayload(),
+          });
           // Re-link to existing container if still running (don't create a new one)
-          if (msg.panelId) {
+          if (msg.panelId || reattached) {
             findExistingDesktop(repoRoot, session.panelId).then(desktop => {
               if (desktop) {
                 try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
               }
             }).catch(() => {});
+          }
+          if (reattached) {
+            session.syncAttachedRunState();
+            await session.sendTranscript();
+            renderer.banner(`Reattached to run ${session.getRunId()}`);
+            await session.sendProgress();
+            session._restoreWaitTimer();
+          } else if (runId) {
+            renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
           }
           // Pre-start Chrome + Codex app-server now that panelId is stable
           _extDbg(`ready: calling prestart() with stable panelId=${session._panelId}`);
@@ -340,7 +369,7 @@ function _activateInner(context) {
           instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} }, extensionPath1);
         } catch (err) {
           console.error('[instance] handler error:', err);
-          instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));
+          instanceReply = { type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId };
         }
         if (instanceReply) {
           try { panel.webview.postMessage(instanceReply); } catch {}
@@ -360,14 +389,16 @@ function _activateInner(context) {
     panel.onDidDispose(
       () => {
         activePanels.delete(panel);
-        // Stop the Docker container linked to this panel
-        const name = instanceName(repoRoot, session.panelId);
-        stopInstance(name).catch(() => {});
-        // Kill headless Chrome for this panel
-        try { require('./chrome-manager').killChrome(session.panelId); } catch {}
-        // Clean up any app-server connections for this session
-        try { require('./src/codex-app-server').closeAllConnections(); } catch {}
-        session.dispose();
+        void cleanupPanelSession({
+          repoRoot,
+          panelId: session.panelId,
+          session,
+          instanceName,
+          stopInstance,
+          clearPanel,
+          killChrome,
+          closeAllConnections: closeAllCodexConnections,
+        });
       },
       null,
       context.subscriptions
@@ -524,7 +555,7 @@ async function _deserializeInner(panel, state, context) {
             instanceReply = await handleInstanceMessage(msg, repoRoot, session.panelId, (m) => { try { panel.webview.postMessage(m); } catch {} }, extensionPath2);
           } catch (err) {
             console.error('[instance] handler error:', err);
-            instanceReply = await _instancesData(repoRoot, session.panelId, {}, msg._actionId).catch(() => ({ type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId }));
+            instanceReply = { type: 'instancesData', instances: [], panelId: session.panelId, _actionId: msg._actionId };
           }
           if (instanceReply) {
             try { panel.webview.postMessage(instanceReply); } catch {}
@@ -546,31 +577,41 @@ async function _deserializeInner(panel, state, context) {
             const agentsData = loadMergedAgents(repoRoot, extensionPath2);
             const modesData = loadMergedModes(repoRoot, extensionPath2);
             const onboardingData2 = loadOnboarding();
-            panel.webview.postMessage({ type: 'initConfig', config: panelConfig, mcpServers: mcpData, agents: agentsData, modes: modesData, panelId: session.panelId, runId: msg.runId || savedRunId || null, onboarding: { complete: isOnboardingComplete(), data: onboardingData2 }, featureFlags: loadFeatureFlags(context.extensionUri.fsPath), apiCatalog: buildApiCatalogPayload() });
+            const runId = msg.runId || savedRunId;
+            const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
+            if (reattached) Object.assign(panelConfig, session.getConfig());
+            panel.webview.postMessage({
+              type: 'initConfig',
+              config: reattached ? session.getConfig() : panelConfig,
+              mcpServers: mcpData,
+              agents: agentsData,
+              modes: modesData,
+              panelId: session.panelId,
+              runId: reattached ? session.getRunId() : null,
+              onboarding: { complete: isOnboardingComplete(), data: onboardingData2 },
+              featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
+              apiCatalog: buildApiCatalogPayload(),
+            });
             // Re-link to existing container if still running (don't create a new one)
-            if (msg.panelId) {
+            if (msg.panelId || reattached) {
               findExistingDesktop(repoRoot, session.panelId).then(desktop => {
                 if (desktop) {
                   try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
                 }
               }).catch(() => {});
             }
+            if (reattached) {
+              session.syncAttachedRunState();
+              await session.sendTranscript();
+              renderer.banner(`Reattached to run ${session.getRunId()}`);
+              await session.sendProgress();
+              session._restoreWaitTimer();
+            } else if (runId) {
+              renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
+            }
             // Pre-start Chrome + Codex app-server now that panelId is stable
             _extDbg2(`ready: calling prestart() with stable panelId=${session._panelId}`);
             session.prestart();
-            // Reattach to saved run if the webview had one before reload
-            const runId = msg.runId || savedRunId;
-            if (runId) {
-              const ok = await session.reattachRun(runId);
-              if (ok) {
-                await session.sendTranscript();
-                renderer.banner(`Reattached to run ${session.getRunId()}`);
-                await session.sendProgress();
-                session._restoreWaitTimer();
-              } else {
-                renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
-              }
-            }
             return;
           }
           session.handleMessage(msg);
@@ -584,25 +625,31 @@ async function _deserializeInner(panel, state, context) {
       panel.onDidDispose(
         () => {
           activePanels.delete(panel);
-          const name = instanceName(repoRoot, session.panelId);
-          stopInstance(name).catch(() => {});
-          try { require('./chrome-manager').killChrome(session.panelId); } catch {}
-          try { require('./src/codex-app-server').closeAllConnections(); } catch {}
-          session.dispose();
+          void cleanupPanelSession({
+            repoRoot,
+            panelId: session.panelId,
+            session,
+            instanceName,
+            stopInstance,
+            clearPanel,
+            killChrome,
+            closeAllConnections: closeAllCodexConnections,
+          });
         },
         null,
         context.subscriptions
       );
 }
 
-function deactivate() {
-  stopTasksMcpServer().catch(() => {});
-  stopTestsMcpServer().catch(() => {});
-  stopMemoryMcpServer().catch(() => {});
-  stopQaDesktopMcpServer().catch(() => {});
-  try { require('./chrome-manager').killAll(); } catch {}
-  // Clean up any persistent Codex app-server connections
-  try { require('./src/codex-app-server').closeAllConnections(); } catch {}
+async function deactivate() {
+  await shutdownExtensionResources({
+    stopTasksMcpServer,
+    stopTestsMcpServer,
+    stopMemoryMcpServer,
+    stopQaDesktopMcpServer,
+    killAll: killAllChrome,
+    closeAllConnections: closeAllCodexConnections,
+  });
 }
 
 module.exports = { activate, deactivate };

@@ -23,7 +23,21 @@ describe('Wizard restore behavior', () => {
   it('restores saved chatTarget from state', () => {
     wv = createWebviewDom({ savedState: { config: { chatTarget: 'agent-dev' } } });
     wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
-    // Should not override the saved target with QA-Browser since 'agent-dev' is already an agent target
     assert.ok(wv.isVisible('#tab-agent'), 'agent tab should be visible');
+    const target = wv.document.getElementById('cfg-chat-target');
+    assert.equal(target.value, 'agent-dev', 'should preserve the saved agent target');
+  });
+
+  it('preserves an explicit controller target instead of forcing QA-Browser', () => {
+    wv = createWebviewDom({ savedState: { config: { chatTarget: 'controller' } } });
+    wv.postMessage(sampleInitConfig({ onboarding: { complete: true, data: null } }));
+    const target = wv.document.getElementById('cfg-chat-target');
+    assert.equal(target.value, 'controller', 'should keep an explicit controller target');
+  });
+
+  it('persists the host-provided panelId immediately on initConfig', () => {
+    wv = createWebviewDom({ savedState: { panelId: 'stale-panel-001' } });
+    wv.postMessage(sampleInitConfig({ panelId: 'run-panel-123', onboarding: { complete: true, data: null } }));
+    assert.equal(wv.getState().panelId, 'run-panel-123', 'should replace stale panel state with the host-provided panelId');
   });
 });

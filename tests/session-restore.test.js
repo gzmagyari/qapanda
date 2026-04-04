@@ -13,14 +13,20 @@ const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
 const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
+const chromePath = path.join(extDir, 'chrome-manager.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function stubRenderer() {
   const calls = [];
-  return new Proxy({}, {
-    get(_target, prop) {
+  return new Proxy({ __calls: calls }, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
       return (...args) => { calls.push({ method: prop, args }); };
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
     },
   });
 }
@@ -29,9 +35,16 @@ const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
 const origCompaction = require(compactionPath);
+const origChrome = require(chromePath);
 
-function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
+function buildSession({ config = {}, runExists = true, manifest = null, chrome = {} } = {}) {
   const posted = [];
+  const captured = {
+    saveManifestCalls: [],
+    attachExistingChromeCalls: [],
+    ensureChromeCalls: [],
+    startScreencastCalls: [],
+  };
 
   const fakeManifest = manifest || {
     runId: 'existing-run-42',
@@ -54,7 +67,9 @@ function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
         return { ...fakeManifest };
       },
       prepareNewRun: async (msg, opts) => ({ ...fakeManifest, runId: 'new-run' }),
-      saveManifest: async () => {},
+      saveManifest: async (value) => {
+        captured.saveManifestCalls.push(JSON.parse(JSON.stringify(value)));
+      },
     },
   };
 
@@ -71,6 +86,29 @@ function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
     exports: { ...origPrompts, loadWorkflows: () => [] },
   };
 
+  require.cache[chromePath] = {
+    id: chromePath,
+    filename: chromePath,
+    loaded: true,
+    exports: {
+      ...origChrome,
+      attachExistingChrome: async (panelId, port) => {
+        captured.attachExistingChromeCalls.push({ panelId, port });
+        if (chrome.attachExistingChrome) return chrome.attachExistingChrome(panelId, port);
+        return null;
+      },
+      ensureChrome: async (panelId) => {
+        captured.ensureChromeCalls.push({ panelId });
+        if (chrome.ensureChrome) return chrome.ensureChrome(panelId);
+        return null;
+      },
+      startScreencast: async (panelId, _onFrame, _onNav) => {
+        captured.startScreencastCalls.push({ panelId });
+        if (chrome.startScreencast) return chrome.startScreencast(panelId, _onFrame, _onNav);
+      },
+    },
+  };
+
   const { SessionManager } = require(smPath);
 
   const renderer = stubRenderer();
@@ -82,14 +120,16 @@ function buildSession({ config = {}, runExists = true, manifest = null } = {}) {
   });
 
   const cleanup = () => {
+    session.dispose();
     delete require.cache[smPath];
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
     require.cache[compactionPath] = { id: compactionPath, filename: compactionPath, loaded: true, exports: origCompaction };
+    require.cache[chromePath] = { id: chromePath, filename: chromePath, loaded: true, exports: origChrome };
   };
 
-  return { session, posted, renderer, cleanup };
+  return { session, posted, renderer, cleanup, captured };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -160,6 +200,107 @@ test('/clear posts clearRunId to webview', async () => {
   }
 });
 
+test('reattachRun restores persisted chatTarget from manifest and syncs it to the webview', async () => {
+  const { session, posted, renderer, cleanup } = buildSession({
+    runExists: true,
+    config: { chatTarget: 'agent-QA-Browser' },
+    manifest: {
+      runId: 'existing-run-42',
+      chatTarget: 'agent-dev',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: { dev: { hasStarted: true } } },
+      agents: { dev: { name: 'Developer', cli: 'codex', enabled: true } },
+    },
+  });
+  try {
+    session.setAgents({ system: { dev: { name: 'Developer', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    const ok = await session.reattachRun('existing-run-42');
+    assert.equal(ok, true);
+    assert.equal(session._getConfig().chatTarget, 'agent-dev');
+    const syncMsg = posted.find((msg) => msg.type === 'syncConfig');
+    assert.ok(syncMsg, 'should post syncConfig on reattach');
+    assert.equal(syncMsg.config.chatTarget, 'agent-dev');
+    const bannerCall = renderer.__calls.find((call) => call.method === 'banner');
+    assert.ok(bannerCall, 'should announce target session restore');
+    assert.match(bannerCall.args[0], /Restored target Developer/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test('reattachRun restores manifest panelId and reattaches to an existing browser session', async () => {
+  const { session, posted, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest: {
+      runId: 'existing-run-42',
+      panelId: 'run-panel-123',
+      chromeDebugPort: 45555,
+      chatTarget: 'agent-QA-Browser',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: { 'QA-Browser': { hasStarted: true } }, workerMcpServers: {} },
+      agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
+    },
+    chrome: {
+      attachExistingChrome: async () => ({ port: 45555 }),
+      ensureChrome: async () => {
+        throw new Error('should not start a replacement browser');
+      },
+    },
+  });
+  try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } }, global: {}, project: {} });
+    const ok = await session.reattachRun('existing-run-42');
+    assert.equal(ok, true);
+    assert.equal(session.panelId, 'run-panel-123');
+    assert.equal(session._chromePort, 45555);
+    assert.deepEqual(captured.attachExistingChromeCalls, [{ panelId: 'run-panel-123', port: 45555 }]);
+    assert.equal(captured.ensureChromeCalls.length, 0);
+    assert.ok(
+      posted.some((msg) => msg.type === 'chromeReady' && msg.chromePort === 45555),
+      'should post chromeReady for the adopted browser'
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('reattachRun starts a replacement browser when the saved browser session is gone', async () => {
+  const { session, renderer, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest: {
+      runId: 'existing-run-42',
+      panelId: 'run-panel-123',
+      chromeDebugPort: 45555,
+      chatTarget: 'agent-QA-Browser',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: { 'QA-Browser': { hasStarted: true } }, workerMcpServers: {} },
+      agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
+    },
+    chrome: {
+      attachExistingChrome: async () => null,
+      ensureChrome: async () => ({ port: 46666 }),
+    },
+  });
+  try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } }, global: {}, project: {} });
+    const ok = await session.reattachRun('existing-run-42');
+    assert.equal(ok, true);
+    assert.equal(session.panelId, 'run-panel-123');
+    assert.equal(session._chromePort, 46666);
+    assert.deepEqual(captured.attachExistingChromeCalls, [{ panelId: 'run-panel-123', port: 45555 }]);
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-123' }]);
+    assert.equal(captured.saveManifestCalls.length, 1);
+    assert.equal(captured.saveManifestCalls[0].panelId, 'run-panel-123');
+    assert.equal(captured.saveManifestCalls[0].chromeDebugPort, 46666);
+    const browserBanner = renderer.__calls.find((call) =>
+      call.method === 'banner' && /replacement browser/i.test(call.args[0])
+    );
+    assert.ok(browserBanner, 'should announce replacement browser startup');
+  } finally {
+    cleanup();
+  }
+});
+
 test('/compact compacts the current API agent session locally', async () => {
   let captured = null;
   require.cache[compactionPath] = {
@@ -192,6 +333,7 @@ test('/compact compacts the current API agent session locally', async () => {
     config: { chatTarget: 'agent-QA-Browser', workerCli: 'api' },
   });
   try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'api', enabled: true } }, global: {}, project: {} });
     await session.reattachRun('existing-run-42');
     await session.handleMessage({ type: 'userInput', text: '/compact' });
     assert.ok(captured, 'should invoke local compaction');
@@ -672,7 +814,7 @@ test('sendTranscript skips malformed JSONL lines gracefully', async () => {
     assert.ok(hist, 'should post transcriptHistory even with malformed lines');
     assert.equal(hist.messages.length, 2, 'should skip malformed line and include valid ones');
     assert.deepEqual(hist.messages[0], { type: 'user', text: 'Hello' });
-    assert.deepEqual(hist.messages[1], { type: 'claude', text: 'World' });
+    assert.deepEqual(hist.messages[1], { type: 'claude', text: 'World', label: 'Worker (Codex)' });
   } finally {
     session.dispose();
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -709,7 +851,7 @@ test('serializer restore: reattach + sendTranscript works with only runId (no me
     assert.ok(hist, 'sendTranscript should produce transcriptHistory');
     assert.equal(hist.messages.length, 2);
     assert.deepEqual(hist.messages[0], { type: 'user', text: 'First' });
-    assert.deepEqual(hist.messages[1], { type: 'claude', text: 'Second' });
+    assert.deepEqual(hist.messages[1], { type: 'claude', text: 'Second', label: 'Worker (Codex)' });
   } finally {
     cleanup();
   }

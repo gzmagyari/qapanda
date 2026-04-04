@@ -51,6 +51,29 @@ describe('Config bar', () => {
     }
   });
 
+  it('changing target does not clear the current conversation', () => {
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [
+        { type: 'user', text: 'Continue with the current run' },
+        { type: 'claude', text: 'Working on it', label: 'QA Engineer (Browser)' },
+      ],
+    });
+
+    const target = wv.document.getElementById('cfg-chat-target');
+    const messagesBefore = wv.text('#messages');
+    const initialCount = wv.messages.length;
+    target.value = 'agent-dev';
+    target.dispatchEvent(new wv.window.Event('change', { bubbles: true }));
+
+    const clearMsgs = wv.messages.filter((m, i) => i >= initialCount && m.type === 'userInput' && m.text === '/clear');
+    const configMsgs = wv.messages.filter((m, i) => i >= initialCount && m.type === 'configChanged');
+    assert.equal(clearMsgs.length, 0, 'should not post /clear when switching targets');
+    assert.ok(configMsgs.some((m) => m.config && m.config.chatTarget === 'agent-dev'), 'should still post the new target');
+    assert.match(wv.text('#messages'), /Continue with the current run/);
+    assert.equal(wv.text('#messages').includes(messagesBefore.trim()), true, 'existing chat should remain visible');
+  });
+
   it('renders API provider models from initConfig catalog', () => {
     wv.postMessage(sampleInitConfig({
       config: { controllerCli: 'api', workerCli: 'api', apiProvider: 'openai', controllerModel: 'gpt-5.4', workerModel: 'gpt-5.4-mini' },

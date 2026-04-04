@@ -15,9 +15,14 @@ const promptsPath = path.join(extDir, 'src', 'prompts.js');
 
 function stubRenderer() {
   const calls = [];
-  return new Proxy({}, {
-    get(_target, prop) {
+  return new Proxy({ __calls: calls }, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
       return (...args) => { calls.push({ method: prop, args }); };
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
     },
   });
 }
@@ -26,22 +31,25 @@ const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
 
-function buildSession(config = {}, { loopOverride } = {}) {
+function buildSession(config = {}, { loopOverride, manifestOverride } = {}) {
   const captured = {
     prepareNewRunCalls: [],
     runManagerLoopCalls: [],
     runDirectWorkerTurnCalls: [],
+    saveManifestCalls: [],
   };
   const posted = [];
 
   const fakeManifest = () => ({
     runId: 'test-run',
     controller: { model: null, config: [] },
-    worker: { model: null, hasStarted: false, sessionId: 'sess-1' },
+    worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+    agents: {},
     status: 'idle',
     waitDelay: null,
     nextWakeAt: null,
     errorRetry: false,
+    ...(manifestOverride || {}),
   });
 
   delete require.cache[smPath];
@@ -54,7 +62,9 @@ function buildSession(config = {}, { loopOverride } = {}) {
         captured.prepareNewRunCalls.push({ msg, opts });
         return fakeManifest();
       },
-      saveManifest: async () => {},
+      saveManifest: async (manifest) => {
+        captured.saveManifestCalls.push(JSON.parse(JSON.stringify(manifest)));
+      },
     },
   };
 
@@ -139,6 +149,84 @@ test('applyConfig with empty chatTarget resets to controller', () => {
   try {
     session.applyConfig({ chatTarget: '' });
     assert.equal(session._getConfig().chatTarget, 'controller');
+  } finally {
+    cleanup();
+  }
+});
+
+test('new runs persist chatTarget into prepareNewRun options', async () => {
+  const { session, captured, cleanup } = buildSession({ chatTarget: 'agent-dev' });
+  try {
+    session.setAgents({ system: { dev: { name: 'Developer', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    await session.handleMessage({ type: 'userInput', text: 'implement fix' });
+    assert.equal(captured.prepareNewRunCalls.length, 1);
+    assert.equal(captured.prepareNewRunCalls[0].opts.chatTarget, 'agent-dev');
+  } finally {
+    cleanup();
+  }
+});
+
+test('switching to an existing agent session persists target and shows reattach banner', () => {
+  const { session, captured, renderer, cleanup } = buildSession(
+    { chatTarget: 'controller' },
+    {
+      manifestOverride: {
+        worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: { dev: { hasStarted: true } } },
+        agents: { dev: { name: 'Developer', cli: 'codex', enabled: true } },
+      },
+    },
+  );
+  try {
+    session.setAgents({ system: { dev: { name: 'Developer', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    session._activeManifest = {
+      runId: 'test-run',
+      controller: { model: null, config: [] },
+      worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: { dev: { hasStarted: true } } },
+      agents: { dev: { name: 'Developer', cli: 'codex', enabled: true } },
+      status: 'idle',
+    };
+
+    session.applyConfig({ chatTarget: 'agent-dev' });
+
+    assert.equal(session._getConfig().chatTarget, 'agent-dev');
+    assert.equal(captured.saveManifestCalls.length, 1);
+    assert.equal(captured.saveManifestCalls[0].chatTarget, 'agent-dev');
+    const bannerCall = renderer.__calls.find((call) => call.method === 'banner');
+    assert.ok(bannerCall, 'should show a target-switch banner');
+    assert.match(bannerCall.args[0], /Reattached to the existing session/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test('switching to a brand-new agent session shows new-session banner without clearing the run', () => {
+  const { session, captured, renderer, cleanup } = buildSession(
+    { chatTarget: 'controller' },
+    {
+      manifestOverride: {
+        worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+        agents: { dev: { name: 'Developer', cli: 'codex', enabled: true } },
+      },
+    },
+  );
+  try {
+    session.setAgents({ system: { dev: { name: 'Developer', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    session._activeManifest = {
+      runId: 'test-run',
+      controller: { model: null, config: [] },
+      worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+      agents: { dev: { name: 'Developer', cli: 'codex', enabled: true } },
+      status: 'idle',
+    };
+
+    session.applyConfig({ chatTarget: 'agent-dev' });
+
+    assert.equal(session._getConfig().chatTarget, 'agent-dev');
+    assert.equal(captured.saveManifestCalls.length, 1);
+    assert.equal(captured.saveManifestCalls[0].chatTarget, 'agent-dev');
+    const bannerCall = renderer.__calls.find((call) => call.method === 'banner');
+    assert.ok(bannerCall, 'should show a target-switch banner');
+    assert.match(bannerCall.args[0], /next message will start a new session/i);
   } finally {
     cleanup();
   }

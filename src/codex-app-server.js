@@ -178,6 +178,19 @@ class CodexAppServerConnection {
   }
 
   /**
+   * Fork an existing thread into a new thread, optionally changing sandbox
+   * and approval settings while preserving conversation history.
+   */
+  async forkThread(threadId, { approvalPolicy, sandbox } = {}) {
+    const params = { threadId };
+    if (approvalPolicy) params.approvalPolicy = approvalPolicy;
+    if (sandbox) params.sandbox = sandbox;
+    const result = await this.sendRequest('thread/fork', params);
+    this._threadId = result.thread.id;
+    return this._threadId;
+  }
+
+  /**
    * Start a turn on the current thread.
    */
   async startTurn(inputText, outputSchema, options = {}) {

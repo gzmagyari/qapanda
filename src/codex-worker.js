@@ -119,6 +119,62 @@ function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
   return `${systemPrompt}\n\n---\n\n${prompt}`;
 }
 
+const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
+const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
+
+function workerThreadNeedsRecovery(agentSession) {
+  return !!(
+    agentSession &&
+    agentSession.appServerThreadId &&
+    (
+      agentSession.approvalPolicy !== DESIRED_APP_SERVER_APPROVAL_POLICY ||
+      agentSession.threadSandbox !== DESIRED_APP_SERVER_SANDBOX
+    )
+  );
+}
+
+function workerThreadNeedsForkOnReconnect(conn, agentSession) {
+  return !!(
+    conn &&
+    agentSession &&
+    agentSession.appServerThreadId &&
+    conn.threadId !== agentSession.appServerThreadId
+  );
+}
+
+async function ensureWorkerAppServerThread({ conn, manifest, agentConfig, agentSession, renderer, sessionLabel }) {
+  if (!agentSession.appServerThreadId) {
+    await conn.startThread({
+      cwd: manifest.repoRoot,
+      model: (agentConfig && agentConfig.model) || manifest.worker.model,
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    agentSession.appServerThreadId = conn.threadId;
+    agentSession.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
+    agentSession.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    return 'started';
+  }
+
+  if (workerThreadNeedsRecovery(agentSession) || workerThreadNeedsForkOnReconnect(conn, agentSession)) {
+    const recoveredThreadId = await conn.forkThread(agentSession.appServerThreadId, {
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    agentSession.appServerThreadId = recoveredThreadId;
+    agentSession.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
+    agentSession.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    if (renderer && typeof renderer.banner === 'function') {
+      const label = sessionLabel || 'worker';
+      renderer.banner(`Recovered ${label} session into a writable Codex thread.`);
+    }
+    return 'forked';
+  }
+
+  await conn.resumeThread(agentSession.appServerThreadId);
+  return 'resumed';
+}
+
 async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config and session
   const isCustomAgent = agentId && agentId !== 'default';
@@ -419,6 +475,8 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
       sessionId: null,
       appServerThreadId: null,
       hasStarted: false,
+      approvalPolicy: null,
+      threadSandbox: null,
     };
   }
   const agentSession = manifest.worker.agentSessions[sessionKey];
@@ -527,22 +585,18 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   }
 
   try {
-    // Start or resume thread
-    if (!agentSession.appServerThreadId) {
-      await conn.startThread({
-        cwd: manifest.repoRoot,
-        model: (agentConfig && agentConfig.model) || manifest.worker.model,
-        approvalPolicy: 'never',
-        sandbox: 'danger-full-access',
-      });
-      agentSession.appServerThreadId = conn.threadId;
-    } else {
-      await conn.resumeThread(agentSession.appServerThreadId);
-    }
+    await ensureWorkerAppServerThread({
+      conn,
+      manifest,
+      agentConfig,
+      agentSession,
+      renderer,
+      sessionLabel: agentName || sessionKey,
+    });
 
     await conn.startTurn(stdinText, undefined, {
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
     });
     await turnCompletePromise;
   } finally {
@@ -579,6 +633,9 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
 
 module.exports = {
   buildCodexWorkerArgs,
+  ensureWorkerAppServerThread,
+  workerThreadNeedsForkOnReconnect,
+  workerThreadNeedsRecovery,
   runCodexWorkerTurn,
   runCodexWorkerTurnAppServer,
 };

@@ -8,6 +8,64 @@ const { getOrCreateConnection } = require('./codex-app-server');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 const { countTranscriptLinesSync } = require('./transcript');
 
+const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
+const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
+
+function controllerThreadNeedsRecovery(controllerState) {
+  return !!(
+    controllerState &&
+    controllerState.appServerThreadId &&
+    (
+      controllerState.approvalPolicy !== DESIRED_APP_SERVER_APPROVAL_POLICY ||
+      controllerState.threadSandbox !== DESIRED_APP_SERVER_SANDBOX
+    )
+  );
+}
+
+function controllerThreadNeedsForkOnReconnect(conn, controllerState) {
+  return !!(
+    conn &&
+    controllerState &&
+    controllerState.appServerThreadId &&
+    conn.threadId !== controllerState.appServerThreadId
+  );
+}
+
+async function ensureControllerAppServerThread(conn, manifest, renderer) {
+  if (!manifest.controller.appServerThreadId) {
+    await conn.startThread({
+      cwd: manifest.repoRoot,
+      model: manifest.controller.model,
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    manifest.controller.appServerThreadId = conn.threadId;
+    manifest.controller.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
+    manifest.controller.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    return 'started';
+  }
+
+  if (
+    controllerThreadNeedsRecovery(manifest.controller) ||
+    controllerThreadNeedsForkOnReconnect(conn, manifest.controller)
+  ) {
+    const recoveredThreadId = await conn.forkThread(manifest.controller.appServerThreadId, {
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    manifest.controller.appServerThreadId = recoveredThreadId;
+    manifest.controller.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
+    manifest.controller.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    if (renderer && typeof renderer.banner === 'function') {
+      renderer.banner('Recovered controller session into a writable Codex thread.');
+    }
+    return 'forked';
+  }
+
+  await conn.resumeThread(manifest.controller.appServerThreadId);
+  return 'resumed';
+}
+
 function buildCodexArgs(manifest, loop) {
   const args = ['exec'];
   const isResume = !!manifest.controller.sessionId;
@@ -282,23 +340,12 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   }
 
   try {
-    // Start or resume thread
-    if (!manifest.controller.appServerThreadId) {
-      await conn.startThread({
-        cwd: manifest.repoRoot,
-        model: manifest.controller.model,
-        approvalPolicy: 'never',
-        sandbox: 'danger-full-access',
-      });
-      manifest.controller.appServerThreadId = conn.threadId;
-    } else {
-      await conn.resumeThread(manifest.controller.appServerThreadId);
-    }
+    await ensureControllerAppServerThread(conn, manifest, renderer);
 
     // Start the turn with the controller prompt
     await conn.startTurn(prompt, controllerDecisionSchema, {
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
     });
 
     // Wait for turn to complete
@@ -341,6 +388,9 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
 
 module.exports = {
   buildCodexArgs,
+  controllerThreadNeedsForkOnReconnect,
+  controllerThreadNeedsRecovery,
+  ensureControllerAppServerThread,
   runControllerTurn,
   runControllerTurnAppServer,
 };

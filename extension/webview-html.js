@@ -106,6 +106,10 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
             <button id="btn-orchestrate" title="Full controller orchestration">Orchestrate ⚡</button>
             <button id="btn-stop">Stop ■</button>
+            <div id="loop-objective-wrap" class="loop-objective-wrap" title="Optional objective for Continue loop mode">
+              <span class="loop-objective-label">Loop Objective</span>
+              <input type="text" id="loop-objective" class="loop-objective-input" placeholder="Optional stop goal for Continue loop" />
+            </div>
             <div class="toggle-switch" title="Auto-continue loop">
               <input type="checkbox" id="loop-toggle" />
               <label for="loop-toggle"><span class="toggle-slider"></span></label>
@@ -421,6 +425,16 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
       </div>
     </div><!-- /tab-settings -->
 
+    <div id="fatal-recovery" class="fatal-recovery" aria-live="assertive">
+      <div class="fatal-recovery-card">
+        <h2>QA Panda hit a webview error</h2>
+        <p>The panel can usually recover by reloading. Your run data is still stored on disk.</p>
+        <pre id="fatal-recovery-detail" class="fatal-recovery-detail"></pre>
+        <div class="fatal-recovery-actions">
+          <button id="fatal-recovery-reload" class="fatal-recovery-btn" type="button">Reload QA Panda</button>
+        </div>
+      </div>
+    </div>
   </div>
   <script${scriptAttr} src="${scriptSrc}"></script>
 </body>

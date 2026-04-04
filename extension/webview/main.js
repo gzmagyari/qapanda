@@ -23,6 +23,7 @@
   // Debug logging — sends to extension host which writes to .qpanda/wizard-debug.log
   function _dbg(text) { try { vscode.postMessage({ type: '_debugLog', text: String(text) }); } catch {} }
 
+  const appEl = document.getElementById('app');
   const messagesEl = document.getElementById('messages');
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
@@ -30,8 +31,76 @@
   const btnOrchestrate = document.getElementById('btn-orchestrate');
   const btnStop = document.getElementById('btn-stop');
   const loopToggle = document.getElementById('loop-toggle');
+  const loopObjectiveWrap = document.getElementById('loop-objective-wrap');
+  const loopObjectiveInput = document.getElementById('loop-objective');
   const progressBubble = document.getElementById('progress-bubble');
   const progressBody = progressBubble ? progressBubble.querySelector('.progress-body') : null;
+  const fatalRecoveryEl = document.getElementById('fatal-recovery');
+  const fatalRecoveryDetailEl = document.getElementById('fatal-recovery-detail');
+  const fatalRecoveryReloadBtn = document.getElementById('fatal-recovery-reload');
+  let fatalRecoveryShown = false;
+
+  function formatFatalDetail(kind, errorLike) {
+    const prefix = `Fatal ${kind}`;
+    if (!errorLike) return prefix;
+    if (errorLike instanceof Error) {
+      return `${prefix}\n${errorLike.stack || errorLike.message}`;
+    }
+    if (typeof errorLike === 'string') {
+      return `${prefix}\n${errorLike}`;
+    }
+    if (errorLike && typeof errorLike === 'object') {
+      try {
+        if (errorLike.stack || errorLike.message) {
+          return `${prefix}\n${errorLike.stack || errorLike.message}`;
+        }
+        return `${prefix}\n${JSON.stringify(errorLike, null, 2)}`;
+      } catch {}
+    }
+    return `${prefix}\n${String(errorLike)}`;
+  }
+
+  function showFatalRecovery(kind, errorLike) {
+    if (fatalRecoveryShown) return;
+    fatalRecoveryShown = true;
+    const detail = formatFatalDetail(kind, errorLike);
+    _dbg('FATAL WEBVIEW ERROR: ' + detail.replace(/\s+/g, ' ').slice(0, 800));
+    if (fatalRecoveryDetailEl) fatalRecoveryDetailEl.textContent = detail;
+    if (appEl) appEl.classList.add('app-fatal');
+    if (fatalRecoveryEl) fatalRecoveryEl.classList.add('visible');
+  }
+
+  if (fatalRecoveryReloadBtn) {
+    fatalRecoveryReloadBtn.addEventListener('click', () => {
+      try { location.reload(); } catch (error) { _dbg('fatal reload failed: ' + (error && error.message || error)); }
+    });
+  }
+
+  window.onerror = function (message, source, lineno, colno, error) {
+    showFatalRecovery('window.onerror', error || `${message || 'Unknown error'} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}`);
+    return false;
+  };
+  window.addEventListener('error', (event) => {
+    if (!event) return;
+    showFatalRecovery('error', event.error || event.message || event);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    showFatalRecovery('unhandledrejection', event && 'reason' in event ? event.reason : event);
+  });
+
+  function safeInsertBefore(parent, node, nextSibling) {
+    if (!parent || !node) return;
+    if (nextSibling && nextSibling.parentNode === parent) {
+      parent.insertBefore(node, nextSibling);
+      return;
+    }
+    parent.appendChild(node);
+  }
+
+  function resolveSectionParent(section) {
+    return (section && section.parentNode && section.parentNode.nodeType === 1) ? section.parentNode : messagesEl;
+  }
+
 
   // ── Tab switching ───────────────────────────────────────────────────
   const tabBar = document.getElementById('tab-bar');
@@ -989,6 +1058,7 @@
   let modesProject = {};
   let modeEditingForm = null; // { scope, id } or null
   let suppressTargetConfirm = false;
+  let hasExplicitChatTarget = false;
 
   function renderModeList(scope) {
     const listEl = document.getElementById('mode-list-' + scope);
@@ -1259,13 +1329,14 @@
     tabPanels.agent.classList.remove('wizard-hidden');
     // Default to QA-Browser if no target already set
     const currentTarget = cfgChatTarget ? cfgChatTarget.value : '';
-    if (!currentTarget || currentTarget === 'controller' || currentTarget === 'claude') {
+    if (!hasExplicitChatTarget && (!currentTarget || currentTarget === 'controller' || currentTarget === 'claude')) {
       suppressTargetConfirm = true;
       if (cfgChatTarget) {
         cfgChatTarget.value = 'agent-QA-Browser';
         updateConfigBarForTarget('agent-QA-Browser');
       }
       suppressTargetConfirm = false;
+      hasExplicitChatTarget = true;
       vscode.postMessage({ type: 'configChanged', config: { chatTarget: 'agent-QA-Browser' } });
     }
     // Show welcome splash if no real chat entries exist
@@ -1994,7 +2065,7 @@
     if (splitVncWrapper || !novncPort || !currentSection) return;
     hideThinking();
 
-    // Remember insertion point
+    const insertionParent = resolveSectionParent(currentSection);
     const nextSib = currentSection.nextSibling;
 
     // Build wrapper
@@ -2033,7 +2104,7 @@
     left.appendChild(currentSection);
 
     // Insert wrapper where the section was
-    messagesEl.insertBefore(wrapper, nextSib);
+    safeInsertBefore(insertionParent, wrapper, nextSib);
 
     splitVncWrapper = wrapper;
     splitVncLeft = left;
@@ -2055,6 +2126,7 @@
 
   function teardownSplitVnc(leaveBar) {
     if (!splitVncWrapper) return;
+    const wrapperParent = splitVncWrapper.parentNode || messagesEl;
 
     // Move all children from the left column back into #messages before the wrapper.
     // Track the last moved child so we can place the bar right after it.
@@ -2062,7 +2134,7 @@
     if (splitVncLeft) {
       while (splitVncLeft.firstChild) {
         lastMoved = splitVncLeft.firstChild;
-        splitVncWrapper.parentNode.insertBefore(lastMoved, splitVncWrapper);
+        safeInsertBefore(wrapperParent, lastMoved, splitVncWrapper);
       }
     }
 
@@ -2166,6 +2238,7 @@
     if (splitChromeWrapper || !chromePort || !currentSection) return;
     hideThinking();
 
+    const insertionParent = resolveSectionParent(currentSection);
     const nextSib = currentSection.nextSibling;
     const wrapper = document.createElement('div');
     wrapper.className = 'split-vnc-wrapper';
@@ -2203,8 +2276,7 @@
 
     left.appendChild(currentSection);
 
-    const target = splitVncLeft || splitChromeLeft || messagesEl;
-    target.insertBefore(wrapper, nextSib);
+    safeInsertBefore(insertionParent, wrapper, nextSib);
 
     splitChromeWrapper = wrapper;
     splitChromeLeft = left;
@@ -2226,12 +2298,13 @@
 
   function teardownSplitChrome(leaveBar) {
     if (!splitChromeWrapper) return;
+    const wrapperParent = splitChromeWrapper.parentNode || messagesEl;
 
     let lastMoved = null;
     if (splitChromeLeft) {
       while (splitChromeLeft.firstChild) {
         lastMoved = splitChromeLeft.firstChild;
-        splitChromeWrapper.parentNode.insertBefore(lastMoved, splitChromeWrapper);
+        safeInsertBefore(wrapperParent, lastMoved, splitChromeWrapper);
       }
     }
 
@@ -2688,6 +2761,12 @@
     vscode.setState(state);
   }
 
+  function updateLoopObjectiveVisibility() {
+    if (!loopObjectiveWrap) return;
+    const visible = !!(loopToggle && loopToggle.checked);
+    loopObjectiveWrap.classList.toggle('visible', visible);
+  }
+
   function logMessage(msg) {
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
@@ -2740,6 +2819,8 @@
       workerModel: cfgWorkerModel.value === '_custom' && cfgWorkerCustomModel ? cfgWorkerCustomModel.value : cfgWorkerModel.value,
       controllerThinking: cfgControllerThinking.value,
       workerThinking: cfgWorkerThinking.value,
+      loopMode: loopToggle ? loopToggle.checked : false,
+      loopObjective: loopObjectiveInput ? loopObjectiveInput.value.trim() : '',
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
       chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
@@ -2782,11 +2863,17 @@
     if (config.workerModel !== undefined) setSelectWithCustomValue(cfgWorkerModel, cfgWorkerCustomModel, config.workerModel);
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
+    if (config.loopMode !== undefined && loopToggle) loopToggle.checked = !!config.loopMode;
+    if (config.loopObjective !== undefined && loopObjectiveInput) loopObjectiveInput.value = config.loopObjective || '';
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
     suppressTargetConfirm = true;
-    if (config.chatTarget !== undefined && cfgChatTarget) cfgChatTarget.value = config.chatTarget;
+    if (config.chatTarget !== undefined && cfgChatTarget) {
+      cfgChatTarget.value = config.chatTarget;
+      hasExplicitChatTarget = true;
+    }
     suppressTargetConfirm = false;
     updateConfigBarForTarget(cfgChatTarget ? cfgChatTarget.value : 'controller');
+    updateLoopObjectiveVisibility();
   }
 
   const CODEX_MODELS = [
@@ -2972,6 +3059,9 @@
     // Restore: prefer pending saved target (from vscode.getState), then current value, then 'controller'
     const validValues = Array.from(cfgChatTarget.options).map(o => o.value);
     const preferred = _pendingChatTarget || currentValue;
+    if (_pendingChatTarget && !validValues.includes(_pendingChatTarget)) {
+      hasExplicitChatTarget = false;
+    }
     suppressTargetConfirm = true;
     cfgChatTarget.value = validValues.includes(preferred) ? preferred : 'controller';
     suppressTargetConfirm = false;
@@ -3015,25 +3105,14 @@
     let prevTarget = cfgChatTarget.value;
     cfgChatTarget.addEventListener('change', () => {
       const newTarget = cfgChatTarget.value;
+      hasExplicitChatTarget = true;
       if (suppressTargetConfirm || newTarget === prevTarget) {
         prevTarget = newTarget;
         onConfigChange();
         return;
       }
-      if (messageLog.length > 0) {
-        showConfirm('Switching targets will clear the current conversation. Continue?', () => {
-          vscode.postMessage({ type: 'userInput', text: '/clear' });
-          prevTarget = newTarget;
-          onConfigChange();
-        }, () => {
-          suppressTargetConfirm = true;
-          cfgChatTarget.value = prevTarget;
-          suppressTargetConfirm = false;
-        });
-      } else {
-        prevTarget = newTarget;
-        onConfigChange();
-      }
+      prevTarget = newTarget;
+      onConfigChange();
     });
   }
   if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
@@ -4868,6 +4947,7 @@
 
     clear() {
       teardownSplitVnc(false);
+      teardownSplitChrome(false);
       streamingEntry = null;
       removeLiveEntityCardSlot();
       removeLiveQaReportCardSlot();
@@ -4881,6 +4961,8 @@
     },
 
     close() {
+      teardownSplitVnc(false);
+      teardownSplitChrome(false);
       streamingEntry = null;
       removeLiveEntityCardSlot();
       removeLiveQaReportCardSlot();
@@ -4923,8 +5005,9 @@
         applyApiCatalog(msg.apiCatalog);
       }
       setConfig(msg.config);
-      if (msg.panelId && !panelId) {
+      if (msg.panelId && msg.panelId !== panelId) {
         panelId = msg.panelId;
+        saveState();
       }
       if (msg.mcpServers) {
         mcpGlobal = msg.mcpServers.global || {};
@@ -5139,6 +5222,8 @@
       // Rebuild chat from transcript on disk — clear existing UI and messageLog.
       // Do NOT call saveState() here: the transcript is authoritative on disk,
       // so there is nothing to persist back into webview state.
+      teardownSplitVnc(false);
+      teardownSplitChrome(false);
       streamingEntry = null;
       removeLiveEntityCardSlot();
       removeLiveQaReportCardSlot();
@@ -5346,6 +5431,10 @@
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (!msg || !msg.type) return;
+    if (fatalRecoveryShown) {
+      _dbg('MSG ignored while fatal recovery active: type=' + msg.type);
+      return;
+    }
     // Reset panda idle counter on any incoming message
     pandaIdleTicks = 0;
     if (pandaMascotEl && pandaMascotEl.classList.contains('panda-mascot--idle')) {
@@ -5377,7 +5466,10 @@
     currentRunId = savedState.runId || null;
     if (savedState.config) {
       // Save chatTarget for later — dropdown options aren't populated yet (agents arrive in initConfig)
-      if (savedState.config.chatTarget) _pendingChatTarget = savedState.config.chatTarget;
+      if (savedState.config.chatTarget) {
+        _pendingChatTarget = savedState.config.chatTarget;
+        hasExplicitChatTarget = true;
+      }
       setConfig(savedState.config);
     }
     if (savedState.panelId) {
@@ -5389,6 +5481,7 @@
     }
     // Don't restore chromePort — Chrome process dies on reload and must be restarted
   }
+  updateLoopObjectiveVisibility();
 
   // ── Suggestions / Autocomplete ────────────────────────────────────
 
@@ -5577,7 +5670,13 @@
   // Loop toggle — auto-continue after each agent response
   if (loopToggle) {
     loopToggle.addEventListener('change', () => {
-      vscode.postMessage({ type: 'configChanged', config: { loopMode: loopToggle.checked } });
+      updateLoopObjectiveVisibility();
+      onConfigChange();
+    });
+  }
+  if (loopObjectiveInput) {
+    loopObjectiveInput.addEventListener('input', () => {
+      onConfigChange();
     });
   }
 

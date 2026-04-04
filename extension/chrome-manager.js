@@ -157,6 +157,62 @@ async function ensureChrome(panelId) {
   return { port };
 }
 
+/**
+ * Adopt an already-running Chrome debug port for a panel.
+ * This is used when a run is reattached after the webview/extension reloads.
+ * @param {string} panelId
+ * @param {number|string} port
+ * @returns {Promise<{port: number}|null>}
+ */
+async function attachExistingChrome(panelId, port) {
+  const normalizedPort = Number(port);
+  _dbg(`attachExistingChrome called, panelId=${panelId}, port=${normalizedPort}`);
+  if (!Number.isFinite(normalizedPort) || normalizedPort <= 0) {
+    _dbg('attachExistingChrome: invalid port');
+    return null;
+  }
+
+  const existing = _instances.get(panelId);
+  if (existing && existing.port === normalizedPort) {
+    _dbg(`attachExistingChrome: already attached on port ${normalizedPort}`);
+    return { port: normalizedPort };
+  }
+
+  try {
+    await _httpGet(`http://127.0.0.1:${normalizedPort}/json/version`);
+    const targets = await _httpGet(`http://127.0.0.1:${normalizedPort}/json`);
+    const hasPage = Array.isArray(targets) && targets.some((target) => target && target.type === 'page');
+    if (!hasPage) {
+      _dbg(`attachExistingChrome: no page target found on port ${normalizedPort}`);
+      return null;
+    }
+  } catch (err) {
+    _dbg(`attachExistingChrome: validation failed: ${err.message}`);
+    return null;
+  }
+
+  if (existing) {
+    try { if (existing.tabPoller) clearInterval(existing.tabPoller); } catch {}
+    try { if (existing.ws) existing.ws.close(); } catch {}
+  }
+
+  _instances.set(panelId, {
+    panelId,
+    port: normalizedPort,
+    process: null,
+    ws: null,
+    frameCallback: null,
+    navCallback: null,
+    nextId: 1,
+    currentTargetId: null,
+    knownTargetIds: new Set(),
+    tabPoller: null,
+    adopted: true,
+  });
+  _dbg(`attachExistingChrome: adopted running Chrome on port ${normalizedPort}`);
+  return { port: normalizedPort };
+}
+
 // Resolve WebSocket constructor (works in both VSCode extension host and Node.js)
 function _getWS() {
   if (typeof WebSocket !== 'undefined') return WebSocket;
@@ -420,6 +476,7 @@ function killAll() {
 
 module.exports = {
   ensureChrome,
+  attachExistingChrome,
   findChromeBinary: _findChromeBinary,
   startScreencast,
   stopScreencast,

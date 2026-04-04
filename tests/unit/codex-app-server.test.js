@@ -3,6 +3,55 @@ const assert = require('node:assert/strict');
 const { CodexAppServerConnection } = require('../../src/codex-app-server');
 
 describe('CodexAppServerConnection.startTurn', () => {
+  it('passes approvalPolicy and sandbox through to thread/start', async () => {
+    const conn = new CodexAppServerConnection({ bin: 'codex', cwd: '/test/repo' });
+
+    let capturedMethod = null;
+    let capturedParams = null;
+    conn.sendRequest = async (method, params) => {
+      capturedMethod = method;
+      capturedParams = params;
+      return { thread: { id: 'thread-456' } };
+    };
+
+    const threadId = await conn.startThread({
+      cwd: '/test/repo',
+      model: 'gpt-5.4',
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+
+    assert.equal(threadId, 'thread-456');
+    assert.equal(capturedMethod, 'thread/start');
+    assert.equal(capturedParams.cwd, '/test/repo');
+    assert.equal(capturedParams.model, 'gpt-5.4');
+    assert.equal(capturedParams.approvalPolicy, 'never');
+    assert.equal(capturedParams.sandbox, 'danger-full-access');
+  });
+
+  it('passes approvalPolicy and sandbox through to thread/fork', async () => {
+    const conn = new CodexAppServerConnection({ bin: 'codex', cwd: '/test/repo' });
+
+    let capturedMethod = null;
+    let capturedParams = null;
+    conn.sendRequest = async (method, params) => {
+      capturedMethod = method;
+      capturedParams = params;
+      return { thread: { id: 'thread-forked' } };
+    };
+
+    const threadId = await conn.forkThread('thread-123', {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+
+    assert.equal(threadId, 'thread-forked');
+    assert.equal(capturedMethod, 'thread/fork');
+    assert.equal(capturedParams.threadId, 'thread-123');
+    assert.equal(capturedParams.approvalPolicy, 'never');
+    assert.equal(capturedParams.sandbox, 'danger-full-access');
+  });
+
   it('passes approvalPolicy and sandbox through to turn/start', async () => {
     const conn = new CodexAppServerConnection({ bin: 'codex', cwd: '/test/repo' });
     conn._threadId = 'thread-123';

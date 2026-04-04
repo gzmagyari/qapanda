@@ -91,6 +91,8 @@ class SessionManager {
     this._apiBaseURL = init.apiBaseURL || '';
     this._apiKey = '';
     this._waitDelay = init.waitDelay || '';
+    this._loopMode = !!init.loopMode;
+    this._loopObjective = init.loopObjective || '';
     this._chatTarget = init.chatTarget || 'controller';
     this._controllerCli = init.controllerCli || 'codex';
     this._codexMode = init.codexMode || 'app-server';
@@ -108,7 +110,6 @@ class SessionManager {
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
-    this._loopMode = false;
     try { this._selfTesting = !!require('./settings-store').getSetting('selfTesting'); } catch { this._selfTesting = false; }
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
@@ -185,6 +186,61 @@ class SessionManager {
       onWorkerStart: (agentId) => this._pushExecutingAgent(agentId),
       onWorkerEnd: () => this._popExecutingAgent(),
     };
+  }
+
+  _normalizeChatTarget(target, agentsOverride = null) {
+    if (target == null) return null;
+    const value = String(target).trim();
+    if (!value) return null;
+    if (value === 'controller' || value === 'claude') return value;
+    if (!value.startsWith('agent-')) return null;
+    const agentId = value.slice('agent-'.length);
+    const agents = agentsOverride || this._enabledAgents();
+    return agents && agents[agentId] ? value : null;
+  }
+
+  _labelForChatTarget(target) {
+    if (!target || target === 'controller') return 'QA Panda';
+    if (target === 'claude') return 'Worker (Default)';
+    if (!target.startsWith('agent-')) return 'QA Panda';
+    const agentId = target.slice('agent-'.length);
+    const manifestAgents = (this._activeManifest && this._activeManifest.agents) || {};
+    const agent = manifestAgents[agentId] || this._enabledAgents()[agentId];
+    return (agent && agent.name) || agentId;
+  }
+
+  _hasExistingSessionForTarget(target) {
+    if (!this._activeManifest) return false;
+    if (!target || target === 'controller') {
+      return true;
+    }
+    if (target === 'claude') {
+      return !!(this._activeManifest.worker && this._activeManifest.worker.hasStarted);
+    }
+    if (!target.startsWith('agent-')) return false;
+    const agentId = target.slice('agent-'.length);
+    return !!(((this._activeManifest.worker || {}).agentSessions || {})[agentId] || {}).hasStarted;
+  }
+
+  _bannerChatTargetState(target, reason = 'switch') {
+    if (!this._activeManifest) return;
+    const label = this._labelForChatTarget(target);
+    const hasSession = this._hasExistingSessionForTarget(target);
+    const message = reason === 'reattach'
+      ? (hasSession
+        ? `Restored target ${label} and reattached to its existing session for this run.`
+        : `Restored target ${label}. The next message will start a new session for this target in the current run.`)
+      : (hasSession
+        ? `Switched to ${label}. Reattached to the existing session for this run.`
+        : `Switched to ${label}. The next message will start a new session for this target in the current run.`);
+    this._renderer.banner(message);
+  }
+
+  _syncLoopConfigToManifest() {
+    if (!this._activeManifest) return;
+    this._activeManifest.loopMode = !!this._loopMode;
+    this._activeManifest.loopObjective = (this._loopObjective || '').trim() || null;
+    this._activeManifest.chatTarget = this._chatTarget || null;
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
@@ -456,7 +512,22 @@ class SessionManager {
     if (config.controllerThinking !== undefined) this._controllerThinking = config.controllerThinking || null;
     if (config.workerThinking !== undefined) this._workerThinking = config.workerThinking || null;
     if (config.chatTarget !== undefined) {
-      this._chatTarget = config.chatTarget || 'controller';
+      const previousTarget = this._chatTarget || 'controller';
+      this._chatTarget = this._normalizeChatTarget(config.chatTarget) || 'controller';
+      if (this._chatTarget === 'claude') {
+        this._renderer.workerLabel = workerLabelFor(this._workerCli);
+      } else if (this._chatTarget.startsWith('agent-')) {
+        const agentId = this._chatTarget.slice('agent-'.length);
+        const agent = this._enabledAgents()[agentId];
+        this._renderer.workerLabel = workerLabelFor(agent && agent.cli, agent && agent.name);
+      }
+      if (this._activeManifest) {
+        this._syncLoopConfigToManifest();
+        saveManifest(this._activeManifest).catch(() => {});
+        if (this._chatTarget !== previousTarget) {
+          this._bannerChatTargetState(this._chatTarget, 'switch');
+        }
+      }
     }
     if (config.controllerCli !== undefined) {
       const newCli = config.controllerCli || 'codex';
@@ -532,6 +603,9 @@ class SessionManager {
     if (config.loopMode !== undefined) {
       this._loopMode = !!config.loopMode;
     }
+    if (config.loopObjective !== undefined) {
+      this._loopObjective = config.loopObjective || '';
+    }
     if (config.waitDelay !== undefined) {
       this._waitDelay = config.waitDelay || '';
       // Persist to manifest if attached
@@ -544,6 +618,13 @@ class SessionManager {
           this._clearWaitTimer();
         }
       }
+    }
+    if (this._activeManifest && (
+      config.loopMode !== undefined ||
+      config.loopObjective !== undefined
+    )) {
+      this._syncLoopConfigToManifest();
+      saveManifest(this._activeManifest).catch(() => {});
     }
   }
 
@@ -564,18 +645,50 @@ class SessionManager {
     return this._activeManifest ? this._activeManifest.runId : null;
   }
 
+  getConfig() {
+    return this._getConfig();
+  }
+
+  syncAttachedRunState() {
+    if (!this._activeManifest) return;
+    this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+    this._syncConfig();
+    if (this._activeManifest.chatTarget !== undefined && this._activeManifest.chatTarget !== null) {
+      this._bannerChatTargetState(this._chatTarget, 'reattach');
+    }
+  }
+
   /**
    * Try to reattach to a previously saved run by ID.
    * Returns true if successful, false if the run no longer exists.
    */
-  async reattachRun(runId) {
+  async reattachRun(runId, options = {}) {
     if (!runId) return false;
+    const suppressUi = !!options.suppressUi;
     try {
       const runDir = await resolveRunDir(runId, this._stateRoot);
       this._activeManifest = await loadManifestFromDir(runDir);
       this._syncChatLogPath();
+      let manifestChanged = false;
+      if (this._activeManifest.panelId) {
+        this._panelId = this._activeManifest.panelId;
+      } else if (this._panelId) {
+        this._activeManifest.panelId = this._panelId;
+        manifestChanged = true;
+      }
+      const restoredTarget = this._normalizeChatTarget(
+        this._activeManifest.chatTarget,
+        this._enabledAgents(),
+      ) || this._normalizeChatTarget(this._chatTarget, this._enabledAgents());
+      this._chatTarget = restoredTarget || 'controller';
       if (this._activeManifest.controller && this._activeManifest.controller.cli) {
         this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
+      }
+      if (this._activeManifest.loopMode !== undefined) {
+        this._loopMode = !!this._activeManifest.loopMode;
+      }
+      if (this._activeManifest.loopObjective !== undefined) {
+        this._loopObjective = this._activeManifest.loopObjective || '';
       }
       if (this._activeManifest.worker) {
         let agentName = null;
@@ -590,7 +703,11 @@ class SessionManager {
           this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli, agentName);
         }
       }
-      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      await this._restoreBrowserForAttachedRun();
+      if (manifestChanged) {
+        await saveManifest(this._activeManifest);
+      }
+      if (!suppressUi) this.syncAttachedRunState();
       return true;
     } catch {
       // Run no longer exists or is unreadable
@@ -1098,26 +1215,11 @@ class SessionManager {
         return;
       }
       this._clearWaitTimer();
-      const runDir = await resolveRunDir(rest, this._stateRoot);
-      this._activeManifest = await loadManifestFromDir(runDir);
-      this._syncChatLogPath();
-      if (this._activeManifest.controller && this._activeManifest.controller.cli) {
-        this._renderer.controllerLabel = controllerLabelFor(this._activeManifest.controller.cli);
+      const ok = await this.reattachRun(rest);
+      if (!ok) {
+        this._renderer.banner(`Previous run ${rest} no longer exists.`);
+        return;
       }
-      if (this._activeManifest.worker) {
-        let agentName = null;
-        const sessions = this._activeManifest.worker.agentSessions;
-        if (sessions) {
-          const agentId = Object.keys(sessions).find(id => sessions[id] && sessions[id].hasStarted);
-          if (agentId && this._activeManifest.agents && this._activeManifest.agents[agentId]) {
-            agentName = this._activeManifest.agents[agentId].name;
-          }
-        }
-        if (this._activeManifest.worker.cli) {
-          this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli, agentName);
-        }
-      }
-      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
       await this.sendTranscript();
       this._renderer.requestStarted(this._activeManifest.runId);
       await this.sendProgress();
@@ -1386,6 +1488,9 @@ class SessionManager {
     if (this._controllerModel && this._controllerCli !== 'claude') opts.controllerModel = this._controllerModel;
     if (this._workerCli) opts.workerCli = this._workerCli;
     if (this._workerModel) opts.workerModel = this._workerModel;
+    opts.loopMode = !!this._loopMode;
+    opts.loopObjective = (this._loopObjective || '').trim() || null;
+    opts.chatTarget = this._chatTarget || 'controller';
     // Split MCP servers by target role; workers using qa-remote-* backends need host.docker.internal URLs
     const workerIsRemote = typeof this._workerCli === 'string' && this._workerCli.startsWith('qa-remote');
     const controllerMcp = this._mcpServersForRole('controller', false);
@@ -1446,6 +1551,8 @@ class SessionManager {
       controllerThinking: this._controllerThinking || '',
       workerThinking: this._workerThinking || '',
       waitDelay: this._waitDelay || '',
+      loopMode: !!this._loopMode,
+      loopObjective: this._loopObjective || '',
       chatTarget: this._chatTarget || 'controller',
       controllerCli: this._controllerCli || 'codex',
       codexMode: this._codexMode || 'app-server',
@@ -1453,6 +1560,63 @@ class SessionManager {
       apiProvider: this._apiProvider || 'openrouter',
       apiBaseURL: this._apiBaseURL || '',
     };
+  }
+
+  _runNeedsChromeDevtools() {
+    if (this._activeManifest && this._activeManifest.chromeDebugPort) return true;
+    const agents = this._enabledAgents();
+    return Object.values(agents).some((agent) =>
+      agent && agent.mcps && Object.keys(agent.mcps).some((name) =>
+        name.includes('chrome-devtools') || name.includes('chrome_devtools')
+      )
+    );
+  }
+
+  async _startChromeScreencast(port, source) {
+    const { startScreencast } = require('./chrome-manager');
+    this._sDbg(`${source}: Chrome on port ${port}, calling startScreencast panelId=${this._panelId}`);
+    await startScreencast(this._panelId, (frameData, metadata) => {
+      this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
+    }, (url) => {
+      this._postMessage({ type: 'chromeUrl', url });
+    });
+    this._sDbg(`${source}: startScreencast returned, posting chromeReady`);
+    this._postMessage({ type: 'chromeReady', chromePort: port });
+  }
+
+  async _restoreBrowserForAttachedRun() {
+    if (!this._activeManifest || !this._runNeedsChromeDevtools()) return;
+    this._chromePort = null;
+    try {
+      const { attachExistingChrome, ensureChrome } = require('./chrome-manager');
+      const manifest = this._activeManifest;
+      const savedPort = Number(manifest.chromeDebugPort);
+      if (Number.isFinite(savedPort) && savedPort > 0) {
+        const adopted = await attachExistingChrome(this._panelId, savedPort);
+        if (adopted) {
+          this._chromePort = adopted.port;
+          await this._startChromeScreencast(adopted.port, '_restoreBrowserForAttachedRun');
+          this._renderer.banner('Reattached browser session for this run.');
+          return;
+        }
+      }
+
+      if (Number.isFinite(savedPort) && savedPort > 0) {
+        this._renderer.banner('Previous browser session was unavailable; started a replacement browser for this run.');
+      }
+      const chrome = await ensureChrome(this._panelId);
+      if (!chrome) {
+        this._postMessage({ type: 'chromeGone' });
+        return;
+      }
+      this._chromePort = chrome.port;
+      manifest.chromeDebugPort = chrome.port;
+      await saveManifest(manifest);
+      await this._startChromeScreencast(chrome.port, '_restoreBrowserForAttachedRun');
+    } catch (err) {
+      this._sDbg(`_restoreBrowserForAttachedRun: error: ${err.message}`);
+      this._postMessage({ type: 'chromeGone' });
+    }
   }
 
   /**
@@ -1469,11 +1633,7 @@ class SessionManager {
     const agents = this._enabledAgents();
 
     // Determine what needs pre-starting
-    const needsChrome = !this._chromePort && Object.values(agents).some(a =>
-      a && a.mcps && Object.keys(a.mcps).some(n =>
-        n.includes('chrome-devtools') || n.includes('chrome_devtools')
-      )
-    );
+    const needsChrome = !this._chromePort && this._runNeedsChromeDevtools();
 
     this._sDbg(`_prestartAsync: panelId=${this._panelId} needsChrome=${needsChrome}`);
 
@@ -1482,19 +1642,12 @@ class SessionManager {
     // so this._panelId is stable here.
     if (needsChrome) {
       try {
-        const { ensureChrome, startScreencast } = require('./chrome-manager');
+        const { ensureChrome } = require('./chrome-manager');
         this._sDbg(`prestart: calling ensureChrome panelId=${this._panelId}`);
         const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
-          this._sDbg(`prestart: Chrome on port ${chrome.port}, calling startScreencast panelId=${this._panelId}`);
-          await startScreencast(this._panelId, (frameData, metadata) => {
-            this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
-          }, (url) => {
-            this._postMessage({ type: 'chromeUrl', url });
-          });
-          this._sDbg('prestart: startScreencast returned, posting chromeReady');
-          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+          await this._startChromeScreencast(chrome.port, 'prestart');
         }
       } catch (e) {
         this._sDbg(`prestart: Chrome error: ${e.message}`);
@@ -1604,21 +1757,13 @@ class SessionManager {
 
     if (!this._chromePort) {
       try {
-        const { ensureChrome, startScreencast } = require('./chrome-manager');
+        const { ensureChrome } = require('./chrome-manager');
         this._sDbg(`_ensureChromeIfNeeded: starting Chrome panelId=${this._panelId}`);
         this._renderer.banner('Waiting for headless Chrome\u2026');
         const chrome = await ensureChrome(this._panelId);
         if (chrome) {
           this._chromePort = chrome.port;
-          if (this._activeManifest) this._activeManifest.chromeDebugPort = chrome.port;
-          this._sDbg(`_ensureChromeIfNeeded: Chrome on port ${chrome.port}, calling startScreencast`);
-          await startScreencast(this._panelId, (frameData, metadata) => {
-            this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
-          }, (url) => {
-            this._postMessage({ type: 'chromeUrl', url });
-          });
-          this._sDbg('_ensureChromeIfNeeded: startScreencast returned, posting chromeReady');
-          this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+          await this._startChromeScreencast(chrome.port, '_ensureChromeIfNeeded');
         }
       } catch (err) {
         this._sDbg(`_ensureChromeIfNeeded: error: ${err.message}`);
@@ -1638,7 +1783,7 @@ class SessionManager {
 
   /** Start headless Chrome directly (e.g. from Browser tab click). */
   async _startChromeDirect() {
-    const { ensureChrome, startScreencast } = require('./chrome-manager');
+    const { ensureChrome } = require('./chrome-manager');
     this._sDbg(`_startChromeDirect called, panelId=${this._panelId}, existing chromePort=${this._chromePort}`);
     if (this._chromePort) {
       this._sDbg('_startChromeDirect: Chrome already running, sending chromeReady');
@@ -1650,14 +1795,7 @@ class SessionManager {
       this._sDbg(`_startChromeDirect: ensureChrome returned: ${JSON.stringify(chrome)}`);
       if (chrome) {
         this._chromePort = chrome.port;
-        this._sDbg(`_startChromeDirect: Chrome on port ${chrome.port}, calling startScreencast`);
-        await startScreencast(this._panelId, (frameData, metadata) => {
-          this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
-        }, (url) => {
-          this._postMessage({ type: 'chromeUrl', url });
-        });
-        this._sDbg('_startChromeDirect: startScreencast returned, posting chromeReady');
-        this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
+        await this._startChromeScreencast(chrome.port, '_startChromeDirect');
       } else {
         this._sDbg('_startChromeDirect: ensureChrome returned null');
         this._postMessage({ type: 'chromeGone' });
@@ -1685,6 +1823,7 @@ class SessionManager {
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });
+      this._syncLoopConfigToManifest();
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
@@ -1713,6 +1852,7 @@ class SessionManager {
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });
+      this._syncLoopConfigToManifest();
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
@@ -1788,6 +1928,7 @@ class SessionManager {
         controllerLabel: 'Continue',
         ...this._workerRunHooks(),
       });
+      this._syncLoopConfigToManifest();
       await saveManifest(this._activeManifest);
       // If loop mode is on and the run didn't stop, auto-continue
       if (this._loopMode && this._activeManifest && this._activeManifest.status === 'running') {
@@ -1809,7 +1950,10 @@ class SessionManager {
 
   /** Continue directive — delegates to shared builder in prompts.js */
   _buildContinueDirective(guidance, currentAgentId) {
-    return buildContinueDirective(guidance, currentAgentId);
+    return buildContinueDirective(guidance, currentAgentId, {
+      loopMode: !!this._loopMode && !guidance,
+      loopObjective: this._loopObjective || '',
+    });
   }
 
   /**
@@ -1871,6 +2015,7 @@ class SessionManager {
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });
+      this._syncLoopConfigToManifest();
       if (this._activeManifest.waitDelay !== (this._waitDelay || null)) {
         this._activeManifest.waitDelay = this._waitDelay || null;
       }
