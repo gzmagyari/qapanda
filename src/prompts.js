@@ -9,6 +9,7 @@ const {
   loadMemory,
 } = require('./project-context');
 const {
+  buildTranscriptTail,
   buildMergedRunView,
   hasTranscriptV2,
   readTranscriptEntriesSync,
@@ -321,33 +322,6 @@ function isContinueStyleRequest(userMessage) {
     userMessage.startsWith('[AUTO-CONTINUE]') ||
     userMessage.startsWith('[CONTROLLER GUIDANCE]')
   );
-}
-
-function buildTranscriptTail(lines, options = {}) {
-  const allLines = Array.isArray(lines) ? lines : [];
-  const maxChars = Number.isFinite(options.maxChars) ? Math.max(0, options.maxChars) : CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS;
-  if (allLines.length === 0) {
-    return { lines: [], truncated: false, totalChars: 0 };
-  }
-
-  let start = allLines.length - 1;
-  let totalChars = 0;
-
-  for (let index = allLines.length - 1; index >= 0; index -= 1) {
-    const line = String(allLines[index] || '');
-    totalChars += line.length;
-    start = index;
-    if (totalChars >= maxChars) {
-      break;
-    }
-  }
-
-  const tail = allLines.slice(start);
-  return {
-    lines: tail,
-    truncated: start > 0,
-    totalChars,
-  };
 }
 
 function buildOverriddenControllerPrompt(manifest, request) {

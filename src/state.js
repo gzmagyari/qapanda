@@ -145,6 +145,12 @@ function normalizeRunOptions(options = {}) {
       bin: options.workerCli || options.codexBin || 'codex',
       apiConfig: options.workerApiConfig || options.apiConfig || null,
       model: options.workerModel || null,
+      lastSeenChatLine: Number.isFinite(options.workerLastSeenChatLine)
+        ? Math.max(0, Number(options.workerLastSeenChatLine))
+        : 0,
+      lastSeenTranscriptLine: Number.isFinite(options.workerLastSeenTranscriptLine)
+        ? Math.max(0, Number(options.workerLastSeenTranscriptLine))
+        : 0,
       sessionId: options.workerSessionId || randomId(),
       allowedTools: options.workerAllowedTools || 'Bash,Read,Edit',
       tools: options.workerTools || null,
@@ -213,6 +219,12 @@ async function prepareNewRun(initialMessage, options = {}) {
     worker: {
       ...normalized.worker,
       hasStarted: false,
+      lastSeenChatLine: Number.isFinite(normalized.worker.lastSeenChatLine)
+        ? normalized.worker.lastSeenChatLine
+        : 0,
+      lastSeenTranscriptLine: Number.isFinite(normalized.worker.lastSeenTranscriptLine)
+        ? normalized.worker.lastSeenTranscriptLine
+        : 0,
       agentSessions: {},
     },
     settings: normalized.settings,

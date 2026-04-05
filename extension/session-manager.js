@@ -1832,6 +1832,7 @@ class SessionManager {
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
+        enableWorkerHandoff: true,
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });
@@ -1861,6 +1862,7 @@ class SessionManager {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
         agentId,
+        enableWorkerHandoff: true,
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
       });

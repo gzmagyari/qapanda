@@ -9,6 +9,7 @@ const { normalizeToolResultOutput } = require('./tool-result-normalizer');
 const TRANSCRIPT_V2 = 2;
 const CONTROLLER_SESSION_KEY = 'controller:main';
 const DEFAULT_WORKER_SESSION_KEY = 'worker:default';
+const DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS = 50_000;
 
 function controllerSessionKey() {
   return CONTROLLER_SESSION_KEY;
@@ -153,6 +154,35 @@ function entryIsCompactedAway(entry, compactionState) {
 function transcriptLineSlice(entries, sinceLine) {
   if (!sinceLine || sinceLine <= 0) return entries;
   return entries.filter((entry) => (entry.__lineNumber || 0) > sinceLine);
+}
+
+function buildTranscriptTail(lines, options = {}) {
+  const allLines = Array.isArray(lines) ? lines : [];
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(0, options.maxChars)
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS;
+  if (allLines.length === 0) {
+    return { lines: [], truncated: false, totalChars: 0 };
+  }
+
+  let start = allLines.length - 1;
+  let totalChars = 0;
+
+  for (let index = allLines.length - 1; index >= 0; index -= 1) {
+    const line = String(allLines[index] || '');
+    totalChars += line.length;
+    start = index;
+    if (totalChars >= maxChars) {
+      break;
+    }
+  }
+
+  const tail = allLines.slice(start);
+  return {
+    lines: tail,
+    truncated: start > 0,
+    totalChars,
+  };
 }
 
 function labelForTranscriptEntry(entry, manifest, options = {}) {
@@ -782,6 +812,7 @@ module.exports = {
   TRANSCRIPT_V2,
   agentIdFromSessionKey,
   appendTranscriptRecord,
+  buildTranscriptTail,
   buildMergedRunView,
   buildSessionReplay,
   buildStartCardMessages,

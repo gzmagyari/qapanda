@@ -251,6 +251,7 @@ test('plain text with chatTarget=claude routes to direct worker', async () => {
     assert.equal(captured.runDirectWorkerTurnCalls.length, 1, 'should call runDirectWorkerTurn');
     assert.equal(captured.runManagerLoopCalls.length, 0, 'should not call runManagerLoop');
     assert.equal(captured.runDirectWorkerTurnCalls[0].options.userMessage, 'do stuff');
+    assert.equal(captured.runDirectWorkerTurnCalls[0].options.enableWorkerHandoff, true);
   } finally {
     cleanup();
   }
@@ -322,6 +323,7 @@ test('chatTarget=claude preserves existing run (reuses manifest)', async () => {
     await session.handleMessage({ type: 'userInput', text: 'second message' });
     assert.equal(captured.prepareNewRunCalls.length, 1, 'should not create a new run');
     assert.equal(captured.runDirectWorkerTurnCalls.length, 2, 'both messages should route to direct worker');
+    assert.ok(captured.runDirectWorkerTurnCalls.every((call) => call.options.enableWorkerHandoff === true));
   } finally {
     cleanup();
   }

@@ -54,6 +54,7 @@ async function runApiWorkerTurn({
   loop,
   workerRecord,
   prompt,
+  visiblePrompt = null,
   renderer,
   emitEvent,
   abortSignal,
@@ -113,9 +114,16 @@ async function runApiWorkerTurn({
 
   if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
   if (!manifest.worker.agentSessions[manifestSessionKey]) {
-    manifest.worker.agentSessions[manifestSessionKey] = {};
+    manifest.worker.agentSessions[manifestSessionKey] = { lastSeenChatLine: 0, lastSeenTranscriptLine: 0 };
   }
   const agentSession = manifest.worker.agentSessions[manifestSessionKey];
+  if (!Number.isFinite(agentSession.lastSeenChatLine)) {
+    agentSession.lastSeenChatLine = 0;
+  }
+  if (!Number.isFinite(agentSession.lastSeenTranscriptLine)) {
+    agentSession.lastSeenTranscriptLine = 0;
+  }
+  const recordedPrompt = visiblePrompt == null ? prompt : visiblePrompt;
 
   const transcriptEntries = manifest.files && manifest.files.transcript
     ? await readTranscriptEntries(manifest.files.transcript)
@@ -125,7 +133,7 @@ async function runApiWorkerTurn({
   const promptAlreadyRecorded = !!lastSessionEntry &&
     lastSessionEntry.kind === 'user_message' &&
     lastSessionEntry.requestId === request.id &&
-    lastSessionEntry.text === prompt &&
+    lastSessionEntry.text === recordedPrompt &&
     (lastSessionEntry.loopIndex == null || lastSessionEntry.loopIndex === loop.index);
   const shouldAppendPromptRecord = !promptAlreadyRecorded;
 
@@ -139,8 +147,8 @@ async function runApiWorkerTurn({
       loopIndex: loop.index,
       agentId: isCustomAgent ? agentId : null,
       workerCli: 'api',
-      text: prompt,
-      payload: { role: 'user', content: prompt },
+      text: recordedPrompt,
+      payload: { role: 'user', content: recordedPrompt },
     });
     await appendTranscriptRecord(manifest, userEntry);
     replayEntries = [...transcriptEntries, userEntry];
@@ -359,7 +367,7 @@ async function runApiWorkerTurn({
 
   renderer.workerLabel = prevWorkerLabel;
   return {
-    prompt,
+    prompt: recordedPrompt,
     exitCode: 0,
     signal: null,
     sessionId: localSessionKey,

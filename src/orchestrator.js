@@ -12,6 +12,10 @@ const { closeConnection } = require('./codex-app-server');
 const { TurnEntityTracker } = require('./turn-entity-tracker');
 const { buildFinalQaReportState, loadQaState } = require('./qa-report');
 const {
+  buildDirectWorkerPrompt,
+  syncDirectWorkerChatCursor,
+} = require('./direct-worker-handoff');
+const {
   appendTranscriptRecord,
   countTranscriptLinesSync,
   createTranscriptRecord,
@@ -642,6 +646,9 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
   const agentId = options.agentId || null;
   const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
   const workerMeta = workerTranscriptMeta(manifest, agentId);
+  const actualWorkerPrompt = (options.isDelegation || !options.enableWorkerHandoff)
+    ? userMessage
+    : (await buildDirectWorkerPrompt(manifest, agentId, userMessage)).prompt;
 
   let request;
   if (options.isDelegation) {
@@ -743,7 +750,8 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         request,
         loop,
         workerRecord,
-        prompt: userMessage,
+        prompt: actualWorkerPrompt,
+        visiblePrompt: userMessage,
         agentId,
         renderer,
         abortSignal: signalController.signal,
@@ -786,6 +794,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         payload: { role: 'assistant', content: workerResult.resultText },
       });
     }
+    syncDirectWorkerChatCursor(manifest, agentId);
     await emitEvent(
       manifest,
       {

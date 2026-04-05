@@ -764,6 +764,28 @@ function normalizeRunManifest(local) {
       appendSystemPrompt: local.worker && local.worker.appendSystemPrompt != null ? String(local.worker.appendSystemPrompt) : null,
       runMode: local.worker && local.worker.runMode ? String(local.worker.runMode) : 'print',
       hasStarted: Boolean(local.worker && local.worker.hasStarted),
+      lastSeenChatLine: local.worker && local.worker.lastSeenChatLine != null
+        ? Number(local.worker.lastSeenChatLine) || 0
+        : 0,
+      lastSeenTranscriptLine: local.worker && local.worker.lastSeenTranscriptLine != null
+        ? Number(local.worker.lastSeenTranscriptLine) || 0
+        : 0,
+      agentSessions: local.worker && local.worker.agentSessions && typeof local.worker.agentSessions === 'object'
+        ? Object.fromEntries(
+            Object.entries(local.worker.agentSessions).map(([agentId, session]) => [
+              String(agentId),
+              {
+                ...(session && typeof session === 'object' ? sanitizeForPersistence(session) : {}),
+                lastSeenChatLine: session && session.lastSeenChatLine != null
+                  ? Number(session.lastSeenChatLine) || 0
+                  : 0,
+                lastSeenTranscriptLine: session && session.lastSeenTranscriptLine != null
+                  ? Number(session.lastSeenTranscriptLine) || 0
+                  : 0,
+              },
+            ])
+          )
+        : {},
     },
     settings: local.settings && typeof local.settings === 'object'
       ? {
@@ -858,7 +880,13 @@ function buildLocalManifestFromPayload(repoRoot, payload, fallbackId) {
     worker: {
       ...normalized.worker,
       sessionId: null,
-      agentSessions: {},
+      lastSeenChatLine: Number.isFinite(normalized.worker.lastSeenChatLine)
+        ? normalized.worker.lastSeenChatLine
+        : 0,
+      lastSeenTranscriptLine: Number.isFinite(normalized.worker.lastSeenTranscriptLine)
+        ? normalized.worker.lastSeenTranscriptLine
+        : 0,
+      agentSessions: normalized.worker.agentSessions || {},
       apiConfig: normalized.worker.apiConfig,
     },
     settings: normalized.settings,

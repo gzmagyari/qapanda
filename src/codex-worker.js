@@ -175,7 +175,7 @@ async function ensureWorkerAppServerThread({ conn, manifest, agentConfig, agentS
   return 'resumed';
 }
 
-async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config and session
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -188,6 +188,8 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       manifest.worker.agentSessions[agentId] = {
         sessionId: crypto.randomUUID(),
         hasStarted: false,
+        lastSeenChatLine: 0,
+        lastSeenTranscriptLine: 0,
       };
     }
     agentSession = manifest.worker.agentSessions[agentId];
@@ -404,7 +406,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   workerRecord.sessionId = discoveredSessionId;
 
   const workerResult = {
-    prompt,
+    prompt: visiblePrompt == null ? prompt : visiblePrompt,
     exitCode: result.code,
     signal: result.signal,
     sessionId: discoveredSessionId,
@@ -422,7 +424,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
  * Run a Codex worker turn using the app-server protocol.
  * Uses a persistent connection instead of spawning a new CLI process per turn.
  */
-async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -477,6 +479,8 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
       hasStarted: false,
       approvalPolicy: null,
       threadSandbox: null,
+      lastSeenChatLine: 0,
+      lastSeenTranscriptLine: 0,
     };
   }
   const agentSession = manifest.worker.agentSessions[sessionKey];
@@ -617,7 +621,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   workerRecord.sessionId = agentSession.appServerThreadId;
 
   const workerResult = {
-    prompt,
+    prompt: visiblePrompt == null ? prompt : visiblePrompt,
     exitCode: 0,
     signal: null,
     sessionId: agentSession.appServerThreadId,

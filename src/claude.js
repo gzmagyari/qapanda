@@ -161,7 +161,7 @@ function buildClaudeArgs(manifest, options = {}) {
   return args;
 }
 
-async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   await writeText(workerRecord.promptFile, `${prompt}\n`);
 
   // Resolve agent config and session
@@ -176,6 +176,8 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
       manifest.worker.agentSessions[agentId] = {
         sessionId: crypto.randomUUID(),
         hasStarted: false,
+        lastSeenChatLine: 0,
+        lastSeenTranscriptLine: 0,
       };
     }
     agentSession = manifest.worker.agentSessions[agentId];
@@ -383,7 +385,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, re
   workerRecord.sessionId = discoveredSessionId;
 
   const workerResult = {
-    prompt,
+    prompt: visiblePrompt == null ? prompt : visiblePrompt,
     exitCode: result.code,
     signal: result.signal,
     sessionId: discoveredSessionId,
