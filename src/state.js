@@ -145,6 +145,9 @@ function normalizeRunOptions(options = {}) {
       bin: options.workerCli || options.codexBin || 'codex',
       apiConfig: options.workerApiConfig || options.apiConfig || null,
       model: options.workerModel || null,
+      boundBrowserPort: Number.isFinite(options.workerBoundBrowserPort)
+        ? Math.max(0, Number(options.workerBoundBrowserPort))
+        : (Number.isFinite(options.chromeDebugPort) ? Math.max(0, Number(options.chromeDebugPort)) : null),
       lastSeenChatLine: Number.isFinite(options.workerLastSeenChatLine)
         ? Math.max(0, Number(options.workerLastSeenChatLine))
         : 0,
@@ -172,6 +175,11 @@ function normalizeRunOptions(options = {}) {
     workerMcpServers: options.workerMcpServers || null,
     agents: options.agents || {},
     panelId: options.panelId || null,
+    chromeDebugPort: Number.isFinite(options.chromeDebugPort)
+      ? Math.max(0, Number(options.chromeDebugPort))
+      : null,
+    controllerPrestartKey: options.controllerPrestartKey || null,
+    workerPrestartKey: options.workerPrestartKey || null,
     chatTarget: typeof options.chatTarget === 'string' ? options.chatTarget : null,
     controllerSystemPrompt: options.controllerSystemPrompt || null,
     selfTesting: !!options.selfTesting,
@@ -219,6 +227,9 @@ async function prepareNewRun(initialMessage, options = {}) {
     worker: {
       ...normalized.worker,
       hasStarted: false,
+      boundBrowserPort: Number.isFinite(normalized.worker.boundBrowserPort)
+        ? normalized.worker.boundBrowserPort
+        : null,
       lastSeenChatLine: Number.isFinite(normalized.worker.lastSeenChatLine)
         ? normalized.worker.lastSeenChatLine
         : 0,
@@ -233,6 +244,9 @@ async function prepareNewRun(initialMessage, options = {}) {
     workerMcpServers: normalized.workerMcpServers || null,
     agents: normalized.agents || {},
     panelId: normalized.panelId || null,
+    chromeDebugPort: normalized.chromeDebugPort || null,
+    controllerPrestartKey: normalized.controllerPrestartKey || null,
+    workerPrestartKey: normalized.workerPrestartKey || null,
     chatTarget: normalized.chatTarget || null,
     controllerSystemPrompt: normalized.controllerSystemPrompt || null,
     selfTesting: !!normalized.selfTesting,

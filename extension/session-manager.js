@@ -102,6 +102,11 @@ class SessionManager {
     this._renderer.workerLabel = workerLabelFor(this._workerCli);
     this._extensionPath = options.extensionPath || '';
     this._chromePort = null;
+    this._chromePortReservation = null;
+    this._restoreBrowserPromise = null;
+    this._prestartPromise = null;
+    this._prestartDone = false;
+    this._lastBrowserBannerKey = null;
     this._memoryMcpPort = null;
     // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
     try {
@@ -123,6 +128,26 @@ class SessionManager {
       const p = require('node:path').join(require('node:os').tmpdir(), 'cc-chrome-debug.log');
       fs.appendFileSync(p, `[${new Date().toISOString()}] [session] ${msg}\n`);
     } catch {}
+  }
+
+  _traceBrowser(where, extra = null) {
+    try {
+      const { getChromeDebugState } = require('./chrome-manager');
+      const snapshot = {
+        where,
+        panelId: this._panelId,
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        chatTarget: this._chatTarget || null,
+        sessionChromePort: this._chromePort || null,
+        reservedChromePort: this._currentReservedChromePort(),
+        manifestChromePort: this._activeManifest && this._activeManifest.chromeDebugPort || null,
+        browser: getChromeDebugState(this._panelId),
+        extra: extra || null,
+      };
+      this._sDbg(`browser-trace ${JSON.stringify(snapshot)}`);
+    } catch (err) {
+      this._sDbg(`browser-trace ${where} failed: ${err && err.message ? err.message : err}`);
+    }
   }
 
   /** Sync the chat log path to the renderer whenever the manifest changes. */
@@ -242,6 +267,126 @@ class SessionManager {
     this._activeManifest.loopMode = !!this._loopMode;
     this._activeManifest.loopObjective = (this._loopObjective || '').trim() || null;
     this._activeManifest.chatTarget = this._chatTarget || null;
+  }
+
+  _browserBanner(key, text) {
+    if (!text) return;
+    if (this._lastBrowserBannerKey === key) return;
+    this._lastBrowserBannerKey = key;
+    this._traceBrowser('_browserBanner', { key, text });
+    this._renderer.banner(text);
+  }
+
+  _currentReservedChromePort() {
+    if (Number.isFinite(this._chromePortReservation) && this._chromePortReservation > 0) {
+      return this._chromePortReservation;
+    }
+    if (this._activeManifest && Number.isFinite(Number(this._activeManifest.chromeDebugPort)) && Number(this._activeManifest.chromeDebugPort) > 0) {
+      return Number(this._activeManifest.chromeDebugPort);
+    }
+    if (Number.isFinite(this._chromePort) && this._chromePort > 0) {
+      return this._chromePort;
+    }
+    return null;
+  }
+
+  _controllerPrestartKey(port = this._currentReservedChromePort()) {
+    return `panel:${this._panelId}:controller:${port || 'no-browser'}`;
+  }
+
+  _workerPrestartKey(port = this._currentReservedChromePort()) {
+    return `panel:${this._panelId}:worker:${port || 'no-browser'}`;
+  }
+
+  _syncBrowserBindingToManifest(save = false) {
+    if (!this._activeManifest) return Promise.resolve();
+    const reservedPort = this._currentReservedChromePort();
+    this._activeManifest.panelId = this._panelId || this._activeManifest.panelId || null;
+    this._activeManifest.chromeDebugPort = reservedPort || null;
+    this._activeManifest.controllerPrestartKey = this._controllerPrestartKey(reservedPort);
+    this._activeManifest.workerPrestartKey = this._workerPrestartKey(reservedPort);
+    if (this._activeManifest.worker) {
+      this._activeManifest.worker.boundBrowserPort = reservedPort || null;
+    }
+    if (save) {
+      this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort });
+      return saveManifest(this._activeManifest).catch(() => {});
+    }
+    this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort });
+    return Promise.resolve();
+  }
+
+  async _reserveChromePort(preferredPort = null) {
+    const current = this._currentReservedChromePort();
+    if (Number.isFinite(current) && current > 0) {
+      this._chromePortReservation = current;
+      this._traceBrowser('_reserveChromePort:reuse-current', { preferredPort });
+      return current;
+    }
+    const { reserveChromePort } = require('./chrome-manager');
+    this._traceBrowser('_reserveChromePort:request', { preferredPort });
+    const reserved = await reserveChromePort(this._panelId, preferredPort);
+    this._chromePortReservation = reserved;
+    this._browserBanner(`browser-port:${this._panelId}:${reserved}`, `Browser debug port ${reserved} claimed for this panel.`);
+    await this._syncBrowserBindingToManifest(true);
+    this._traceBrowser('_reserveChromePort:claimed', { preferredPort, reserved });
+    return reserved;
+  }
+
+  async _closePanelScopedAppServerConnections() {
+    const { closeConnectionsWhere } = require('./src/codex-app-server');
+    const runId = this._activeManifest && this._activeManifest.runId;
+    const panelPrefix = `panel:${this._panelId}:`;
+    await closeConnectionsWhere((key) => {
+      if (typeof key !== 'string') return false;
+      if (key.startsWith(panelPrefix)) return true;
+      if (runId && (key === runId || key.startsWith(`${runId}-worker-`))) return true;
+      return false;
+    }).catch(() => {});
+  }
+
+  async _ensurePanelChrome(source, options = {}) {
+    const { ensureChrome } = require('./chrome-manager');
+    const preferredPort = options.port != null ? options.port : this._currentReservedChromePort();
+    this._traceBrowser('_ensurePanelChrome:entry', { source, preferredPort, options });
+    const reservedPort = await this._reserveChromePort(preferredPort);
+    const hasKnownBrowser = !!this._chromePort;
+    const caller = source || 'browser';
+
+    try {
+      const chrome = await ensureChrome(this._panelId, { port: reservedPort });
+      if (!chrome) {
+        this._browserBanner(`browser-failed:${caller}:${reservedPort}`, `Failed to start Chrome on port ${reservedPort}.`);
+        this._postMessage({ type: 'chromeGone' });
+        this._traceBrowser('_ensurePanelChrome:no-chrome', { source, reservedPort });
+        return null;
+      }
+      this._chromePort = chrome.port;
+      this._chromePortReservation = chrome.port;
+      this._traceBrowser('_ensurePanelChrome:ensured', { source, reservedPort, result: chrome });
+      if (options.emitLifecycleBanner !== false) {
+        if (chrome.status === 'started') {
+          const action = options.lifecycle === 'prestart'
+            ? 'Prestarting Chrome'
+            : (hasKnownBrowser || options.expectRestart ? 'Restarted Chrome' : 'Started Chrome');
+          this._browserBanner(`browser-started:${caller}:${chrome.port}:${action}`, `${action} on port ${chrome.port}.`);
+        } else {
+          this._browserBanner(`browser-reused:${caller}:${chrome.port}`, `Reusing Chrome on port ${chrome.port}.`);
+        }
+      }
+      await this._syncBrowserBindingToManifest(true);
+      if (options.startScreencast !== false) {
+        await this._startChromeScreencast(chrome.port, source);
+      }
+      this._traceBrowser('_ensurePanelChrome:done', { source, reservedPort, result: chrome });
+      return chrome;
+    } catch (err) {
+      this._sDbg(`${source}: Chrome ensure failed: ${err.message}`);
+      this._browserBanner(`browser-error:${caller}:${reservedPort}`, `Chrome failed on port ${reservedPort}: ${err.message}`);
+      this._postMessage({ type: 'chromeGone' });
+      this._traceBrowser('_ensurePanelChrome:error', { source, reservedPort, error: err.message });
+      return null;
+    }
   }
 
   /** Update the MCP server data (both scopes). Called from extension.js. */
@@ -677,6 +822,9 @@ class SessionManager {
         this._activeManifest.panelId = this._panelId;
         manifestChanged = true;
       }
+      if (Number.isFinite(Number(this._activeManifest.chromeDebugPort)) && Number(this._activeManifest.chromeDebugPort) > 0) {
+        this._chromePortReservation = Number(this._activeManifest.chromeDebugPort);
+      }
       const restoredTarget = this._normalizeChatTarget(
         this._activeManifest.chatTarget,
         this._enabledAgents(),
@@ -704,6 +852,8 @@ class SessionManager {
           this._renderer.workerLabel = workerLabelFor(this._activeManifest.worker.cli, agentName);
         }
       }
+      this._activeManifest.controllerPrestartKey = this._controllerPrestartKey();
+      this._activeManifest.workerPrestartKey = this._workerPrestartKey();
       await this._restoreBrowserForAttachedRun();
       if (manifestChanged) {
         await saveManifest(this._activeManifest);
@@ -984,12 +1134,14 @@ class SessionManager {
     if (msg.type === 'browserStart') {
       const _sdbg = require('./chrome-manager')._dbg || (() => {});
       _sdbg('[session-manager] browserStart received');
+      this._traceBrowser('handleIncomingMessage:browserStart', { tab: 'browser' });
       await this._startChromeDirect();
       return;
     }
 
     if (msg.type === 'chromeInput') {
       const { sendInput } = require('./chrome-manager');
+      this._traceBrowser('handleIncomingMessage:chromeInput', { method: msg.cdpMethod });
       sendInput(this._panelId, msg.cdpMethod, msg.cdpParams);
       return;
     }
@@ -1168,11 +1320,8 @@ class SessionManager {
 
     if (command === '/clear') {
       this._clearWaitTimer();
-      // Close the old app-server connection (if any) and re-prestart for the next run
-      if (this._activeManifest && this._activeManifest.controller.codexMode === 'app-server') {
-        const { closeConnection } = require('./src/codex-app-server');
-        closeConnection(this._activeManifest.runId).catch(() => {});
-      }
+      await this._closePanelScopedAppServerConnections();
+      this._prestartDone = false;
       this._activeManifest = null;
       this._postMessage({ type: 'clear' });
       this._postMessage({ type: 'clearRunId' });
@@ -1190,10 +1339,13 @@ class SessionManager {
 
     if (command === '/detach') {
       this._clearWaitTimer();
+      await this._closePanelScopedAppServerConnections();
+      this._prestartDone = false;
       this._activeManifest = null;
       this._postMessage({ type: 'clearRunId' });
       this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Detached from the current run.');
+      this.prestart();
       return;
     }
 
@@ -1488,6 +1640,13 @@ class SessionManager {
       panelId: this._panelId,
       extensionDir: this._extensionPath,
     };
+    const reservedChromePort = this._currentReservedChromePort();
+    if (reservedChromePort) {
+      opts.chromeDebugPort = reservedChromePort;
+      opts.workerBoundBrowserPort = reservedChromePort;
+      opts.controllerPrestartKey = this._controllerPrestartKey(reservedChromePort);
+      opts.workerPrestartKey = this._workerPrestartKey(reservedChromePort);
+    }
     // Read useSnapshot from per-workspace config so remote agents respect the checkbox
     try {
       const cfg = JSON.parse(fs.readFileSync(path.join(this._repoRoot, '.qpanda', 'config.json'), 'utf8'));
@@ -1584,50 +1743,74 @@ class SessionManager {
     );
   }
 
+  _canPrestartChrome() {
+    // A fresh unattached panel should not eagerly claim/start Chrome just
+    // because browser-capable agents exist in the dropdown. Only attached
+    // runs have authoritative browser identity to prestart against.
+    return !!this._activeManifest && this._runNeedsChromeDevtools();
+  }
+
+  _stripChromeDevtoolsMcps(servers = {}) {
+    return Object.fromEntries(
+      Object.entries(servers || {}).filter(([name]) =>
+        !(name.includes('chrome-devtools') || name.includes('chrome_devtools'))
+      )
+    );
+  }
+
   async _startChromeScreencast(port, source) {
     const { startScreencast } = require('./chrome-manager');
     this._sDbg(`${source}: Chrome on port ${port}, calling startScreencast panelId=${this._panelId}`);
+    this._traceBrowser('_startChromeScreencast:before', { source, port });
     await startScreencast(this._panelId, (frameData, metadata) => {
       this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
     }, (url) => {
+      this._traceBrowser('_startChromeScreencast:navigation', { source, port, url });
       this._postMessage({ type: 'chromeUrl', url });
     });
     this._sDbg(`${source}: startScreencast returned, posting chromeReady`);
     this._postMessage({ type: 'chromeReady', chromePort: port });
+    this._traceBrowser('_startChromeScreencast:after', { source, port });
   }
 
   async _restoreBrowserForAttachedRun() {
     if (!this._activeManifest || !this._runNeedsChromeDevtools()) return;
-    this._chromePort = null;
-    try {
-      const { attachExistingChrome, ensureChrome } = require('./chrome-manager');
-      const manifest = this._activeManifest;
-      const savedPort = Number(manifest.chromeDebugPort);
-      if (Number.isFinite(savedPort) && savedPort > 0) {
-        const adopted = await attachExistingChrome(this._panelId, savedPort);
-        if (adopted) {
-          this._chromePort = adopted.port;
-          await this._startChromeScreencast(adopted.port, '_restoreBrowserForAttachedRun');
-          this._renderer.banner('Reattached browser session for this run.');
-          return;
+    if (this._restoreBrowserPromise) {
+      await this._restoreBrowserPromise;
+      return;
+    }
+    const restorePromise = (async () => {
+      this._chromePort = null;
+      this._traceBrowser('_restoreBrowserForAttachedRun:entry');
+      try {
+        const manifest = this._activeManifest;
+        const savedPort = Number(manifest.chromeDebugPort);
+        const chrome = await this._ensurePanelChrome('_restoreBrowserForAttachedRun', {
+          port: Number.isFinite(savedPort) && savedPort > 0 ? savedPort : null,
+          lifecycle: 'restore',
+          expectRestart: Number.isFinite(savedPort) && savedPort > 0,
+          emitLifecycleBanner: false,
+        });
+        if (!chrome) return;
+        if (chrome.status === 'started' && Number.isFinite(savedPort) && savedPort > 0) {
+          this._renderer.banner(`Previous browser session was unavailable; restarted Chrome on port ${chrome.port} for this run.`);
+        } else {
+          this._renderer.banner(`Reattached browser session for this run on port ${chrome.port}.`);
         }
-      }
-
-      if (Number.isFinite(savedPort) && savedPort > 0) {
-        this._renderer.banner('Previous browser session was unavailable; started a replacement browser for this run.');
-      }
-      const chrome = await ensureChrome(this._panelId);
-      if (!chrome) {
+        this._traceBrowser('_restoreBrowserForAttachedRun:done', { savedPort, result: chrome });
+      } catch (err) {
+        this._sDbg(`_restoreBrowserForAttachedRun: error: ${err.message}`);
         this._postMessage({ type: 'chromeGone' });
-        return;
+        this._traceBrowser('_restoreBrowserForAttachedRun:error', { error: err.message });
       }
-      this._chromePort = chrome.port;
-      manifest.chromeDebugPort = chrome.port;
-      await saveManifest(manifest);
-      await this._startChromeScreencast(chrome.port, '_restoreBrowserForAttachedRun');
-    } catch (err) {
-      this._sDbg(`_restoreBrowserForAttachedRun: error: ${err.message}`);
-      this._postMessage({ type: 'chromeGone' });
+    })();
+    this._restoreBrowserPromise = restorePromise;
+    try {
+      await restorePromise;
+    } finally {
+      if (this._restoreBrowserPromise === restorePromise) {
+        this._restoreBrowserPromise = null;
+      }
     }
   }
 
@@ -1637,34 +1820,39 @@ class SessionManager {
    * Chrome starts first (so we have the debug port), then Codex app-server.
    */
   prestart() {
-    // Run the async sequence in the background (fire-and-forget)
-    this._prestartAsync().catch(() => {});
+    if (this._prestartPromise || this._prestartDone) return;
+    const prestartPromise = this._prestartAsync();
+    this._prestartPromise = prestartPromise;
+    prestartPromise.catch(() => {}).finally(() => {
+      if (this._prestartPromise === prestartPromise) {
+        this._prestartPromise = null;
+      }
+    });
   }
 
   async _prestartAsync() {
+    if (this._restoreBrowserPromise) {
+      try { await this._restoreBrowserPromise; } catch {}
+    }
     const agents = this._enabledAgents();
 
     // Determine what needs pre-starting
-    const needsChrome = !this._chromePort && this._runNeedsChromeDevtools();
+    const canPrestartChrome = this._canPrestartChrome();
+    const needsChrome = !this._chromePort && canPrestartChrome;
 
-    this._sDbg(`_prestartAsync: panelId=${this._panelId} needsChrome=${needsChrome}`);
+    this._sDbg(`_prestartAsync: panelId=${this._panelId} needsChrome=${needsChrome} canPrestartChrome=${canPrestartChrome}`);
+    this._traceBrowser('_prestartAsync:entry', { needsChrome, canPrestartChrome });
 
     // Step 1: Start Chrome (if needed) — must complete before Codex so we have the port
     // NOTE: prestart() is only called after the webview 'ready' message restores panelId,
     // so this._panelId is stable here.
     if (needsChrome) {
-      try {
-        const { ensureChrome } = require('./chrome-manager');
-        this._sDbg(`prestart: calling ensureChrome panelId=${this._panelId}`);
-        const chrome = await ensureChrome(this._panelId);
-        if (chrome) {
-          this._chromePort = chrome.port;
-          await this._startChromeScreencast(chrome.port, 'prestart');
-        }
-      } catch (e) {
-        this._sDbg(`prestart: Chrome error: ${e.message}`);
-      }
+      const reservedPort = await this._reserveChromePort();
+      this._browserBanner(`browser-prestart:${this._panelId}:${reservedPort}`, `Prestarting Chrome on port ${reservedPort}.`);
+      await this._ensurePanelChrome('prestart', { port: reservedPort, lifecycle: 'prestart', emitLifecycleBanner: false });
+      this._traceBrowser('_prestartAsync:chrome-ready', { reservedPort });
     }
+    const chromeReady = !!this._chromePort;
 
     // Step 2: Start agent-delegate MCP so it's included in the fingerprint
     await this._startAgentDelegateMcp();
@@ -1673,6 +1861,7 @@ class SessionManager {
     const { prestartConnection } = require('./src/codex-app-server');
     const controllerMcps = this._mcpServersForRole('controller', false);
     const workerMcps = this._mcpServersForRole('worker', false);
+    const mcpNeedsChrome = (servers) => Object.keys(servers || {}).some((name) => name.includes('chrome-devtools') || name.includes('chrome_devtools'));
     // Merge default agent MCPs (pick first enabled agent with MCPs)
     let defaultAgentMcps = {};
     for (const a of Object.values(agents)) {
@@ -1682,29 +1871,50 @@ class SessionManager {
       }
     }
     const fullWorkerMcps = { ...workerMcps, ...defaultAgentMcps };
+    const prestartControllerMcps = chromeReady ? controllerMcps : this._stripChromeDevtoolsMcps(controllerMcps);
+    const prestartWorkerMcps = chromeReady ? fullWorkerMcps : this._stripChromeDevtoolsMcps(fullWorkerMcps);
+    const controllerCanPrestart = !mcpNeedsChrome(prestartControllerMcps) || chromeReady;
+    const workerCanPrestart = !mcpNeedsChrome(prestartWorkerMcps) || chromeReady;
     const baseManifest = {
+      panelId: this._panelId,
       repoRoot: this._repoRoot,
       extensionDir: this._extensionPath,
-      chromeDebugPort: this._chromePort || null,
+      chromeDebugPort: this._currentReservedChromePort(),
     };
+    const controllerPrestartKey = this._controllerPrestartKey(baseManifest.chromeDebugPort);
+    const workerPrestartKey = this._workerPrestartKey(baseManifest.chromeDebugPort);
 
     // Pre-start controller and worker connections in parallel
     await Promise.all([
-      prestartConnection({
-        key: 'prestart',
-        bin: 'codex',
-        cwd: this._repoRoot,
-        mcpServers: controllerMcps,
-        manifest: baseManifest,
-      }).catch(() => {}),
-      prestartConnection({
-        key: 'prestart-worker',
-        bin: 'codex',
-        cwd: this._repoRoot,
-        mcpServers: fullWorkerMcps,
-        manifest: baseManifest,
-      }).catch(() => {}),
+      controllerCanPrestart
+        ? prestartConnection({
+            key: controllerPrestartKey,
+            bin: 'codex',
+            cwd: this._repoRoot,
+            mcpServers: prestartControllerMcps,
+            manifest: baseManifest,
+          }).catch(() => {})
+        : Promise.resolve(),
+      workerCanPrestart
+        ? prestartConnection({
+            key: workerPrestartKey,
+            bin: 'codex',
+            cwd: this._repoRoot,
+            mcpServers: prestartWorkerMcps,
+            manifest: baseManifest,
+          }).catch(() => {})
+        : Promise.resolve(),
     ]);
+    this._traceBrowser('_prestartAsync:appserver-prestarted', {
+      controllerPrestartKey,
+      workerPrestartKey,
+      chromeReady,
+      chromeDebugPort: baseManifest.chromeDebugPort,
+      controllerCanPrestart,
+      workerCanPrestart,
+      controllerMcpKeys: Object.keys(prestartControllerMcps),
+      workerMcpKeys: Object.keys(prestartWorkerMcps),
+    });
 
     // Prestart complete — store flag so first message doesn't show "Waiting..."
     this._prestartDone = true;
@@ -1742,6 +1952,17 @@ class SessionManager {
     // Sync enabled agents
     this._activeManifest.agents = this._enabledAgents();
     if (!this._activeManifest.worker.agentSessions) this._activeManifest.worker.agentSessions = {};
+    this._activeManifest.controllerPrestartKey = this._controllerPrestartKey();
+    this._activeManifest.workerPrestartKey = this._workerPrestartKey();
+    if (this._currentReservedChromePort()) {
+      this._activeManifest.chromeDebugPort = this._currentReservedChromePort();
+    }
+    this._traceBrowser('_syncMcpToManifest', {
+      agentId: agentId || null,
+      controllerMcpKeys: Object.keys(controllerMcp),
+      workerMcpKeys: Object.keys(workerMcp),
+      chromeDebugPort: this._activeManifest.chromeDebugPort || null,
+    });
   }
 
   /** Start headless Chrome if a local agent needs chrome-devtools MCP. */
@@ -1766,56 +1987,50 @@ class SessionManager {
       n.includes('chrome-devtools') || n.includes('chrome_devtools')
     );
     if (!hasChromeDevtools) return;
+    this._traceBrowser('_ensureChromeIfNeeded:entry', { agentId, cli, mcpKeys: Object.keys(allMcps) });
 
-    if (!this._chromePort) {
-      try {
-        const { ensureChrome } = require('./chrome-manager');
-        this._sDbg(`_ensureChromeIfNeeded: starting Chrome panelId=${this._panelId}`);
-        this._renderer.banner('Waiting for headless Chrome\u2026');
-        const chrome = await ensureChrome(this._panelId);
-        if (chrome) {
-          this._chromePort = chrome.port;
-          await this._startChromeScreencast(chrome.port, '_ensureChromeIfNeeded');
-        }
-      } catch (err) {
-        this._sDbg(`_ensureChromeIfNeeded: error: ${err.message}`);
-        console.error('[session-manager] Failed to start Chrome:', err.message);
-      }
+    if (this._restoreBrowserPromise) {
+      try { await this._restoreBrowserPromise; } catch {}
+    }
+    if (this._prestartPromise) {
+      try { await this._prestartPromise; } catch {}
     }
 
+    this._renderer.banner('Waiting for headless Chrome\u2026');
+    await this._ensurePanelChrome('_ensureChromeIfNeeded', {
+      lifecycle: this._chromePort ? 'reuse' : 'worker',
+      startScreencast: true,
+    });
+
     // Always ensure the port is on the manifest for buildClaudeArgs to use
-    if (this._chromePort && this._activeManifest) {
-      this._activeManifest.chromeDebugPort = this._chromePort;
+    if (this._activeManifest) {
+      this._activeManifest.chromeDebugPort = this._currentReservedChromePort();
+      this._activeManifest.controllerPrestartKey = this._controllerPrestartKey();
+      this._activeManifest.workerPrestartKey = this._workerPrestartKey();
     }
     // Always ensure extensionDir is on the manifest for placeholder replacement
     if (this._extensionPath && this._activeManifest) {
       this._activeManifest.extensionDir = this._extensionPath;
     }
+    this._traceBrowser('_ensureChromeIfNeeded:done', { agentId, cli, activeChromePort: this._chromePort });
   }
 
   /** Start headless Chrome directly (e.g. from Browser tab click). */
   async _startChromeDirect() {
-    const { ensureChrome } = require('./chrome-manager');
     this._sDbg(`_startChromeDirect called, panelId=${this._panelId}, existing chromePort=${this._chromePort}`);
-    if (this._chromePort) {
-      this._sDbg('_startChromeDirect: Chrome already running, sending chromeReady');
-      this._postMessage({ type: 'chromeReady', chromePort: this._chromePort });
-      return;
+    this._traceBrowser('_startChromeDirect:entry');
+    if (this._restoreBrowserPromise) {
+      try { await this._restoreBrowserPromise; } catch {}
     }
-    try {
-      const chrome = await ensureChrome(this._panelId);
-      this._sDbg(`_startChromeDirect: ensureChrome returned: ${JSON.stringify(chrome)}`);
-      if (chrome) {
-        this._chromePort = chrome.port;
-        await this._startChromeScreencast(chrome.port, '_startChromeDirect');
-      } else {
-        this._sDbg('_startChromeDirect: ensureChrome returned null');
-        this._postMessage({ type: 'chromeGone' });
-      }
-    } catch (err) {
-      this._sDbg(`_startChromeDirect: EXCEPTION: ${err.message}\n${err.stack}`);
-      this._postMessage({ type: 'chromeGone' });
+    if (this._prestartPromise) {
+      try { await this._prestartPromise; } catch {}
     }
+    const chrome = await this._ensurePanelChrome('_startChromeDirect', {
+      lifecycle: this._chromePort ? 'reuse' : 'direct',
+      startScreencast: true,
+    });
+    this._sDbg(`_startChromeDirect: ensure returned ${chrome ? JSON.stringify(chrome) : 'null'}`);
+    this._traceBrowser('_startChromeDirect:done', { result: chrome });
   }
 
   async _runDirectWorker(userMessage) {
@@ -2058,6 +2273,9 @@ class SessionManager {
     this._stopWaitTimer();
     this.abort();
     this._stopAgentDelegateMcp();
+    this._closePanelScopedAppServerConnections().catch(() => {});
+    try { require('./chrome-manager').releaseChromeReservation(this._panelId); } catch {}
+    this._prestartDone = false;
     // Close any persistent interactive Claude sessions
     if (this._activeManifest) {
       try { closeInteractiveSessions(this._activeManifest); } catch {}

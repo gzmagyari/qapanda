@@ -16,6 +16,8 @@ function _dbg(msg) {
 
 // Per-panel Chrome instances: panelId -> { port, process, ws, frameCallback, nextId }
 const _instances = new Map();
+const _pendingEnsures = new Map();
+const _reservedPorts = new Map();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,6 +85,74 @@ async function _waitForChrome(port, maxMs = 30000) {
   return false;
 }
 
+function _instanceSummary(instance) {
+  if (!instance) return null;
+  return {
+    panelId: instance.panelId || null,
+    port: Number.isFinite(Number(instance.port)) ? Number(instance.port) : null,
+    adopted: !!instance.adopted,
+    hasProcess: !!instance.process,
+    hasWs: !!instance.ws,
+    currentTargetId: instance.currentTargetId || null,
+    currentTargetUrl: instance.currentTargetUrl || null,
+    lastSelectedUrl: instance.lastSelectedUrl || null,
+    lastKnownUrl: instance.lastKnownUrl || null,
+    lastNavAt: instance.lastNavAt || null,
+    lastFrameAt: instance.lastFrameAt || null,
+    screencastGeneration: Number(instance.screencastGeneration) || 0,
+    knownTargetCount: instance.knownTargetIds instanceof Set ? instance.knownTargetIds.size : 0,
+  };
+}
+
+function getChromeDebugState(panelId) {
+  return {
+    panelId,
+    reservedPort: getReservedChromePort(panelId),
+    pendingEnsure: _pendingEnsures.has(panelId),
+    instance: _instanceSummary(_instances.get(panelId)),
+  };
+}
+
+function _dbgState(prefix, panelId) {
+  try {
+    _dbg(`${prefix} state=${JSON.stringify(getChromeDebugState(panelId))}`);
+  } catch (err) {
+    _dbg(`${prefix} state=<failed:${err && err.message ? err.message : err}>`);
+  }
+}
+
+function _summarizeCdpParams(method, params) {
+  const p = params || {};
+  if (method === 'Page.navigate') {
+    return { url: p.url || null };
+  }
+  if (method === 'Input.dispatchMouseEvent') {
+    return {
+      type: p.type || null,
+      x: p.x,
+      y: p.y,
+      button: p.button || null,
+      buttons: p.buttons,
+      deltaX: p.deltaX,
+      deltaY: p.deltaY,
+    };
+  }
+  if (method === 'Input.dispatchKeyEvent') {
+    return {
+      type: p.type || null,
+      key: p.key || null,
+      code: p.code || null,
+      windowsVirtualKeyCode: p.windowsVirtualKeyCode,
+    };
+  }
+  if (method === 'Runtime.evaluate') {
+    return {
+      expression: typeof p.expression === 'string' ? p.expression.slice(0, 120) : null,
+    };
+  }
+  return Object.keys(p).length > 0 ? p : null;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -92,69 +162,221 @@ async function _waitForChrome(port, maxMs = 30000) {
  * @param {string} panelId
  * @returns {Promise<{port: number}|null>}
  */
-async function ensureChrome(panelId) {
-  _dbg(`ensureChrome called, panelId=${panelId}`);
+async function ensureChrome(panelId, options = {}) {
+  const desiredPort = await reserveChromePort(panelId, options.port);
+  _dbg(`ensureChrome called, panelId=${panelId}, desiredPort=${desiredPort}`);
+  _dbgState('ensureChrome:entry', panelId);
+  const foreignLiveOwner = _findPanelByLivePort(desiredPort, panelId);
+  if (foreignLiveOwner) {
+    throw new Error(`Chrome debug port ${desiredPort} is already owned by panel ${foreignLiveOwner}.`);
+  }
   if (_instances.has(panelId)) {
-    _dbg(`ensureChrome: already running on port ${_instances.get(panelId).port}`);
-    return { port: _instances.get(panelId).port };
+    const existing = _instances.get(panelId);
+    if (existing.port === desiredPort) {
+      if (await _isInspectableChromeOnPort(desiredPort)) {
+        _dbg(`ensureChrome: already running on desired port ${existing.port}`);
+        _dbgState('ensureChrome:reuse-cached', panelId);
+        return { port: existing.port, status: 'existing' };
+      }
+      _dbg(`ensureChrome: cached instance for panelId=${panelId} on port ${desiredPort} is stale; dropping it`);
+      _instances.delete(panelId);
+    }
+    _dbg(`ensureChrome: stale instance on port ${existing.port}; expected ${desiredPort}. Killing stale instance.`);
+    killChrome(panelId);
   }
-
-  const chromePath = _findChromeBinary();
-  _dbg(`ensureChrome: chromePath=${chromePath}`);
-  if (!chromePath) {
-    _dbg('ensureChrome: Chrome binary NOT FOUND');
-    return null;
+  if (await _isInspectableChromeOnPort(desiredPort)) {
+    const foreignReservedOwner = _findPanelByReservedPort(desiredPort, panelId);
+    if (foreignReservedOwner) {
+      throw new Error(`Chrome debug port ${desiredPort} is already reserved by panel ${foreignReservedOwner}.`);
+    }
+    _dbg(`ensureChrome: adopting already-running inspectable Chrome on desired port ${desiredPort}`);
+    return attachExistingChrome(panelId, desiredPort, {
+      alreadyValidated: true,
+      keepReservation: true,
+      status: 'adopted',
+    });
   }
+  if (_pendingEnsures.has(panelId)) {
+    _dbg(`ensureChrome: awaiting pending launch for panelId=${panelId}`);
+    return _pendingEnsures.get(panelId);
+  }
+  const launchPromise = (async () => {
+    const chromePath = _findChromeBinary();
+    _dbg(`ensureChrome: chromePath=${chromePath}`);
+    if (!chromePath) {
+      _dbg('ensureChrome: Chrome binary NOT FOUND');
+      return null;
+    }
 
+    const port = desiredPort;
+    const userDataDir = _userDataDirForPanel(panelId);
+    _dbg(`ensureChrome: port=${port}, userDataDir=${userDataDir}`);
+
+    const portBindable = await _canBindPort(port);
+    if (!portBindable) {
+      throw new Error(`Chrome debug port ${port} is already in use by another process.`);
+    }
+
+    try { fs.mkdirSync(userDataDir, { recursive: true }); } catch {}
+
+    const proc = spawn(chromePath, [
+      '--headless=new',
+      `--remote-debugging-port=${port}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--no-proxy-server',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=AutomationControlled',
+      '--disable-infobars',
+      '--lang=en-US,en',
+      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      '--window-size=1280,720',
+      `--user-data-dir=${userDataDir}`,
+      'https://www.google.com',
+    ], { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+
+    let stderrChunks = '';
+    proc.stderr.on('data', (d) => { stderrChunks += d.toString(); });
+
+    proc.on('error', (err) => {
+      _dbg(`ensureChrome: process error: ${err.message}`);
+      _instances.delete(panelId);
+    });
+
+    proc.on('exit', (code, signal) => {
+      _dbg(`ensureChrome: process EXITED code=${code} signal=${signal} stderr=${stderrChunks.slice(0, 500)}`);
+      _instances.delete(panelId);
+    });
+
+    _dbg('ensureChrome: waiting for Chrome to be ready...');
+    const ready = await _waitForChrome(port);
+    _dbg(`ensureChrome: ready=${ready}`);
+    if (!ready) {
+      proc.kill();
+      _dbg('ensureChrome: Chrome did not start in time, killed');
+      return null;
+    }
+
+    _instances.set(panelId, { panelId, port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
+    _dbg(`ensureChrome: Chrome started on port ${port}`);
+    _dbgState('ensureChrome:started', panelId);
+    return { port, status: 'started' };
+  })();
+  _pendingEnsures.set(panelId, launchPromise);
+  try {
+    return await launchPromise;
+  } finally {
+    if (_pendingEnsures.get(panelId) === launchPromise) {
+      _pendingEnsures.delete(panelId);
+    }
+  }
+}
+
+function _userDataDirForPanel(panelId) {
+  return path.join(require('node:os').tmpdir(), 'cc-chrome-panels', String(panelId || 'default'));
+}
+
+function _findPanelByReservedPort(port, excludePanelId = null) {
+  for (const [panelId, reservedPort] of _reservedPorts.entries()) {
+    if (panelId === excludePanelId) continue;
+    if (Number(reservedPort) === Number(port)) return panelId;
+  }
+  return null;
+}
+
+function _findPanelByLivePort(port, excludePanelId = null) {
+  for (const [panelId, instance] of _instances.entries()) {
+    if (panelId === excludePanelId) continue;
+    if (instance && Number(instance.port) === Number(port)) return panelId;
+  }
+  return null;
+}
+
+function _canBindPort(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+async function _isInspectableChromeOnPort(port) {
+  try {
+    await _httpGet(`http://127.0.0.1:${port}/json/version`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reserveChromePort(panelId, preferredPort = null) {
+  const existing = _reservedPorts.get(panelId);
+  if (Number.isFinite(existing) && existing > 0) {
+    _dbg(`reserveChromePort: panelId=${panelId} reusedExistingPort=${existing}`);
+    return existing;
+  }
+  const normalizedPreferred = Number(preferredPort);
+  if (Number.isFinite(normalizedPreferred) && normalizedPreferred > 0) {
+    const ownerPanelId = _findPanelByReservedPort(normalizedPreferred, panelId);
+    if (ownerPanelId) {
+      throw new Error(`Chrome debug port ${normalizedPreferred} is already reserved by panel ${ownerPanelId}.`);
+    }
+    _reservedPorts.set(panelId, normalizedPreferred);
+    _dbg(`reserveChromePort: panelId=${panelId} preferredPort=${normalizedPreferred}`);
+    return normalizedPreferred;
+  }
   const port = await _findFreePort();
-  const userDataDir = path.join(require('node:os').tmpdir(), `cc-chrome-${panelId.slice(0, 8)}-${Date.now()}`);
-  _dbg(`ensureChrome: port=${port}, userDataDir=${userDataDir}`);
+  _reservedPorts.set(panelId, port);
+  _dbg(`reserveChromePort: panelId=${panelId} allocatedPort=${port}`);
+  return port;
+}
 
-  const proc = spawn(chromePath, [
-    '--headless=new',
-    `--remote-debugging-port=${port}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--disable-sync',
-    '--no-proxy-server',
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=AutomationControlled',
-    '--disable-infobars',
-    '--lang=en-US,en',
-    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-    '--window-size=1280,720',
-    `--user-data-dir=${userDataDir}`,
-    'https://www.google.com',
-  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+function getReservedChromePort(panelId) {
+  const port = _reservedPorts.get(panelId);
+  return Number.isFinite(port) && port > 0 ? port : null;
+}
 
-  let stderrChunks = '';
-  proc.stderr.on('data', (d) => { stderrChunks += d.toString(); });
+function releaseChromeReservation(panelId) {
+  _dbg(`releaseChromeReservation: panelId=${panelId} releasedPort=${_reservedPorts.get(panelId) || null}`);
+  _reservedPorts.delete(panelId);
+}
 
-  proc.on('error', (err) => {
-    _dbg(`ensureChrome: process error: ${err.message}`);
-    _instances.delete(panelId);
-  });
+function _isPlaceholderPageUrl(url) {
+  const normalized = String(url || '').trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === 'about:blank' ||
+    normalized.startsWith('chrome-error://') ||
+    normalized.startsWith('chrome://newtab') ||
+    normalized.startsWith('edge://newtab') ||
+    normalized.startsWith('https://www.google.com');
+}
 
-  proc.on('exit', (code, signal) => {
-    _dbg(`ensureChrome: process EXITED code=${code} signal=${signal} stderr=${stderrChunks.slice(0, 500)}`);
-    _instances.delete(panelId);
-  });
-
-  _dbg('ensureChrome: waiting for Chrome to be ready...');
-  const ready = await _waitForChrome(port);
-  _dbg(`ensureChrome: ready=${ready}`);
-  if (!ready) {
-    proc.kill();
-    _dbg('ensureChrome: Chrome did not start in time, killed');
-    return null;
+function _selectBestPageTarget(pages, currentTargetId = null) {
+  if (!Array.isArray(pages) || pages.length === 0) return null;
+  let best = null;
+  let bestScore = -Infinity;
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i];
+    if (!page || page.type !== 'page' || !page.webSocketDebuggerUrl) continue;
+    let score = i;
+    const placeholder = _isPlaceholderPageUrl(page.url);
+    if (!placeholder) score += 200;
+    if (page.url && /^https?:/i.test(page.url)) score += 20;
+    if (page.id === currentTargetId) {
+      score += placeholder ? 25 : 150;
+    }
+    if (best === null || score > bestScore) {
+      best = page;
+      bestScore = score;
+    }
   }
-
-  _instances.set(panelId, { panelId, port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
-  _dbg(`ensureChrome: Chrome started on port ${port}`);
-  return { port };
+  return best;
 }
 
 /**
@@ -164,31 +386,37 @@ async function ensureChrome(panelId) {
  * @param {number|string} port
  * @returns {Promise<{port: number}|null>}
  */
-async function attachExistingChrome(panelId, port) {
+async function attachExistingChrome(panelId, port, options = {}) {
   const normalizedPort = Number(port);
   _dbg(`attachExistingChrome called, panelId=${panelId}, port=${normalizedPort}`);
   if (!Number.isFinite(normalizedPort) || normalizedPort <= 0) {
     _dbg('attachExistingChrome: invalid port');
     return null;
   }
+  if (!options.keepReservation) {
+    _reservedPorts.set(panelId, normalizedPort);
+  }
 
   const existing = _instances.get(panelId);
   if (existing && existing.port === normalizedPort) {
     _dbg(`attachExistingChrome: already attached on port ${normalizedPort}`);
-    return { port: normalizedPort };
+    _dbgState('attachExistingChrome:reuse-existing', panelId);
+    return { port: normalizedPort, status: options.status || 'existing' };
   }
 
-  try {
-    await _httpGet(`http://127.0.0.1:${normalizedPort}/json/version`);
-    const targets = await _httpGet(`http://127.0.0.1:${normalizedPort}/json`);
-    const hasPage = Array.isArray(targets) && targets.some((target) => target && target.type === 'page');
-    if (!hasPage) {
-      _dbg(`attachExistingChrome: no page target found on port ${normalizedPort}`);
+  if (!options.alreadyValidated) {
+    try {
+      await _httpGet(`http://127.0.0.1:${normalizedPort}/json/version`);
+      const targets = await _httpGet(`http://127.0.0.1:${normalizedPort}/json`);
+      const hasPage = Array.isArray(targets) && targets.some((target) => target && target.type === 'page');
+      if (!hasPage) {
+        _dbg(`attachExistingChrome: no page target found on port ${normalizedPort}`);
+        return null;
+      }
+    } catch (err) {
+      _dbg(`attachExistingChrome: validation failed: ${err.message}`);
       return null;
     }
-  } catch (err) {
-    _dbg(`attachExistingChrome: validation failed: ${err.message}`);
-    return null;
   }
 
   if (existing) {
@@ -210,7 +438,8 @@ async function attachExistingChrome(panelId, port) {
     adopted: true,
   });
   _dbg(`attachExistingChrome: adopted running Chrome on port ${normalizedPort}`);
-  return { port: normalizedPort };
+  _dbgState('attachExistingChrome:adopted', panelId);
+  return { port: normalizedPort, status: options.status || 'adopted' };
 }
 
 // Resolve WebSocket constructor (works in both VSCode extension host and Node.js)
@@ -233,7 +462,7 @@ function _connectToTarget(instance, target) {
     instance.ws = null;
   }
 
-  _dbg(`_connectToTarget: connecting to ${target.webSocketDebuggerUrl} (id=${target.id})`);
+  _dbg(`_connectToTarget: connecting to ${target.webSocketDebuggerUrl} (id=${target.id}, url=${target.url || ''})`);
   const ws = new WS(target.webSocketDebuggerUrl);
 
   ws.onopen = () => {
@@ -274,6 +503,7 @@ function _connectToTarget(instance, target) {
           _dbg(`screencastFrame #${_frameCount}: sessionId=${msg.params.sessionId} hasCallback=${!!instance.frameCallback}`);
         }
         const { data, metadata, sessionId } = msg.params;
+        instance.lastFrameAt = new Date().toISOString();
         ws.send(JSON.stringify({
           id: instance.nextId++,
           method: 'Page.screencastFrameAck',
@@ -284,6 +514,10 @@ function _connectToTarget(instance, target) {
         const frame = msg.params && msg.params.frame;
         _dbg(`frameNavigated: url=${frame && frame.url} parentId=${frame && frame.parentId}`);
         if (frame && !frame.parentId && frame.url && instance.navCallback) {
+          instance.lastKnownUrl = frame.url;
+          instance.currentTargetUrl = frame.url;
+          instance.lastNavAt = new Date().toISOString();
+          _dbgState('frameNavigated:root-frame', instance.panelId);
           instance.navCallback(frame.url);
         }
       }
@@ -308,7 +542,7 @@ function _connectToTarget(instance, target) {
           try {
             const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
             if (!targets) { _dbg('auto-reconnect: /json failed'); return; }
-            const pg = targets.find(t => t.type === 'page');
+            const pg = _selectBestPageTarget(targets, instance.currentTargetId);
             if (pg && pg.webSocketDebuggerUrl) {
               _dbg(`auto-reconnect: found page target id=${pg.id} url=${pg.url}`);
               _connectToTarget(instance, pg);
@@ -323,7 +557,11 @@ function _connectToTarget(instance, target) {
 
   instance.ws = ws;
   instance.currentTargetId = target.id;
+  instance.currentTargetUrl = target.url || instance.currentTargetUrl || null;
+  instance.lastSelectedUrl = target.url || null;
+  instance.lastTargetSelectedAt = new Date().toISOString();
   if (instance.knownTargetIds) instance.knownTargetIds.add(target.id);
+  _dbgState('_connectToTarget:attached', instance.panelId);
 }
 
 /**
@@ -336,9 +574,16 @@ async function startScreencast(panelId, onFrame, onNav) {
   _dbg(`startScreencast called, panelId=${panelId}`);
   const instance = _instances.get(panelId);
   if (!instance) { _dbg('startScreencast: no instance for panelId'); return; }
+  _dbgState('startScreencast:entry', panelId);
 
   instance.frameCallback = onFrame;
   instance.navCallback = onNav || null;
+  instance.screencastGeneration = (Number(instance.screencastGeneration) || 0) + 1;
+  instance.lastScreencastStartedAt = new Date().toISOString();
+  if (instance.tabPoller) {
+    clearInterval(instance.tabPoller);
+    instance.tabPoller = null;
+  }
 
   try {
     // Retry up to 15 times (30s max) waiting for a page target to appear
@@ -351,7 +596,7 @@ async function startScreencast(panelId, onFrame, onNav) {
       });
       if (targets) {
         _dbg(`startScreencast: got ${targets.length} targets: ${targets.map(t => t.type + ':' + t.id).join(', ')}`);
-        page = targets.find(t => t.type === 'page');
+        page = _selectBestPageTarget(targets, instance.currentTargetId);
         if (page && page.webSocketDebuggerUrl) {
           _dbg(`startScreencast: found page target id=${page.id} url=${page.url}`);
           break;
@@ -378,25 +623,34 @@ async function startScreencast(panelId, onFrame, onNav) {
         if (pages.length === 0) return;
 
         const currentId = instance.currentTargetId;
-        const currentExists = pages.some(p => p.id === currentId);
+        const currentPage = pages.find(p => p.id === currentId) || null;
+        const currentExists = !!currentPage;
 
         // Find a tab we've never seen before
         const brandNewTarget = pages.find(p => !instance.knownTargetIds.has(p.id));
+        const betterTarget = _selectBestPageTarget(pages, currentId);
+        const shouldPreferBetterTarget =
+          betterTarget &&
+          betterTarget.id !== currentId &&
+          (!currentPage || (_isPlaceholderPageUrl(currentPage.url) && !_isPlaceholderPageUrl(betterTarget.url)));
 
         // Track all current tabs
         for (const p of pages) instance.knownTargetIds.add(p.id);
 
         // Switch to brand-new tab, or fall back if current tab was closed
-        const switchTo = brandNewTarget || (!currentExists ? pages[pages.length - 1] : null);
+        const switchTo = brandNewTarget || shouldPreferBetterTarget ? (brandNewTarget || betterTarget) : (!currentExists ? _selectBestPageTarget(pages, currentId) : null);
         if (switchTo && switchTo.id !== currentId) {
           _dbg(`tabPoller: switching from ${currentId} to ${switchTo.id} (url=${switchTo.url})`);
           _connectToTarget(instance, switchTo);
           if (instance.navCallback && switchTo.url) instance.navCallback(switchTo.url);
+        } else if (currentPage) {
+          instance.currentTargetUrl = currentPage.url || instance.currentTargetUrl || null;
         }
       } catch {}
     }, 2000);
 
     _dbg('startScreencast: setup complete, polling for tab changes');
+    _dbgState('startScreencast:ready', panelId);
   } catch (err) {
     _dbg(`startScreencast: EXCEPTION: ${err.message}\n${err.stack}`);
   }
@@ -408,6 +662,7 @@ async function startScreencast(panelId, onFrame, onNav) {
 function stopScreencast(panelId) {
   const instance = _instances.get(panelId);
   if (!instance) return;
+  _dbgState('stopScreencast:entry', panelId);
   instance.frameCallback = null;
   if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
   if (instance.ws) {
@@ -422,24 +677,27 @@ function stopScreencast(panelId) {
  */
 function killChrome(panelId) {
   const instance = _instances.get(panelId);
-  if (!instance) return;
-  instance.frameCallback = null;
-  if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
-  if (instance.ws) {
-    try { instance.ws.close(); } catch {}
-  }
-  if (instance.process) {
-    if (process.platform === 'win32') {
-      try { instance.process.kill(); } catch {}
-    } else {
-      try { instance.process.kill('SIGTERM'); } catch {}
-      // Escalate to SIGKILL on Unix if Chrome doesn't exit cleanly
-      const proc = instance.process;
-      setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 500);
+  _dbgState('killChrome:entry', panelId);
+  if (instance) {
+    instance.frameCallback = null;
+    if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
+    if (instance.ws) {
+      try { instance.ws.close(); } catch {}
     }
+    if (instance.process) {
+      if (process.platform === 'win32') {
+        try { instance.process.kill(); } catch {}
+      } else {
+        try { instance.process.kill('SIGTERM'); } catch {}
+        // Escalate to SIGKILL on Unix if Chrome doesn't exit cleanly
+        const proc = instance.process;
+        setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 500);
+      }
+    }
+    _instances.delete(panelId);
   }
-  _instances.delete(panelId);
   console.log(`[chrome-manager] Chrome killed for panel ${panelId.slice(0, 8)}`);
+  _dbgState('killChrome:after', panelId);
 }
 
 /**
@@ -455,6 +713,8 @@ function getChromePort(panelId) {
  */
 function sendInput(panelId, cdpMethod, cdpParams) {
   const instance = _instances.get(panelId);
+  _dbg(`sendInput: panelId=${panelId} port=${instance && instance.port || null} method=${cdpMethod} params=${JSON.stringify(_summarizeCdpParams(cdpMethod, cdpParams))}`);
+  _dbgState('sendInput:state', panelId);
   if (!instance || !instance.ws) return;
   try {
     instance.ws.send(JSON.stringify({
@@ -472,9 +732,13 @@ function killAll() {
   for (const panelId of _instances.keys()) {
     killChrome(panelId);
   }
+  _reservedPorts.clear();
 }
 
 module.exports = {
+  reserveChromePort,
+  getReservedChromePort,
+  releaseChromeReservation,
   ensureChrome,
   attachExistingChrome,
   findChromeBinary: _findChromeBinary,
@@ -483,6 +747,9 @@ module.exports = {
   killChrome,
   killAll,
   getChromePort,
+  getChromeDebugState,
   sendInput,
   _dbg,
+  _selectBestPageTarget,
+  _isPlaceholderPageUrl,
 };

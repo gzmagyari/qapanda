@@ -42,6 +42,9 @@
   let initConfigReceived = false;
   let readyRetryCount = 0;
   let readyRetryTimer = null;
+  const readySessionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `ready-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   function formatFatalDetail(kind, errorLike) {
     const prefix = `Fatal ${kind}`;
@@ -153,6 +156,7 @@
     }
     if (tab === 'settings') vscode.postMessage({ type: 'settingsLoad' });
     if (tab === 'browser') {
+      _dbg(`TAB browser click: chromePort=${chromePort || 'null'} url=${(document.getElementById('browser-url') && document.getElementById('browser-url').value) || ''}`);
       if (!chromePort) {
         const ph = document.getElementById('browser-placeholder');
         if (ph) {
@@ -2419,6 +2423,7 @@
 
   // Chrome screencast state (for local agents)
   let chromePort = null;
+  let chromeFrameDebugCount = 0;
   let splitChromeWrapper = null;
   let splitChromeLeft = null;
   let splitChromeCollapsed = false;
@@ -2895,6 +2900,7 @@
   function browserNavigate(url) {
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    _dbg(`browserNavigate: chromePort=${chromePort || 'null'} url=${url}`);
     sendChromeInput('Page.navigate', { url });
   }
 
@@ -5485,6 +5491,16 @@
       }
     },
 
+    readyAck(msg) {
+      if (msg && msg.readySessionId && msg.readySessionId !== readySessionId) {
+        return;
+      }
+      if (readyRetryTimer) {
+        clearInterval(readyRetryTimer);
+        readyRetryTimer = null;
+      }
+    },
+
     modesData(msg) {
       if (msg.modes) {
         modesSystem = msg.modes.system || {};
@@ -5546,12 +5562,14 @@
 
     chromeReady(msg) {
       chromePort = msg.chromePort || null;
+      _dbg(`chromeReady: chromePort=${chromePort || 'null'}`);
       updateBrowserStatus();
       updateBrowserTab();
       saveState();
     },
 
     chromeFrame(msg) {
+      chromeFrameDebugCount += 1;
       if (msg.metadata) {
         chromeMeta = {
           deviceWidth: msg.metadata.deviceWidth || 1280,
@@ -5559,6 +5577,9 @@
           offsetTop: msg.metadata.offsetTop || 0,
           pageScaleFactor: msg.metadata.pageScaleFactor || 1,
         };
+      }
+      if (chromeFrameDebugCount <= 3 || chromeFrameDebugCount % 100 === 0) {
+        _dbg(`chromeFrame: count=${chromeFrameDebugCount} chromePort=${chromePort || 'null'} meta=${JSON.stringify(chromeMeta)}`);
       }
       const dataUrl = 'data:image/jpeg;base64,' + msg.data;
       const splitImg = chromeImgEl || document.querySelector('.chrome-screencast-img');
@@ -5576,11 +5597,14 @@
     chromeUrl(msg) {
       const urlInput = document.getElementById('browser-url');
       if (urlInput && msg.url) urlInput.value = msg.url;
+      _dbg(`chromeUrl: chromePort=${chromePort || 'null'} url=${msg.url || ''}`);
     },
 
     chromeGone() {
+      _dbg(`chromeGone: previousChromePort=${chromePort || 'null'}`);
       chromePort = null;
       chromeImgEl = null;
+      chromeFrameDebugCount = 0;
       updateBrowserStatus();
       updateBrowserTab();
       hideBrowserNav();
@@ -6172,9 +6196,9 @@
 
   // Request persisted config from extension host, include saved runId for reattach
   _dbg('PRE-READY DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '"');
-  _dbg('READY sent: runId=' + currentRunId + ' panelId=' + panelId);
+  _dbg('READY sent: runId=' + currentRunId + ' panelId=' + panelId + ' readySessionId=' + readySessionId);
   function postReady() {
-    vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId });
+    vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId, readySessionId: readySessionId });
   }
   postReady();
   readyRetryTimer = setInterval(() => {
@@ -6184,7 +6208,7 @@
       return;
     }
     readyRetryCount += 1;
-    _dbg('READY retry #' + readyRetryCount + ': runId=' + currentRunId + ' panelId=' + panelId);
+    _dbg('READY retry #' + readyRetryCount + ': runId=' + currentRunId + ' panelId=' + panelId + ' readySessionId=' + readySessionId);
     postReady();
   }, 500);
 })();

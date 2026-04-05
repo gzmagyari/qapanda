@@ -764,6 +764,9 @@ function normalizeRunManifest(local) {
       appendSystemPrompt: local.worker && local.worker.appendSystemPrompt != null ? String(local.worker.appendSystemPrompt) : null,
       runMode: local.worker && local.worker.runMode ? String(local.worker.runMode) : 'print',
       hasStarted: Boolean(local.worker && local.worker.hasStarted),
+      boundBrowserPort: local.worker && local.worker.boundBrowserPort != null
+        ? Number(local.worker.boundBrowserPort) || 0
+        : null,
       lastSeenChatLine: local.worker && local.worker.lastSeenChatLine != null
         ? Number(local.worker.lastSeenChatLine) || 0
         : 0,
@@ -776,6 +779,9 @@ function normalizeRunManifest(local) {
               String(agentId),
               {
                 ...(session && typeof session === 'object' ? sanitizeForPersistence(session) : {}),
+                boundBrowserPort: session && session.boundBrowserPort != null
+                  ? Number(session.boundBrowserPort) || 0
+                  : null,
                 lastSeenChatLine: session && session.lastSeenChatLine != null
                   ? Number(session.lastSeenChatLine) || 0
                   : 0,
@@ -880,6 +886,9 @@ function buildLocalManifestFromPayload(repoRoot, payload, fallbackId) {
     worker: {
       ...normalized.worker,
       sessionId: null,
+      boundBrowserPort: Number.isFinite(normalized.worker.boundBrowserPort)
+        ? normalized.worker.boundBrowserPort
+        : null,
       lastSeenChatLine: Number.isFinite(normalized.worker.lastSeenChatLine)
         ? normalized.worker.lastSeenChatLine
         : 0,

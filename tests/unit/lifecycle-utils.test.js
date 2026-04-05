@@ -39,9 +39,6 @@ describe('lifecycle utils', () => {
       killChrome(panelId) {
         calls.push(`killChrome:${panelId}`);
       },
-      closeAllConnections() {
-        calls.push('closeAllConnections');
-      },
     }));
 
     assert.deepEqual(calls, [
@@ -49,7 +46,6 @@ describe('lifecycle utils', () => {
       'stopInstance:inst-panel-1',
       'clearPanel:panel-1',
       'killChrome:panel-1',
-      'closeAllConnections',
       'dispose',
     ]);
   });

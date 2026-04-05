@@ -122,6 +122,25 @@ function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
 
+function _workerUsesChromeDevtools(mcpServers) {
+  return Object.keys(mcpServers || {}).some((name) =>
+    String(name).includes('chrome-devtools') || String(name).includes('chrome_devtools')
+  );
+}
+
+function _recordWorkerBrowserBinding(manifest, agentSession, workerMcpServers) {
+  if (!_workerUsesChromeDevtools(workerMcpServers)) return;
+  const boundPort = manifest && manifest.chromeDebugPort != null
+    ? Number(manifest.chromeDebugPort) || null
+    : null;
+  if (agentSession) {
+    agentSession.boundBrowserPort = boundPort;
+  }
+  if (manifest && manifest.worker) {
+    manifest.worker.boundBrowserPort = boundPort;
+  }
+}
+
 function workerThreadNeedsRecovery(agentSession) {
   return !!(
     agentSession &&
@@ -188,6 +207,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
       manifest.worker.agentSessions[agentId] = {
         sessionId: crypto.randomUUID(),
         hasStarted: false,
+        boundBrowserPort: null,
         lastSeenChatLine: 0,
         lastSeenTranscriptLine: 0,
       };
@@ -396,9 +416,11 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   if (agentSession) {
     agentSession.sessionId = discoveredSessionId;
     agentSession.hasStarted = true;
+    _recordWorkerBrowserBinding(manifest, agentSession, { ...(manifest.workerMcpServers || manifest.mcpServers || {}), ...((agentConfig && agentConfig.mcps) || {}) });
   } else {
     manifest.worker.sessionId = discoveredSessionId;
     manifest.worker.hasStarted = true;
+    _recordWorkerBrowserBinding(manifest, manifest.worker, { ...(manifest.workerMcpServers || manifest.mcpServers || {}), ...((agentConfig && agentConfig.mcps) || {}) });
   }
 
   workerRecord.exitCode = result.code;
@@ -452,17 +474,17 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   const workerMcpServers = { ...baseMcpServers, ...agentMcps };
   const connManifest = {
     runId: workerConnKey,
+    panelId: manifest.panelId || null,
     repoRoot: manifest.repoRoot,
     chromeDebugPort: manifest.chromeDebugPort,
     extensionDir: manifest.extensionDir,
+    prestartKeys: manifest.workerPrestartKey ? [manifest.workerPrestartKey] : [],
     controllerMcpServers: workerMcpServers,
     controller: {
       bin: workerBin,
       model: (agentConfig && agentConfig.model) || manifest.worker.model,
     },
   };
-  const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
-  try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-worker: workerConnKey=${workerConnKey} baseMcpKeys=${JSON.stringify(Object.keys(baseMcpServers))} agentMcpKeys=${JSON.stringify(Object.keys(agentMcps))} mergedKeys=${JSON.stringify(Object.keys(workerMcpServers))} chromeDebugPort=${manifest.chromeDebugPort} agentId=${agentId} agentCli=${agentConfig && agentConfig.cli}\n`); } catch {}
   const conn = getOrCreateConnection(connManifest);
   if (!conn.isConnected) {
     renderer.claude('Waiting for Codex app-server to initialize\u2026');
@@ -479,11 +501,14 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
       hasStarted: false,
       approvalPolicy: null,
       threadSandbox: null,
+      boundBrowserPort: null,
       lastSeenChatLine: 0,
       lastSeenTranscriptLine: 0,
     };
   }
   const agentSession = manifest.worker.agentSessions[sessionKey];
+  const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
+  try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-worker: workerConnKey=${workerConnKey} baseMcpKeys=${JSON.stringify(Object.keys(baseMcpServers))} agentMcpKeys=${JSON.stringify(Object.keys(agentMcps))} mergedKeys=${JSON.stringify(Object.keys(workerMcpServers))} panelId=${manifest.panelId || null} chromeDebugPort=${manifest.chromeDebugPort} boundBrowserPort=${agentSession && agentSession.boundBrowserPort != null ? agentSession.boundBrowserPort : null} agentId=${agentId} agentCli=${agentConfig && agentConfig.cli}\n`); } catch {}
 
   // Turn completion tracking
   let turnResolve;
@@ -614,6 +639,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   // Update session
   agentSession.sessionId = agentSession.appServerThreadId;
   agentSession.hasStarted = true;
+  _recordWorkerBrowserBinding(manifest, agentSession, workerMcpServers);
 
   const finalResultText = agentMessageText.trim();
   workerRecord.exitCode = 0;

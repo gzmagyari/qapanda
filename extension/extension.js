@@ -29,6 +29,7 @@ let loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolve
 let killChrome, killAllChrome;
 let closeAllCodexConnections;
 let cleanupPanelSession, shutdownExtensionResources;
+let createReadyGate;
 let _cloudSyncRuntime = null;
 let _cloudSyncStartPromise = null;
 let _cloudStatusBarItem = null;
@@ -83,6 +84,7 @@ try {
   ({ killChrome, killAll: killAllChrome } = require('./chrome-manager'));
   ({ closeAllConnections: closeAllCodexConnections } = require('./src/codex-app-server'));
   ({ cleanupPanelSession, shutdownExtensionResources } = require('./lifecycle-utils'));
+  ({ createReadyGate } = require('./ready-gate'));
   _aDbg('All top-level requires succeeded');
 } catch (e) {
   _aDbg(`TOP-LEVEL REQUIRE FAILED: ${e.message}\n${e.stack}`);
@@ -113,6 +115,113 @@ async function handleQaReportExportMessage(msg, repoRoot) {
     await vscode.window.showErrorMessage(`Failed to export QA report PDF: ${error && error.message ? error.message : String(error)}`);
   }
   return true;
+}
+
+function createPanelReadyHandler({
+  session,
+  panel,
+  renderer,
+  repoRoot,
+  panelConfig,
+  cloudBoundary,
+  context,
+  extensionPath,
+  loadCloudBootstrap,
+  savedRunId = null,
+  debugLog,
+  appendLogPrefix,
+}) {
+  return createReadyGate(async (msg, readySessionId) => {
+    const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
+    const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
+    const cloud = cloudBoundary.summarize();
+
+    appendPanelDebugLog(
+      repoRoot,
+      `${appendLogPrefix}: ready message received repoRoot=${repoRoot} runId=${msg.runId || ''}` +
+        `${savedRunId ? ` savedRunId=${savedRunId}` : ''} panelId=${msg.panelId || ''} readySessionId=${readySessionId}`
+    );
+    try {
+      panel.webview.postMessage({ type: 'readyAck', readySessionId });
+    } catch {}
+
+    debugLog(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId} readySessionId=${readySessionId}`);
+    if (msg.panelId) session._panelId = msg.panelId;
+    debugLog(`ready: after restore _panelId=${session._panelId} readySessionId=${readySessionId}`);
+
+    const mcpData = loadMergedMcpServers(repoRoot);
+    const agentsData = loadMergedAgents(repoRoot, extensionPath);
+    const modesData = loadMergedModes(repoRoot, extensionPath);
+    const onboardingData = loadOnboarding();
+    const runId = msg.runId || savedRunId || null;
+    const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
+    if (reattached) Object.assign(panelConfig, session.getConfig());
+
+    const initConfigMessage = {
+      type: 'initConfig',
+      config: reattached ? session.getConfig() : panelConfig,
+      mcpServers: mcpData,
+      agents: agentsData,
+      modes: modesData,
+      panelId: session.panelId,
+      runId: reattached ? session.getRunId() : null,
+      onboarding: { complete: isOnboardingComplete(), data: onboardingData },
+      featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
+      apiCatalog: buildApiCatalogPayload(),
+      cloud,
+      cloudSession: initialCloudSession,
+      cloudStatus: initialCloudStatus,
+    };
+
+    const desktopReadyMessage = (msg.panelId || reattached)
+      ? await findExistingDesktop(repoRoot, session.panelId)
+        .then((desktop) => (desktop ? { type: 'desktopReady', novncPort: desktop.novncPort } : null))
+        .catch(() => null)
+      : null;
+
+    const replayReady = async () => {
+      try {
+        panel.webview.postMessage({ type: 'readyAck', readySessionId });
+        panel.webview.postMessage(initConfigMessage);
+        if (desktopReadyMessage) {
+          panel.webview.postMessage(desktopReadyMessage);
+        }
+      } catch {}
+      if (reattached) {
+        session.syncAttachedRunState();
+        await session.sendTranscript();
+        await session.sendProgress();
+      }
+    };
+
+    await replayReady();
+    appendPanelDebugLog(
+      repoRoot,
+      `${appendLogPrefix}: initConfig posted panelId=${session.panelId} runId=${reattached ? session.getRunId() || '' : ''} readySessionId=${readySessionId}`
+    );
+
+    void (async () => {
+      const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+      const [latestCloud, cloudStatus] = await Promise.all([
+        cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
+        buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
+      ]);
+      try {
+        panel.webview.postMessage({ type: 'cloudSessionData', cloud: latestCloud, cloudSession, cloudStatus });
+      } catch {}
+    })();
+
+    if (reattached) {
+      renderer.banner(`Reattached to run ${session.getRunId()}`);
+      session._restoreWaitTimer();
+    } else if (runId) {
+      renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
+    }
+
+    debugLog(`ready: calling prestart() with stable panelId=${session._panelId} readySessionId=${readySessionId}`);
+    session.prestart();
+    return replayReady;
+  });
 }
 
 
@@ -532,6 +641,19 @@ function _activateInner(context) {
     // prestart() is called in the 'ready' handler below, after panelId is stabilized
 
     const _extDbg = (msg) => { try { fs.appendFileSync(path.join(os.tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] [ext] ${msg}\n`); } catch {} };
+    const handleReady = createPanelReadyHandler({
+      session,
+      panel,
+      renderer,
+      repoRoot,
+      panelConfig,
+      cloudBoundary,
+      context,
+      extensionPath: extensionPath1,
+      debugLog: _extDbg,
+      appendLogPrefix: 'EXT-HOST',
+      loadCloudBootstrap,
+    });
 
     panel.webview.onDidReceiveMessage(
       async (msg) => {
@@ -579,67 +701,7 @@ function _activateInner(context) {
           return;
         }
         if (msg.type === 'ready') {
-          appendPanelDebugLog(repoRoot, `EXT-HOST: ready message received repoRoot=${repoRoot} runId=${msg.runId || ''} panelId=${msg.panelId || ''}`);
-          const cloud = cloudBoundary.summarize();
-          const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
-          const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
-          // Restore panelId from webview persisted state if available
-          _extDbg(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
-          if (msg.panelId) session._panelId = msg.panelId;
-          _extDbg(`ready: after restore _panelId=${session._panelId}`);
-          const mcpData = loadMergedMcpServers(repoRoot);
-          const agentsData = loadMergedAgents(repoRoot, extensionPath1);
-          const modesData = loadMergedModes(repoRoot, extensionPath1);
-          const onboardingData = loadOnboarding();
-          const runId = msg.runId || null;
-          const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
-          if (reattached) Object.assign(panelConfig, session.getConfig());
-          panel.webview.postMessage({
-            type: 'initConfig',
-            config: reattached ? session.getConfig() : panelConfig,
-            mcpServers: mcpData,
-            agents: agentsData,
-            modes: modesData,
-            panelId: session.panelId,
-            runId: reattached ? session.getRunId() : null,
-            onboarding: { complete: isOnboardingComplete(), data: onboardingData },
-            featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
-            apiCatalog: buildApiCatalogPayload(),
-            cloud,
-            cloudSession: initialCloudSession,
-            cloudStatus: initialCloudStatus,
-          });
-          appendPanelDebugLog(repoRoot, `EXT-HOST: initConfig posted panelId=${session.panelId} runId=${reattached ? session.getRunId() || '' : ''}`);
-          void (async () => {
-            const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
-            const [cloud, cloudStatus] = await Promise.all([
-              cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
-              buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
-            ]);
-            try {
-              panel.webview.postMessage({ type: 'cloudSessionData', cloud, cloudSession, cloudStatus });
-            } catch {}
-          })();
-          // Re-link to existing container if still running (don't create a new one)
-          if (msg.panelId || reattached) {
-            findExistingDesktop(repoRoot, session.panelId).then(desktop => {
-              if (desktop) {
-                try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
-              }
-            }).catch(() => {});
-          }
-          if (reattached) {
-            session.syncAttachedRunState();
-            await session.sendTranscript();
-            renderer.banner(`Reattached to run ${session.getRunId()}`);
-            await session.sendProgress();
-            session._restoreWaitTimer();
-          } else if (runId) {
-            renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
-          }
-          // Pre-start Chrome + Codex app-server now that panelId is stable
-          _extDbg(`ready: calling prestart() with stable panelId=${session._panelId}`);
-          session.prestart();
+          await handleReady(msg);
           return;
         }
         if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput') {
@@ -846,6 +908,20 @@ async function _deserializeInner(panel, state, context) {
       // prestart() is called in the 'ready' handler below, after panelId is stabilized
 
       const _extDbg2 = (msg) => { try { fs.appendFileSync(path.join(os.tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] [ext-deser] ${msg}\n`); } catch {} };
+      const handleReady = createPanelReadyHandler({
+        session,
+        panel,
+        renderer,
+        repoRoot,
+        panelConfig,
+        cloudBoundary,
+        context,
+        extensionPath: extensionPath2,
+        savedRunId,
+        debugLog: _extDbg2,
+        appendLogPrefix: 'EXT-HOST(deserialized)',
+        loadCloudBootstrap,
+      });
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
@@ -1003,67 +1079,7 @@ async function _deserializeInner(panel, state, context) {
             return;
           }
           if (msg.type === 'ready') {
-            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): ready message received repoRoot=${repoRoot} runId=${msg.runId || ''} savedRunId=${savedRunId || ''} panelId=${msg.panelId || ''}`);
-            const cloud = cloudBoundary.summarize();
-            const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
-            const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
-            // Restore panelId from webview persisted state if available
-            _extDbg2(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
-            if (msg.panelId) session._panelId = msg.panelId;
-            _extDbg2(`ready: after restore _panelId=${session._panelId}`);
-            const mcpData = loadMergedMcpServers(repoRoot);
-            const agentsData = loadMergedAgents(repoRoot, extensionPath2);
-            const modesData = loadMergedModes(repoRoot, extensionPath2);
-            const onboardingData2 = loadOnboarding();
-            const runId = msg.runId || savedRunId;
-            const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
-            if (reattached) Object.assign(panelConfig, session.getConfig());
-            panel.webview.postMessage({
-              type: 'initConfig',
-              config: reattached ? session.getConfig() : panelConfig,
-              mcpServers: mcpData,
-              agents: agentsData,
-              modes: modesData,
-              panelId: session.panelId,
-              runId: reattached ? session.getRunId() : null,
-              onboarding: { complete: isOnboardingComplete(), data: onboardingData2 },
-              featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
-              apiCatalog: buildApiCatalogPayload(),
-              cloud,
-              cloudSession: initialCloudSession,
-              cloudStatus: initialCloudStatus,
-            });
-            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): initConfig posted panelId=${session.panelId} runId=${reattached ? session.getRunId() || '' : ''}`);
-            void (async () => {
-              const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
-              const [cloud, cloudStatus] = await Promise.all([
-                cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
-                buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
-              ]);
-              try {
-                panel.webview.postMessage({ type: 'cloudSessionData', cloud, cloudSession, cloudStatus });
-              } catch {}
-            })();
-            // Re-link to existing container if still running (don't create a new one)
-            if (msg.panelId || reattached) {
-              findExistingDesktop(repoRoot, session.panelId).then(desktop => {
-                if (desktop) {
-                  try { panel.webview.postMessage({ type: 'desktopReady', novncPort: desktop.novncPort }); } catch {}
-                }
-              }).catch(() => {});
-            }
-            if (reattached) {
-              session.syncAttachedRunState();
-              await session.sendTranscript();
-              renderer.banner(`Reattached to run ${session.getRunId()}`);
-              await session.sendProgress();
-              session._restoreWaitTimer();
-            } else if (runId) {
-              renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
-            }
-            // Pre-start Chrome + Codex app-server now that panelId is stable
-            _extDbg2(`ready: calling prestart() with stable panelId=${session._panelId}`);
-            session.prestart();
+            await handleReady(msg);
             return;
           }
           appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): forwarding to session.handleMessage type=${msg.type}`);

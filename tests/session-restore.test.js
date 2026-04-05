@@ -13,6 +13,7 @@ const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
 const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
+const appServerPath = path.join(extDir, 'src', 'codex-app-server.js');
 const chromePath = path.join(extDir, 'chrome-manager.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -35,15 +36,18 @@ const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
 const origCompaction = require(compactionPath);
+const origAppServer = require(appServerPath);
 const origChrome = require(chromePath);
 
-function buildSession({ config = {}, runExists = true, manifest = null, chrome = {} } = {}) {
+function buildSession({ config = {}, runExists = true, manifest = null, chrome = {}, appServer = {} } = {}) {
   const posted = [];
   const captured = {
     saveManifestCalls: [],
+    reserveChromePortCalls: [],
     attachExistingChromeCalls: [],
     ensureChromeCalls: [],
     startScreencastCalls: [],
+    prestartConnectionCalls: [],
   };
 
   const fakeManifest = manifest || {
@@ -86,20 +90,51 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     exports: { ...origPrompts, loadWorkflows: () => [] },
   };
 
+  require.cache[appServerPath] = {
+    id: appServerPath,
+    filename: appServerPath,
+    loaded: true,
+    exports: {
+      ...origAppServer,
+      prestartConnection: async (options) => {
+        captured.prestartConnectionCalls.push({
+          key: options.key,
+          bin: options.bin,
+          cwd: options.cwd,
+          mcpKeys: Object.keys(options.mcpServers || {}).sort(),
+          manifest: options.manifest || null,
+        });
+        if (appServer.prestartConnection) return appServer.prestartConnection(options);
+        return { isConnected: true };
+      },
+      closeConnectionsWhere: async (predicate) => {
+        if (appServer.closeConnectionsWhere) return appServer.closeConnectionsWhere(predicate);
+      },
+    },
+  };
+
   require.cache[chromePath] = {
     id: chromePath,
     filename: chromePath,
     loaded: true,
     exports: {
       ...origChrome,
+      reserveChromePort: async (panelId, preferredPort) => {
+        captured.reserveChromePortCalls.push({ panelId, preferredPort: preferredPort == null ? null : preferredPort });
+        if (chrome.reserveChromePort) return chrome.reserveChromePort(panelId, preferredPort);
+        return preferredPort || 45555;
+      },
       attachExistingChrome: async (panelId, port) => {
         captured.attachExistingChromeCalls.push({ panelId, port });
         if (chrome.attachExistingChrome) return chrome.attachExistingChrome(panelId, port);
         return null;
       },
-      ensureChrome: async (panelId) => {
-        captured.ensureChromeCalls.push({ panelId });
-        if (chrome.ensureChrome) return chrome.ensureChrome(panelId);
+      releaseChromeReservation: (panelId) => {
+        if (chrome.releaseChromeReservation) return chrome.releaseChromeReservation(panelId);
+      },
+      ensureChrome: async (panelId, options) => {
+        captured.ensureChromeCalls.push({ panelId, options: options || null });
+        if (chrome.ensureChrome) return chrome.ensureChrome(panelId, options);
         return null;
       },
       startScreencast: async (panelId, _onFrame, _onNav) => {
@@ -126,6 +161,7 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
     require.cache[compactionPath] = { id: compactionPath, filename: compactionPath, loaded: true, exports: origCompaction };
+    require.cache[appServerPath] = { id: appServerPath, filename: appServerPath, loaded: true, exports: origAppServer };
     require.cache[chromePath] = { id: chromePath, filename: chromePath, loaded: true, exports: origChrome };
   };
 
@@ -241,10 +277,7 @@ test('reattachRun restores manifest panelId and reattaches to an existing browse
       agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
     },
     chrome: {
-      attachExistingChrome: async () => ({ port: 45555 }),
-      ensureChrome: async () => {
-        throw new Error('should not start a replacement browser');
-      },
+      ensureChrome: async (_panelId, options) => ({ port: options.port, status: 'adopted' }),
     },
   });
   try {
@@ -253,8 +286,8 @@ test('reattachRun restores manifest panelId and reattaches to an existing browse
     assert.equal(ok, true);
     assert.equal(session.panelId, 'run-panel-123');
     assert.equal(session._chromePort, 45555);
-    assert.deepEqual(captured.attachExistingChromeCalls, [{ panelId: 'run-panel-123', port: 45555 }]);
-    assert.equal(captured.ensureChromeCalls.length, 0);
+    assert.equal(captured.attachExistingChromeCalls.length, 0);
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-123', options: { port: 45555 } }]);
     assert.ok(
       posted.some((msg) => msg.type === 'chromeReady' && msg.chromePort === 45555),
       'should post chromeReady for the adopted browser'
@@ -277,8 +310,7 @@ test('reattachRun starts a replacement browser when the saved browser session is
       agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
     },
     chrome: {
-      attachExistingChrome: async () => null,
-      ensureChrome: async () => ({ port: 46666 }),
+      ensureChrome: async (_panelId, options) => ({ port: options.port, status: 'started' }),
     },
   });
   try {
@@ -286,16 +318,116 @@ test('reattachRun starts a replacement browser when the saved browser session is
     const ok = await session.reattachRun('existing-run-42');
     assert.equal(ok, true);
     assert.equal(session.panelId, 'run-panel-123');
-    assert.equal(session._chromePort, 46666);
-    assert.deepEqual(captured.attachExistingChromeCalls, [{ panelId: 'run-panel-123', port: 45555 }]);
-    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-123' }]);
-    assert.equal(captured.saveManifestCalls.length, 1);
+    assert.equal(session._chromePort, 45555);
+    assert.equal(captured.attachExistingChromeCalls.length, 0);
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-123', options: { port: 45555 } }]);
+    assert.ok(captured.saveManifestCalls.length >= 1);
     assert.equal(captured.saveManifestCalls[0].panelId, 'run-panel-123');
-    assert.equal(captured.saveManifestCalls[0].chromeDebugPort, 46666);
+    assert.equal(captured.saveManifestCalls[0].chromeDebugPort, 45555);
     const browserBanner = renderer.__calls.find((call) =>
-      call.method === 'banner' && /replacement browser/i.test(call.args[0])
+      call.method === 'banner' && /restarted chrome on port 45555/i.test(call.args[0])
     );
     assert.ok(browserBanner, 'should announce replacement browser startup');
+  } finally {
+    cleanup();
+  }
+});
+
+test('_restoreBrowserForAttachedRun is single-flight and only starts one replacement browser', async () => {
+  let ensureChromeStarted = 0;
+  let releaseEnsureChrome;
+  const manifest = {
+    runId: 'existing-run-42',
+    panelId: 'run-panel-123',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: { 'QA-Browser': { hasStarted: true } } },
+    agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      ensureChrome: async (_panelId, options) => {
+        ensureChromeStarted += 1;
+        await new Promise((resolve) => { releaseEnsureChrome = resolve; });
+        return { port: options.port, status: 'started' };
+      },
+    },
+  });
+  try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } }, global: {}, project: {} });
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = manifest.panelId;
+
+    const first = session._restoreBrowserForAttachedRun();
+    const second = session._restoreBrowserForAttachedRun();
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseEnsureChrome();
+    await Promise.all([first, second]);
+
+    assert.equal(ensureChromeStarted, 1);
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-123', options: { port: 45555 } }]);
+    assert.equal(session._chromePort, 45555);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_startChromeDirect refreshes the screencast target when Chrome is already running', async () => {
+  const { session, cleanup, captured } = buildSession({
+    chrome: {
+      ensureChrome: async (_panelId, options) => ({ port: options.port, status: 'existing' }),
+    },
+  });
+  try {
+    session._panelId = 'panel-refresh-1';
+    session._chromePort = 53333;
+    session._chromePortReservation = 53333;
+    await session._startChromeDirect();
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'panel-refresh-1', options: { port: 53333 } }]);
+    assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'panel-refresh-1' }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('prestart on an unattached panel does not reserve or start Chrome just because a browser-capable agent exists', async () => {
+  const { session, cleanup, captured } = buildSession({
+    config: { chatTarget: 'agent-QA-Browser' },
+    appServer: {
+      prestartConnection: async () => ({ isConnected: true }),
+    },
+  });
+  try {
+    session.setAgents({
+      system: {
+        'QA-Browser': {
+          name: 'QA Engineer (Browser)',
+          cli: 'codex',
+          enabled: true,
+          mcps: { 'chrome-devtools': { command: 'npx', args: ['chrome-devtools-mcp'] } },
+        },
+        dev: {
+          name: 'Developer',
+          cli: 'codex',
+          enabled: true,
+        },
+      },
+      global: {},
+      project: {},
+    });
+
+    session.prestart();
+    await session._prestartPromise;
+
+    assert.equal(captured.reserveChromePortCalls.length, 0);
+    assert.equal(captured.ensureChromeCalls.length, 0);
+    assert.ok(captured.prestartConnectionCalls.length >= 1, 'should still prestart app-server connections');
+    for (const call of captured.prestartConnectionCalls) {
+      assert.ok(!call.mcpKeys.some((name) => name.includes('chrome-devtools') || name.includes('chrome_devtools')));
+      assert.equal(call.manifest.chromeDebugPort, null);
+    }
   } finally {
     cleanup();
   }

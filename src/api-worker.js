@@ -24,6 +24,11 @@ const {
   workerSessionKey,
 } = require('./transcript');
 
+const _apiBrowserDebugLog = require('node:path').join(require('node:os').tmpdir(), 'cc-appserver-debug.log');
+function _apiBrowserDbg(msg) {
+  try { require('node:fs').appendFileSync(_apiBrowserDebugLog, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+
 function parseToolInput(argumentsValue) {
   if (!argumentsValue) return {};
   if (typeof argumentsValue === 'object') return argumentsValue;
@@ -101,6 +106,7 @@ async function runApiWorkerTurn({
 
   // Load ALL tools through unified bridge (cached — won't reconnect if config unchanged)
   const allMcpServers = { ...(manifest.workerMcpServers || {}), ...((agentConfig && agentConfig.mcps) || {}) };
+  _apiBrowserDbg(`api-worker tools panelId=${manifest.panelId || null} chromeDebugPort=${manifest.chromeDebugPort || null} agentId=${agentId || 'default'} mcpKeys=${JSON.stringify(Object.keys(allMcpServers || {}))}`);
   if (manifest.chromeDebugPort) {
     for (const [, server] of Object.entries(allMcpServers)) {
       if (server && server.args) {
@@ -114,9 +120,13 @@ async function runApiWorkerTurn({
 
   if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
   if (!manifest.worker.agentSessions[manifestSessionKey]) {
-    manifest.worker.agentSessions[manifestSessionKey] = { lastSeenChatLine: 0, lastSeenTranscriptLine: 0 };
+    manifest.worker.agentSessions[manifestSessionKey] = { boundBrowserPort: null, lastSeenChatLine: 0, lastSeenTranscriptLine: 0 };
   }
   const agentSession = manifest.worker.agentSessions[manifestSessionKey];
+  if (manifest.chromeDebugPort != null) {
+    agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
+    manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
+  }
   if (!Number.isFinite(agentSession.lastSeenChatLine)) {
     agentSession.lastSeenChatLine = 0;
   }

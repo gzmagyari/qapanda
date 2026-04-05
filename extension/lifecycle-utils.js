@@ -18,7 +18,6 @@ async function cleanupPanelSession({
   stopInstance,
   clearPanel,
   killChrome,
-  closeAllConnections,
 }) {
   if (repoRoot && panelId && typeof instanceName === 'function' && typeof stopInstance === 'function') {
     const name = instanceName(repoRoot, panelId);
@@ -29,9 +28,6 @@ async function cleanupPanelSession({
   }
   if (panelId && typeof killChrome === 'function') {
     await callSafely(`kill chrome ${panelId}`, () => killChrome(panelId));
-  }
-  if (typeof closeAllConnections === 'function') {
-    await callSafely('close app-server connections', closeAllConnections);
   }
   if (session && typeof session.dispose === 'function') {
     await callSafely('dispose session', () => session.dispose());

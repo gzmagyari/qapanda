@@ -40,6 +40,7 @@ class CodexAppServerConnection {
    */
   async connect() {
     if (this._proc && !this._proc.killed) return;
+    _dbg(`CodexAppServerConnection.connect cwd=${this._cwd} bin=${this._bin} configArgs=${JSON.stringify(this._configArgs)}`);
 
     // Build a clean env: strip ELECTRON_RUN_AS_NODE, use isolated CODEX_HOME
     const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = { ...process.env, ...this._env };
@@ -95,6 +96,7 @@ class CodexAppServerConnection {
     });
     this.sendNotification('initialized', {});
     this._initialized = true;
+    _dbg(`CodexAppServerConnection.connect initialized cwd=${this._cwd} bin=${this._bin}`);
   }
 
   /**
@@ -338,15 +340,60 @@ function buildMcpConfigArgs(mcpServers, manifest) {
   return args;
 }
 
+function _resolveManifestArgValue(value, manifest) {
+  let resolved = String(value);
+  if (manifest && manifest.chromeDebugPort != null) {
+    resolved = resolved.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
+  }
+  if (manifest && manifest.extensionDir) {
+    resolved = resolved.replace(/\{EXTENSION_DIR\}/g, String(manifest.extensionDir).replace(/\\/g, '/'));
+  }
+  if (manifest && manifest.repoRoot) {
+    resolved = resolved.replace(/\{REPO_ROOT\}/g, String(manifest.repoRoot).replace(/\\/g, '/'));
+  }
+  return resolved;
+}
+
+function _resolveMcpServerFingerprintEntries(mcpServers, manifest) {
+  return Object.keys(mcpServers || {}).sort().map((name) => {
+    const server = mcpServers[name] || {};
+    const entry = { name: String(name) };
+    if (server.url) {
+      entry.url = String(server.url);
+      return entry;
+    }
+    if (server.command) {
+      entry.command = String(server.command);
+    }
+    if (Array.isArray(server.args) && server.args.length > 0) {
+      entry.args = server.args.map((arg) =>
+        typeof arg === 'string' ? _resolveManifestArgValue(arg, manifest) : arg
+      );
+    }
+    if (server.env && typeof server.env === 'object') {
+      entry.env = Object.fromEntries(
+        Object.entries(server.env)
+          .sort(([left], [right]) => String(left).localeCompare(String(right)))
+          .map(([key, value]) => [
+            String(key),
+            typeof value === 'string' ? _resolveManifestArgValue(value, manifest) : value,
+          ])
+      );
+    }
+    return entry;
+  });
+}
+
 /**
  * Get or create an app-server connection for the given manifest.
  */
-function _buildFingerprint(mcpServers) {
-  // Only key on MCP server names — when chrome-devtools is added/removed,
-  // the key list changes and triggers a reconnect. We don't include chromePort
-  // because it changes after Chrome starts and would invalidate the prestarted
-  // connection unnecessarily (the port is resolved in -c args at spawn time).
-  return JSON.stringify(Object.keys(mcpServers).sort());
+function _buildFingerprint(mcpServers, manifest = {}) {
+  return JSON.stringify({
+    servers: _resolveMcpServerFingerprintEntries(mcpServers || {}, manifest),
+    chromeDebugPort: manifest && manifest.chromeDebugPort != null
+      ? Number(manifest.chromeDebugPort) || String(manifest.chromeDebugPort)
+      : null,
+  });
 }
 
 const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
@@ -354,12 +401,25 @@ function _dbg(msg) {
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
 }
 
+function _manifestBrowserContext(manifest) {
+  return JSON.stringify({
+    runId: manifest && manifest.runId || null,
+    panelId: manifest && manifest.panelId || null,
+    chromeDebugPort: manifest && manifest.chromeDebugPort != null ? manifest.chromeDebugPort : null,
+    prestartKeys: manifest && Array.isArray(manifest.prestartKeys) ? manifest.prestartKeys : null,
+    prestartKey: manifest && manifest.prestartKey || null,
+    controllerPrestartKey: manifest && manifest.controllerPrestartKey || null,
+    workerPrestartKey: manifest && manifest.workerPrestartKey || null,
+  });
+}
+
 function getOrCreateConnection(manifest) {
   const key = manifest.runId || 'default';
   const mcpServers = manifest.controllerMcpServers || manifest.mcpServers || {};
-  const mcpFingerprint = _buildFingerprint(mcpServers);
+  const mcpFingerprint = _buildFingerprint(mcpServers, manifest);
 
   _dbg(`getOrCreateConnection key=${key} fingerprint=${mcpFingerprint}`);
+  _dbg(`  manifestCtx=${_manifestBrowserContext(manifest)}`);
   _dbg(`  _connections keys: [${Array.from(_connections.keys()).join(', ')}]`);
 
   if (_connections.has(key)) {
@@ -375,7 +435,16 @@ function getOrCreateConnection(manifest) {
   }
 
   // Adopt a prestarted connection if available and MCP config matches.
-  for (const prestartKey of ['prestart', 'prestart-worker']) {
+  const prestartKeys = Array.isArray(manifest.prestartKeys) && manifest.prestartKeys.length > 0
+    ? manifest.prestartKeys
+    : (manifest.prestartKey
+        ? [manifest.prestartKey]
+        : (manifest.controllerPrestartKey
+            ? [manifest.controllerPrestartKey]
+            : (manifest.workerPrestartKey
+                ? [manifest.workerPrestartKey]
+                : ['prestart', 'prestart-worker'])));
+  for (const prestartKey of prestartKeys) {
     if (_connections.has(prestartKey)) {
       const prestarted = _connections.get(prestartKey);
       _dbg(`  checking ${prestartKey}: prestart_fp=${prestarted._mcpFingerprint} wanted_fp=${mcpFingerprint} isConnected=${prestarted.isConnected}`);
@@ -398,6 +467,9 @@ function getOrCreateConnection(manifest) {
     configArgs,
   });
   conn._mcpFingerprint = mcpFingerprint;
+  conn._connectionKey = key;
+  conn._panelId = manifest.panelId || null;
+  conn._chromeDebugPort = manifest.chromeDebugPort || null;
   _connections.set(key, conn);
   return conn;
 }
@@ -409,11 +481,15 @@ function getOrCreateConnection(manifest) {
  */
 async function prestartConnection({ key, bin, cwd, mcpServers, manifest }) {
   const storeKey = key || 'prestart';
-  const fp = _buildFingerprint(mcpServers || {});
+  const fp = _buildFingerprint(mcpServers || {}, manifest || {});
   _dbg(`prestartConnection key=${storeKey} fingerprint=${fp} mcpKeys=${JSON.stringify(Object.keys(mcpServers || {}))}`);
+  _dbg(`  manifestCtx=${_manifestBrowserContext(manifest || {})}`);
   const configArgs = buildMcpConfigArgs(mcpServers || {}, manifest || {});
   const conn = new CodexAppServerConnection({ bin: bin || 'codex', cwd, configArgs });
   conn._mcpFingerprint = fp;
+  conn._connectionKey = storeKey;
+  conn._panelId = manifest && manifest.panelId ? manifest.panelId : null;
+  conn._chromeDebugPort = manifest && manifest.chromeDebugPort != null ? manifest.chromeDebugPort : null;
   await conn.connect();
   _dbg(`prestartConnection key=${storeKey} CONNECTED isConnected=${conn.isConnected}`);
   _connections.set(storeKey, conn);
@@ -432,6 +508,23 @@ async function closeConnection(runId) {
   }
 }
 
+async function closeConnectionsWhere(predicate) {
+  const closers = [];
+  for (const [key, conn] of _connections.entries()) {
+    if (!predicate(key, conn)) continue;
+    _dbg(`closeConnectionsWhere: closing key=${key} panelId=${conn && conn._panelId || null} chromeDebugPort=${conn && conn._chromeDebugPort || null}`);
+    closers.push(
+      Promise.resolve()
+        .then(() => conn.disconnect())
+        .catch(() => {})
+        .then(() => {
+          _connections.delete(key);
+        })
+    );
+  }
+  await Promise.all(closers);
+}
+
 /**
  * Close all active connections (used on extension deactivation).
  */
@@ -448,5 +541,6 @@ module.exports = {
   getOrCreateConnection,
   prestartConnection,
   closeConnection,
+  closeConnectionsWhere,
   closeAllConnections,
 };

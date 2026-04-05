@@ -176,6 +176,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
       manifest.worker.agentSessions[agentId] = {
         sessionId: crypto.randomUUID(),
         hasStarted: false,
+        boundBrowserPort: null,
         lastSeenChatLine: 0,
         lastSeenTranscriptLine: 0,
       };
@@ -250,7 +251,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   try {
     const _shellArgs = args.map(a => a.includes(' ') || a.includes('"') || a.includes('{') ? "'" + a.replace(/'/g, "'\\''") + "'" : a);
     const _envInfo = `PATH_has_claude=${(spawnEnv.PATH || '').includes('claude')}, CLAUDE_CONFIG_DIR=${spawnEnv.CLAUDE_CONFIG_DIR || 'unset'}, CLAUDE_CODE_SIMPLE=${spawnEnv.CLAUDE_CODE_SIMPLE || 'unset'}, NODE_OPTIONS=${spawnEnv.NODE_OPTIONS || 'unset'}, ELECTRON_RUN_AS_NODE=${spawnEnv.ELECTRON_RUN_AS_NODE || 'unset'}`;
-    require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] CWD: ${manifest.repoRoot}\nENV: ${_envInfo}\nCMD: ${workerBin} ${_shellArgs.join(' ')}\n\n`);
+    require('fs').appendFileSync(require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] claude-worker launch panelId=${manifest.panelId || null} chromeDebugPort=${manifest.chromeDebugPort || null} cwd=${manifest.repoRoot}\nENV: ${_envInfo}\nCMD: ${workerBin} ${_shellArgs.join(' ')}\n\n`);
   } catch {}
 
   const result = await spawnStreamingProcess({
@@ -375,9 +376,15 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   if (agentSession) {
     agentSession.sessionId = discoveredSessionId;
     agentSession.hasStarted = true;
+    if (manifest.chromeDebugPort != null) {
+      agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
+    }
   } else {
     manifest.worker.sessionId = discoveredSessionId;
     manifest.worker.hasStarted = true;
+    if (manifest.chromeDebugPort != null) {
+      manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
+    }
   }
 
   workerRecord.exitCode = result.code;
