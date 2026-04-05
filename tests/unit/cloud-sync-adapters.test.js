@@ -11,8 +11,13 @@ const {
   projectMcpFilePath,
   projectModesFilePath,
   projectPromptsDir,
+  projectRunsDir,
   projectWorkflowsDir,
   PROJECT_SYNC_SETTING_KEYS,
+  runChatLogFilePath,
+  runEventsFilePath,
+  runProgressFilePath,
+  runTranscriptFilePath,
   tasksFilePath,
   testsFilePath,
 } = require('../../src/cloud/sync-adapters');
@@ -423,6 +428,193 @@ Ship it.`);
       assert.equal(projectConfig.cloudContextMode, 'custom');
       assert.equal(projectConfig.cloudContextKey, 'release-train');
       assert.ok(PROJECT_SYNC_SETTING_KEYS.includes('cloudContextMode'));
+    } finally {
+      adapters.close();
+    }
+  });
+
+  it('syncs run restore files without pulling in runtime-only files', async () => {
+    const repoRoot = makeTempRepoRoot();
+    const runDir = path.join(projectRunsDir(repoRoot), 'run-123');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'manifest.json'), JSON.stringify({
+      version: 1,
+      runId: 'run-123',
+      createdAt: '2026-04-05T08:00:00.000Z',
+      updatedAt: '2026-04-05T08:05:00.000Z',
+      status: 'waiting',
+      phase: 'worker',
+      transcriptSummary: 'Investigate checkout sync regression',
+      chatTarget: 'agent-QA-Browser',
+      controller: {
+        cli: 'codex',
+        bin: 'codex',
+        sandbox: 'workspace-write',
+        config: [],
+        skipGitRepoCheck: false,
+        codexMode: 'app-server',
+      },
+      worker: {
+        cli: 'codex',
+        bin: 'codex',
+        allowedTools: 'Bash,Read,Edit',
+        runMode: 'print',
+        hasStarted: true,
+      },
+      settings: {
+        rawEvents: false,
+        quiet: false,
+        color: true,
+      },
+      counters: {
+        request: 1,
+        loop: 1,
+        controllerTurn: 1,
+        workerTurn: 1,
+      },
+      activeRequestId: 'req-0001',
+      requests: [{
+        id: 'req-0001',
+        userMessage: 'Investigate the sync regression',
+        startedAt: '2026-04-05T08:00:00.000Z',
+        finishedAt: null,
+        status: 'running',
+        stopReason: null,
+        loops: [{
+          id: 'loop-0001',
+          index: 1,
+          startedAt: '2026-04-05T08:01:00.000Z',
+          finishedAt: null,
+          controller: { exitCode: 0, decision: { action: 'delegate' } },
+          worker: { exitCode: null, resultText: null },
+        }],
+      }],
+      loopMode: true,
+      loopObjective: 'Find the root cause',
+    }, null, 2), 'utf8');
+    fs.writeFileSync(runTranscriptFilePath(repoRoot, 'run-123'), JSON.stringify({
+      type: 'user_message',
+      text: 'Investigate the sync regression',
+    }) + '\n', 'utf8');
+    fs.writeFileSync(runChatLogFilePath(repoRoot, 'run-123'), JSON.stringify({
+      role: 'user',
+      content: 'Investigate the sync regression',
+    }) + '\n', 'utf8');
+    fs.writeFileSync(runEventsFilePath(repoRoot, 'run-123'), JSON.stringify({
+      type: 'request_started',
+      requestId: 'req-0001',
+    }) + '\n', 'utf8');
+    fs.writeFileSync(runProgressFilePath(repoRoot, 'run-123'), '- Investigating the sync regression\n', 'utf8');
+    fs.mkdirSync(path.join(runDir, 'requests', 'req-0001'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'requests', 'req-0001', 'worker.stdout.log'), 'local-only temp log', 'utf8');
+
+    const adapters = await createAdapters(repoRoot);
+    try {
+      adapters.importAllLocal();
+
+      const pendingTypes = adapters.store.listPendingMutations().map((item) => item.objectType);
+      assert.ok(pendingTypes.includes('run_manifest'));
+      assert.ok(pendingTypes.includes('run_transcript'));
+      assert.ok(pendingTypes.includes('run_chat_log'));
+      assert.ok(pendingTypes.includes('run_event_log'));
+      assert.ok(pendingTypes.includes('run_progress'));
+
+      adapters.applyRemoteEntries([
+        {
+          sequenceNo: 31,
+          objectType: 'run_manifest',
+          objectId: 'run-remote',
+          action: 'upsert',
+          createdAt: '2026-04-05T09:00:00.000Z',
+          payload: {
+            id: 'run-remote',
+            manifest: {
+              version: 1,
+              runId: 'run-remote',
+              createdAt: '2026-04-05T09:00:00.000Z',
+              updatedAt: '2026-04-05T09:10:00.000Z',
+              status: 'done',
+              phase: 'complete',
+              transcriptSummary: 'Remote synced run',
+              chatTarget: 'agent-dev',
+              controller: { cli: 'codex', bin: 'codex', sandbox: 'workspace-write', config: [], skipGitRepoCheck: false, codexMode: 'app-server' },
+              worker: { cli: 'codex', bin: 'codex', allowedTools: 'Bash,Read,Edit', runMode: 'print', hasStarted: true },
+              settings: { rawEvents: false, quiet: false, color: true },
+              counters: { request: 1, loop: 1, controllerTurn: 1, workerTurn: 1 },
+              activeRequestId: 'req-0001',
+              requests: [],
+            },
+            updatedAt: '2026-04-05T09:10:00.000Z',
+          },
+        },
+        {
+          sequenceNo: 32,
+          objectType: 'run_transcript',
+          objectId: 'run-remote',
+          action: 'upsert',
+          createdAt: '2026-04-05T09:10:30.000Z',
+          payload: {
+            id: 'run-remote',
+            title: 'Remote synced run',
+            content: '{"type":"assistant_message","text":"Remote transcript line"}\n',
+            updatedAt: '2026-04-05T09:10:30.000Z',
+          },
+        },
+        {
+          sequenceNo: 33,
+          objectType: 'run_chat_log',
+          objectId: 'run-remote',
+          action: 'upsert',
+          createdAt: '2026-04-05T09:10:40.000Z',
+          payload: {
+            id: 'run-remote',
+            title: 'Remote synced run',
+            content: '{"role":"assistant","content":"Remote chat entry"}\n',
+            updatedAt: '2026-04-05T09:10:40.000Z',
+          },
+        },
+        {
+          sequenceNo: 34,
+          objectType: 'run_event_log',
+          objectId: 'run-remote',
+          action: 'upsert',
+          createdAt: '2026-04-05T09:10:50.000Z',
+          payload: {
+            id: 'run-remote',
+            title: 'Remote synced run',
+            content: '{"type":"sync_applied","message":"Remote event line"}\n',
+            updatedAt: '2026-04-05T09:10:50.000Z',
+          },
+        },
+        {
+          sequenceNo: 35,
+          objectType: 'run_progress',
+          objectId: 'run-remote',
+          action: 'upsert',
+          createdAt: '2026-04-05T09:11:00.000Z',
+          payload: {
+            id: 'run-remote',
+            title: 'Remote synced run',
+            content: '- Remote progress line\n',
+            updatedAt: '2026-04-05T09:11:00.000Z',
+          },
+        },
+      ]);
+
+      const remoteManifest = JSON.parse(fs.readFileSync(path.join(projectRunsDir(repoRoot), 'run-remote', 'manifest.json'), 'utf8'));
+      const remoteTranscript = fs.readFileSync(runTranscriptFilePath(repoRoot, 'run-remote'), 'utf8');
+      const remoteChatLog = fs.readFileSync(runChatLogFilePath(repoRoot, 'run-remote'), 'utf8');
+      const remoteEvents = fs.readFileSync(runEventsFilePath(repoRoot, 'run-remote'), 'utf8');
+      const remoteProgress = fs.readFileSync(runProgressFilePath(repoRoot, 'run-remote'), 'utf8');
+
+      assert.equal(remoteManifest.runId, 'run-remote');
+      assert.equal(remoteManifest.repoRoot, repoRoot);
+      assert.equal(remoteManifest.files.transcript, runTranscriptFilePath(repoRoot, 'run-remote'));
+      assert.match(remoteTranscript, /Remote transcript line/);
+      assert.match(remoteChatLog, /Remote chat entry/);
+      assert.match(remoteEvents, /Remote event line/);
+      assert.match(remoteProgress, /Remote progress line/);
+      assert.equal(fs.readFileSync(path.join(runDir, 'requests', 'req-0001', 'worker.stdout.log'), 'utf8'), 'local-only temp log');
     } finally {
       adapters.close();
     }

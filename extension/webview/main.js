@@ -176,6 +176,9 @@
   const cloudAccountStatus = document.getElementById('cloud-account-status');
   const cloudSyncState = document.getElementById('cloud-sync-state');
   const cloudSyncMeta = document.getElementById('cloud-sync-meta');
+  const cloudConflictState = document.getElementById('cloud-conflict-state');
+  const cloudConflictList = document.getElementById('cloud-conflict-list');
+  const cloudConflictsRefresh = document.getElementById('cloud-conflicts-refresh');
   const cloudNotificationState = document.getElementById('cloud-notification-state');
   const cloudNotificationMeta = document.getElementById('cloud-notification-meta');
   const cloudAccountLogin = document.getElementById('cloud-account-login');
@@ -252,6 +255,109 @@
     cloudEntryScreen.classList.toggle('visible', shouldShowCloudEntryScreen());
   }
 
+  function summarizeConflictPayload(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    const preferred = ['title', 'name', 'description', 'content', 'value'];
+    for (const key of preferred) {
+      if (payload[key] != null && String(payload[key]).trim()) {
+        return String(payload[key]).trim();
+      }
+    }
+    try {
+      const serialized = JSON.stringify(payload);
+      return serialized && serialized !== '{}' ? serialized : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function renderCloudConflicts(runtime, loggedIn, busy) {
+    const conflicts = runtime && Array.isArray(runtime.conflicts) ? runtime.conflicts : [];
+    if (cloudConflictState) {
+      if (!loggedIn) {
+        cloudConflictState.textContent = 'Sign in to inspect and resolve hosted sync conflicts.';
+      } else if (conflicts.length === 0) {
+        cloudConflictState.textContent = 'No open per-object sync conflicts.';
+      } else {
+        cloudConflictState.textContent = `${conflicts.length} open conflict${conflicts.length === 1 ? '' : 's'} need an explicit local or cloud decision.`;
+      }
+    }
+    if (cloudConflictsRefresh) {
+      cloudConflictsRefresh.disabled = busy || !loggedIn;
+    }
+    if (!cloudConflictList) return;
+    cloudConflictList.innerHTML = '';
+    if (!loggedIn || conflicts.length === 0) return;
+    conflicts.forEach((conflict) => {
+      const card = document.createElement('div');
+      card.className = 'cloud-conflict-card';
+
+      const header = document.createElement('div');
+      header.className = 'cloud-conflict-header';
+      header.textContent = `${conflict.objectType || 'object'}:${conflict.objectId || 'unknown'}`;
+      card.appendChild(header);
+
+      const meta = document.createElement('div');
+      meta.className = 'cloud-conflict-meta';
+      meta.textContent = [
+        conflict.conflictCode || 'client_remote_conflict',
+        conflict.updatedAt ? `Updated ${formatCloudTime(conflict.updatedAt)}` : null,
+      ].filter(Boolean).join(' • ');
+      card.appendChild(meta);
+
+      const compare = document.createElement('div');
+      compare.className = 'cloud-conflict-compare';
+
+      const local = document.createElement('div');
+      local.className = 'cloud-conflict-column';
+      local.innerHTML = `<div class="cloud-conflict-label">Local</div><div class="cloud-conflict-value"></div>`;
+      local.querySelector('.cloud-conflict-value').textContent = summarizeConflictPayload(conflict.localPayload) || 'No local payload summary';
+      compare.appendChild(local);
+
+      const remote = document.createElement('div');
+      remote.className = 'cloud-conflict-column';
+      remote.innerHTML = `<div class="cloud-conflict-label">Cloud</div><div class="cloud-conflict-value"></div>`;
+      remote.querySelector('.cloud-conflict-value').textContent = summarizeConflictPayload(conflict.remotePayload) || 'No cloud payload summary';
+      compare.appendChild(remote);
+
+      card.appendChild(compare);
+
+      const actions = document.createElement('div');
+      actions.className = 'cloud-conflict-actions-row';
+
+      const useLocal = document.createElement('button');
+      useLocal.className = 'mcp-btn';
+      useLocal.type = 'button';
+      useLocal.textContent = 'Use Local';
+      useLocal.disabled = busy;
+      useLocal.addEventListener('click', () => {
+        cloudPendingAction = 'Resolving conflict with local version...';
+        cloudNoticeText = '';
+        setCloudAccountStatus(cloudPendingAction);
+        renderCloudAccount();
+        vscode.postMessage({ type: 'cloudSyncResolveConflict', conflictId: conflict.conflictId, resolution: 'take_local' });
+      });
+      actions.appendChild(useLocal);
+
+      const useCloud = document.createElement('button');
+      useCloud.className = 'mcp-btn';
+      useCloud.type = 'button';
+      useCloud.textContent = 'Use Cloud';
+      useCloud.disabled = busy;
+      useCloud.addEventListener('click', () => {
+        cloudPendingAction = 'Resolving conflict with cloud version...';
+        cloudNoticeText = '';
+        setCloudAccountStatus(cloudPendingAction);
+        renderCloudAccount();
+        vscode.postMessage({ type: 'cloudSyncResolveConflict', conflictId: conflict.conflictId, resolution: 'take_remote' });
+      });
+      actions.appendChild(useCloud);
+
+      card.appendChild(actions);
+      cloudConflictList.appendChild(card);
+    });
+  }
+
   function renderCloudAccount() {
     const target = cloudBootstrap && cloudBootstrap.target;
     const isExtension = !target || target === 'extension';
@@ -325,6 +431,8 @@
       if (runtime && runtime.lastSyncedAt) syncMeta.push(`Last sync ${formatCloudTime(runtime.lastSyncedAt)}`);
       cloudSyncMeta.textContent = syncMeta.join('\n');
     }
+
+    renderCloudConflicts(runtime, loggedIn, busy);
 
     if (cloudNotificationState) {
       if (!loggedIn) {
@@ -422,6 +530,15 @@
       setCloudAccountStatus(cloudPendingAction);
       renderCloudAccount();
       vscode.postMessage({ type: 'cloudSessionRefresh' });
+    });
+  }
+  if (cloudConflictsRefresh) {
+    cloudConflictsRefresh.addEventListener('click', () => {
+      cloudPendingAction = 'Refreshing sync conflicts...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSyncRefreshConflicts' });
     });
   }
   if (cloudAccountOpenApp) {

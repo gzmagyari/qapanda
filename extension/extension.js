@@ -219,6 +219,7 @@ async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = n
       openConflictCount: Number(status.openConflictCount || 0),
       lastSyncedAt: status.lastSyncedAt || null,
       lastError: status.lastError || null,
+      conflicts: Array.isArray(status.conflicts) ? status.conflicts : [],
     },
     notifications: {
       summary: notificationSummary,
@@ -247,6 +248,7 @@ function buildFallbackCloudStatusPayload(cloudBoundary, sessionState = null) {
       openConflictCount: Number(runtime.openConflictCount || 0),
       lastSyncedAt: runtime.lastSyncedAt || null,
       lastError: runtime.lastError || null,
+      conflicts: [],
     },
     notifications: {
       summary: notificationSummary,
@@ -301,6 +303,51 @@ async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtim
     } catch {}
   }
   return payload;
+}
+
+async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg) {
+  const runtime = _cloudSyncRuntime || await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+  if (!runtime) {
+    await postSettingsData(panel, session, cloudBoundary, context);
+    try {
+      panel.webview.postMessage({
+        type: 'cloudSessionNotice',
+        level: 'warning',
+        text: 'Sign in to QA Panda Cloud before refreshing or resolving sync conflicts.',
+      });
+    } catch {}
+    return true;
+  }
+  if (msg.type === 'cloudSyncRefreshConflicts') {
+    const conflicts = await runtime.refreshConflicts();
+    await refreshExtensionCloudStatusSurface(cloudBoundary, context, runtime.getStatus());
+    try {
+      panel.webview.postMessage({
+        type: 'cloudSessionNotice',
+        level: 'info',
+        text: conflicts.length > 0
+          ? `Refreshed ${conflicts.length} sync conflict${conflicts.length === 1 ? '' : 's'}.`
+          : 'No open sync conflicts.',
+      });
+    } catch {}
+    return true;
+  }
+  if (msg.type === 'cloudSyncResolveConflict') {
+    const resolution = msg.resolution === 'take_local' ? 'take_local' : 'take_remote';
+    await runtime.resolveConflict(String(msg.conflictId || ''), resolution);
+    await refreshExtensionCloudStatusSurface(cloudBoundary, context, runtime.getStatus());
+    try {
+      panel.webview.postMessage({
+        type: 'cloudSessionNotice',
+        level: 'info',
+        text: resolution === 'take_local'
+          ? 'Resolved sync conflict using the local version.'
+          : 'Resolved sync conflict using the cloud version.',
+      });
+    } catch {}
+    return true;
+  }
+  return false;
 }
 
 async function postSettingsData(panel, session, cloudBoundary, context) {
@@ -609,6 +656,9 @@ function _activateInner(context) {
           try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
           return;
         }
+        if (await handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg)) {
+          return;
+        }
         if (msg.type === 'mcpServersChanged') {
           const scope = msg.scope;
           const servers = msg.servers;
@@ -847,6 +897,9 @@ async function _deserializeInner(panel, state, context) {
               id: msg.id || null,
             });
             try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
+            return;
+          }
+          if (await handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg)) {
             return;
           }
           if (msg.type === 'settingsLoad') {

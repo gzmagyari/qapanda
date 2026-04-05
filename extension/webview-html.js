@@ -407,6 +407,16 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </div>
             <div class="settings-item settings-item-stack">
               <div class="settings-item-info">
+                <div class="settings-item-name">Sync Conflicts</div>
+                <div class="settings-item-desc" id="cloud-conflict-state">Per-object sync conflicts will appear here when local and cloud changes disagree.</div>
+              </div>
+              <div class="cloud-conflict-actions">
+                <button class="mcp-btn" id="cloud-conflicts-refresh">Refresh Conflicts</button>
+              </div>
+            </div>
+            <div class="cloud-conflict-list" id="cloud-conflict-list"></div>
+            <div class="settings-item settings-item-stack">
+              <div class="settings-item-info">
                 <div class="settings-item-name">Notifications</div>
                 <div class="settings-item-desc" id="cloud-notification-state">Unread hosted notifications will appear here after the extension loads cloud status.</div>
               </div>

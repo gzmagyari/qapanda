@@ -10,6 +10,11 @@ const {
   projectConfigPath,
   saveProjectConfig,
 } = require('../project-context');
+const {
+  defaultStateRoot,
+  manifestPath: stateManifestPath,
+  runDirFromId,
+} = require('../state');
 
 function nowIso() {
   return new Date().toISOString();
@@ -88,6 +93,26 @@ function projectModesFilePath(repoRoot) {
 
 function projectPromptsDir(repoRoot) {
   return path.join(projectQpandaDir(repoRoot), 'prompts');
+}
+
+function projectRunsDir(repoRoot) {
+  return path.join(defaultStateRoot(repoRoot), 'runs');
+}
+
+function runTranscriptFilePath(repoRoot, runId) {
+  return path.join(runDirFromId(defaultStateRoot(repoRoot), runId), 'transcript.jsonl');
+}
+
+function runChatLogFilePath(repoRoot, runId) {
+  return path.join(runDirFromId(defaultStateRoot(repoRoot), runId), 'chat.jsonl');
+}
+
+function runEventsFilePath(repoRoot, runId) {
+  return path.join(runDirFromId(defaultStateRoot(repoRoot), runId), 'events.jsonl');
+}
+
+function runProgressFilePath(repoRoot, runId) {
+  return path.join(runDirFromId(defaultStateRoot(repoRoot), runId), 'progress.md');
 }
 
 function loadTasksFile(filePath) {
@@ -660,6 +685,566 @@ function normalizePromptTemplate(local) {
   };
 }
 
+function buildRunFiles(runDir) {
+  return {
+    manifest: stateManifestPath(runDir),
+    events: path.join(runDir, 'events.jsonl'),
+    transcript: path.join(runDir, 'transcript.jsonl'),
+    chatLog: path.join(runDir, 'chat.jsonl'),
+    progress: path.join(runDir, 'progress.md'),
+    schema: path.join(runDir, 'controller.schema.json'),
+    requestsDir: path.join(runDir, 'requests'),
+  };
+}
+
+function normalizeRunManifest(local) {
+  const runId = String(local.runId || local.id || '');
+  const updatedAt = String(local.updatedAt || local.createdAt || nowIso());
+  const createdAt = String(local.createdAt || updatedAt);
+  return {
+    version: Number(local.version || 1),
+    runId,
+    createdAt,
+    updatedAt,
+    status: String(local.status || 'idle'),
+    phase: String(local.phase || 'idle'),
+    error: local.error == null ? null : String(local.error),
+    stopReason: local.stopReason == null ? null : String(local.stopReason),
+    chatTarget: local.chatTarget == null ? null : String(local.chatTarget),
+    transcriptSummary: String(local.transcriptSummary || runId || 'Run'),
+    waitDelay: local.waitDelay == null ? null : String(local.waitDelay),
+    nextWakeAt: local.nextWakeAt == null ? null : String(local.nextWakeAt),
+    errorRetry: Boolean(local.errorRetry),
+    loopMode: Boolean(local.loopMode),
+    loopObjective: local.loopObjective == null ? null : String(local.loopObjective),
+    activeRequestId: local.activeRequestId == null ? null : String(local.activeRequestId),
+    counters: local.counters && typeof local.counters === 'object'
+      ? {
+          request: Number(local.counters.request || 0),
+          loop: Number(local.counters.loop || 0),
+          controllerTurn: Number(local.counters.controllerTurn || 0),
+          workerTurn: Number(local.counters.workerTurn || 0),
+        }
+      : {
+          request: 0,
+          loop: 0,
+          controllerTurn: 0,
+          workerTurn: 0,
+        },
+    controller: {
+      cli: local.controller && local.controller.cli ? String(local.controller.cli) : 'codex',
+      bin: local.controller && local.controller.bin ? String(local.controller.bin) : 'codex',
+      model: local.controller && local.controller.model != null ? String(local.controller.model) : null,
+      profile: local.controller && local.controller.profile != null ? String(local.controller.profile) : null,
+      sandbox: local.controller && local.controller.sandbox ? String(local.controller.sandbox) : 'workspace-write',
+      config: ensureArray(local.controller && local.controller.config).map((entry) => String(entry)),
+      skipGitRepoCheck: Boolean(local.controller && local.controller.skipGitRepoCheck),
+      extraInstructions: local.controller && local.controller.extraInstructions != null
+        ? String(local.controller.extraInstructions)
+        : null,
+      codexMode: local.controller && local.controller.codexMode ? String(local.controller.codexMode) : 'app-server',
+      apiConfig: local.controller && local.controller.apiConfig && typeof local.controller.apiConfig === 'object'
+        ? cloneJson(local.controller.apiConfig)
+        : null,
+    },
+    worker: {
+      cli: local.worker && local.worker.cli ? String(local.worker.cli) : 'codex',
+      bin: local.worker && local.worker.bin ? String(local.worker.bin) : 'codex',
+      apiConfig: local.worker && local.worker.apiConfig && typeof local.worker.apiConfig === 'object'
+        ? cloneJson(local.worker.apiConfig)
+        : null,
+      model: local.worker && local.worker.model != null ? String(local.worker.model) : null,
+      allowedTools: local.worker && local.worker.allowedTools != null ? String(local.worker.allowedTools) : 'Bash,Read,Edit',
+      tools: local.worker && local.worker.tools != null ? sanitizeForPersistence(local.worker.tools) : null,
+      disallowedTools: local.worker && local.worker.disallowedTools != null ? sanitizeForPersistence(local.worker.disallowedTools) : null,
+      permissionPromptTool: local.worker && local.worker.permissionPromptTool != null ? String(local.worker.permissionPromptTool) : null,
+      maxTurns: local.worker && local.worker.maxTurns != null ? Number(local.worker.maxTurns) : null,
+      maxBudgetUsd: local.worker && local.worker.maxBudgetUsd != null ? Number(local.worker.maxBudgetUsd) : null,
+      addDirs: ensureArray(local.worker && local.worker.addDirs).map((entry) => String(entry)),
+      appendSystemPrompt: local.worker && local.worker.appendSystemPrompt != null ? String(local.worker.appendSystemPrompt) : null,
+      runMode: local.worker && local.worker.runMode ? String(local.worker.runMode) : 'print',
+      hasStarted: Boolean(local.worker && local.worker.hasStarted),
+    },
+    settings: local.settings && typeof local.settings === 'object'
+      ? {
+          rawEvents: Boolean(local.settings.rawEvents),
+          quiet: Boolean(local.settings.quiet),
+          color: local.settings.color !== false,
+        }
+      : {
+          rawEvents: false,
+          quiet: false,
+          color: true,
+        },
+    mcpServers: local.mcpServers && typeof local.mcpServers === 'object' ? cloneJson(local.mcpServers) : {},
+    controllerMcpServers: local.controllerMcpServers && typeof local.controllerMcpServers === 'object'
+      ? cloneJson(local.controllerMcpServers)
+      : null,
+    workerMcpServers: local.workerMcpServers && typeof local.workerMcpServers === 'object'
+      ? cloneJson(local.workerMcpServers)
+      : null,
+    agents: local.agents && typeof local.agents === 'object' ? cloneJson(local.agents) : {},
+    selfTesting: Boolean(local.selfTesting),
+    selfTestPrompts: local.selfTestPrompts && typeof local.selfTestPrompts === 'object'
+      ? cloneJson(local.selfTestPrompts)
+      : null,
+    apiConfig: local.apiConfig && typeof local.apiConfig === 'object' ? cloneJson(local.apiConfig) : null,
+    requests: ensureArray(local.requests).map((request) => ({
+      id: String(request.id || ''),
+      userMessage: String(request.userMessage || ''),
+      startedAt: String(request.startedAt || createdAt),
+      finishedAt: request.finishedAt == null ? null : String(request.finishedAt),
+      status: String(request.status || 'idle'),
+      stopReason: request.stopReason == null ? null : String(request.stopReason),
+      latestControllerDecision: request.latestControllerDecision && typeof request.latestControllerDecision === 'object'
+        ? sanitizeForPersistence(request.latestControllerDecision)
+        : null,
+      latestWorkerResult: request.latestWorkerResult && typeof request.latestWorkerResult === 'object'
+        ? sanitizeForPersistence(request.latestWorkerResult)
+        : null,
+      loops: ensureArray(request.loops).map((loop, index) => ({
+        id: String(loop.id || `loop-${String(index + 1).padStart(4, '0')}`),
+        index: Number(loop.index || index + 1),
+        startedAt: String(loop.startedAt || createdAt),
+        finishedAt: loop.finishedAt == null ? null : String(loop.finishedAt),
+        controller: loop.controller && typeof loop.controller === 'object'
+          ? {
+              exitCode: loop.controller.exitCode == null ? null : Number(loop.controller.exitCode),
+              decision: loop.controller.decision && typeof loop.controller.decision === 'object'
+                ? sanitizeForPersistence(loop.controller.decision)
+                : null,
+            }
+          : { exitCode: null, decision: null },
+        worker: loop.worker && typeof loop.worker === 'object'
+          ? {
+              exitCode: loop.worker.exitCode == null ? null : Number(loop.worker.exitCode),
+              resultText: loop.worker.resultText == null ? null : String(loop.worker.resultText),
+            }
+          : null,
+      })),
+    })),
+  };
+}
+
+function buildLocalManifestFromPayload(repoRoot, payload, fallbackId) {
+  const normalized = normalizeRunManifest({
+    runId: payload.runId || payload.id || fallbackId,
+    ...(payload.manifest && typeof payload.manifest === 'object' ? payload.manifest : payload),
+  });
+  const stateRoot = defaultStateRoot(repoRoot);
+  const runDir = runDirFromId(stateRoot, normalized.runId);
+  const files = buildRunFiles(runDir);
+  const manifest = {
+    version: normalized.version,
+    runId: normalized.runId,
+    repoRoot,
+    stateRoot,
+    runDir,
+    files,
+    createdAt: normalized.createdAt,
+    updatedAt: normalized.updatedAt,
+    status: normalized.status,
+    phase: normalized.phase,
+    error: normalized.error,
+    stopReason: normalized.stopReason,
+    controller: {
+      ...normalized.controller,
+      sessionId: null,
+      lastSeenChatLine: 0,
+      lastSeenTranscriptLine: 0,
+      schemaFile: files.schema,
+      apiConfig: normalized.controller.apiConfig,
+    },
+    worker: {
+      ...normalized.worker,
+      sessionId: null,
+      agentSessions: {},
+      apiConfig: normalized.worker.apiConfig,
+    },
+    settings: normalized.settings,
+    mcpServers: normalized.mcpServers,
+    controllerMcpServers: normalized.controllerMcpServers,
+    workerMcpServers: normalized.workerMcpServers,
+    agents: normalized.agents,
+    panelId: null,
+    chatTarget: normalized.chatTarget,
+    controllerSystemPrompt: null,
+    selfTesting: normalized.selfTesting,
+    selfTestPrompts: normalized.selfTestPrompts,
+    apiConfig: normalized.apiConfig,
+    counters: normalized.counters,
+    activeRequestId: normalized.activeRequestId,
+    requests: ensureArray(normalized.requests).map((request) => {
+      const requestDir = path.join(files.requestsDir, request.id);
+      return {
+        ...request,
+        requestsDir: requestDir,
+        loops: ensureArray(request.loops).map((loop) => {
+          const loopDir = path.join(requestDir, loop.id || `loop-${String(loop.index || 1).padStart(4, '0')}`);
+          return {
+            id: loop.id,
+            index: loop.index,
+            startedAt: loop.startedAt,
+            finishedAt: loop.finishedAt,
+            controller: {
+              promptFile: path.join(loopDir, 'controller.prompt.txt'),
+              stdoutFile: path.join(loopDir, 'controller.stdout.log'),
+              stderrFile: path.join(loopDir, 'controller.stderr.log'),
+              finalFile: path.join(loopDir, 'controller.final.json'),
+              exitCode: loop.controller && loop.controller.exitCode != null ? Number(loop.controller.exitCode) : null,
+              decision: loop.controller && loop.controller.decision != null ? sanitizeForPersistence(loop.controller.decision) : null,
+              sessionId: null,
+            },
+            worker: loop.worker
+              ? {
+                  promptFile: path.join(loopDir, 'worker.prompt.txt'),
+                  stdoutFile: path.join(loopDir, 'worker.stdout.log'),
+                  stderrFile: path.join(loopDir, 'worker.stderr.log'),
+                  finalFile: path.join(loopDir, 'worker.final.json'),
+                  exitCode: loop.worker.exitCode != null ? Number(loop.worker.exitCode) : null,
+                  resultText: loop.worker.resultText == null ? null : String(loop.worker.resultText),
+                  sessionId: null,
+                }
+              : null,
+          };
+        }),
+      };
+    }),
+    transcriptSummary: normalized.transcriptSummary,
+    waitDelay: normalized.waitDelay,
+    nextWakeAt: normalized.nextWakeAt,
+    errorRetry: normalized.errorRetry,
+    loopMode: normalized.loopMode,
+    loopObjective: normalized.loopObjective,
+  };
+  return manifest;
+}
+
+function runManifestPayloadFromLocal(local) {
+  const manifest = normalizeRunManifest(local);
+  return {
+    schemaVersion: 1,
+    objectType: 'run_manifest',
+    id: manifest.runId,
+    title: manifest.transcriptSummary || manifest.runId,
+    manifest,
+    updatedAt: manifest.updatedAt,
+  };
+}
+
+function runManifestLegacyObject(local) {
+  const payload = runManifestPayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function listLocalRunManifestEntries(repoRoot) {
+  const runsRoot = projectRunsDir(repoRoot);
+  if (!fs.existsSync(runsRoot)) return [];
+  return fs.readdirSync(runsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const runDir = path.join(runsRoot, entry.name);
+      const filePath = stateManifestPath(runDir);
+      if (!fs.existsSync(filePath)) return null;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return normalizeRunManifest(manifest);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+}
+
+function writeRunManifestObjects(repoRoot, objects, options = {}) {
+  const liveObjects = objects.filter((object) => object.deletedAt === null);
+  const keep = new Set();
+  for (const object of liveObjects) {
+    const manifest = buildLocalManifestFromPayload(repoRoot, object.payload || {}, object.objectId);
+    const runDir = runDirFromId(defaultStateRoot(repoRoot), manifest.runId);
+    ensureDir(runDir);
+    fs.writeFileSync(stateManifestPath(runDir), JSON.stringify(manifest, null, 2), 'utf8');
+    keep.add(manifest.runId);
+  }
+  if (options.pruneRemoved) {
+    const runsRoot = projectRunsDir(repoRoot);
+    if (fs.existsSync(runsRoot)) {
+      for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
+        fs.rmSync(stateManifestPath(path.join(runsRoot, entry.name)), { force: true });
+      }
+    }
+  }
+  return liveObjects.map((object) => buildLocalManifestFromPayload(repoRoot, object.payload || {}, object.objectId));
+}
+
+function listLocalRunTranscripts(repoRoot) {
+  return listLocalRunManifestEntries(repoRoot)
+    .map((manifest) => {
+      const filePath = runTranscriptFilePath(repoRoot, manifest.runId);
+      return {
+        id: manifest.runId,
+        runId: manifest.runId,
+        title: manifest.transcriptSummary || manifest.runId,
+        content: fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '',
+        updatedAt: fs.existsSync(filePath)
+          ? fs.statSync(filePath).mtime.toISOString()
+          : String(manifest.updatedAt || nowIso()),
+      };
+    })
+    .filter((entry) => entry.content || entry.updatedAt);
+}
+
+function listLocalRunChatLogs(repoRoot) {
+  return listLocalRunManifestEntries(repoRoot)
+    .map((manifest) => {
+      const filePath = runChatLogFilePath(repoRoot, manifest.runId);
+      return {
+        id: manifest.runId,
+        runId: manifest.runId,
+        title: manifest.transcriptSummary || manifest.runId,
+        content: fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '',
+        updatedAt: fs.existsSync(filePath)
+          ? fs.statSync(filePath).mtime.toISOString()
+          : String(manifest.updatedAt || nowIso()),
+      };
+    })
+    .filter((entry) => entry.content || entry.updatedAt);
+}
+
+function listLocalRunEvents(repoRoot) {
+  return listLocalRunManifestEntries(repoRoot)
+    .map((manifest) => {
+      const filePath = runEventsFilePath(repoRoot, manifest.runId);
+      return {
+        id: manifest.runId,
+        runId: manifest.runId,
+        title: manifest.transcriptSummary || manifest.runId,
+        content: fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '',
+        updatedAt: fs.existsSync(filePath)
+          ? fs.statSync(filePath).mtime.toISOString()
+          : String(manifest.updatedAt || nowIso()),
+      };
+    })
+    .filter((entry) => entry.content || entry.updatedAt);
+}
+
+function listLocalRunProgressFiles(repoRoot) {
+  return listLocalRunManifestEntries(repoRoot)
+    .map((manifest) => {
+      const filePath = runProgressFilePath(repoRoot, manifest.runId);
+      return {
+        id: manifest.runId,
+        runId: manifest.runId,
+        title: manifest.transcriptSummary || manifest.runId,
+        content: fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '',
+        updatedAt: fs.existsSync(filePath)
+          ? fs.statSync(filePath).mtime.toISOString()
+          : String(manifest.updatedAt || nowIso()),
+      };
+    })
+    .filter((entry) => entry.content || entry.updatedAt);
+}
+
+function writeRunTranscriptObjects(repoRoot, objects, options = {}) {
+  const keep = new Set();
+  for (const object of objects) {
+    const runId = String((object.payload && object.payload.id) || object.objectId || '');
+    if (!runId) continue;
+    const filePath = runTranscriptFilePath(repoRoot, runId);
+    if (object.deletedAt !== null) {
+      if (options.pruneRemoved) fs.rmSync(filePath, { force: true });
+      continue;
+    }
+    ensureDir(path.dirname(filePath));
+    fs.writeFileSync(filePath, String((object.payload && object.payload.content) || ''), 'utf8');
+    keep.add(runId);
+  }
+  if (options.pruneRemoved) {
+    const runsRoot = projectRunsDir(repoRoot);
+    if (fs.existsSync(runsRoot)) {
+      for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
+        fs.rmSync(runTranscriptFilePath(repoRoot, entry.name), { force: true });
+      }
+    }
+  }
+  return listLocalRunTranscripts(repoRoot);
+}
+
+function writeRunChatLogObjects(repoRoot, objects, options = {}) {
+  const keep = new Set();
+  for (const object of objects) {
+    const runId = String((object.payload && object.payload.id) || object.objectId || '');
+    if (!runId) continue;
+    const filePath = runChatLogFilePath(repoRoot, runId);
+    if (object.deletedAt !== null) {
+      if (options.pruneRemoved) fs.rmSync(filePath, { force: true });
+      continue;
+    }
+    ensureDir(path.dirname(filePath));
+    fs.writeFileSync(filePath, String((object.payload && object.payload.content) || ''), 'utf8');
+    keep.add(runId);
+  }
+  if (options.pruneRemoved) {
+    const runsRoot = projectRunsDir(repoRoot);
+    if (fs.existsSync(runsRoot)) {
+      for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
+        fs.rmSync(runChatLogFilePath(repoRoot, entry.name), { force: true });
+      }
+    }
+  }
+  return listLocalRunChatLogs(repoRoot);
+}
+
+function writeRunEventObjects(repoRoot, objects, options = {}) {
+  const keep = new Set();
+  for (const object of objects) {
+    const runId = String((object.payload && object.payload.id) || object.objectId || '');
+    if (!runId) continue;
+    const filePath = runEventsFilePath(repoRoot, runId);
+    if (object.deletedAt !== null) {
+      if (options.pruneRemoved) fs.rmSync(filePath, { force: true });
+      continue;
+    }
+    ensureDir(path.dirname(filePath));
+    fs.writeFileSync(filePath, String((object.payload && object.payload.content) || ''), 'utf8');
+    keep.add(runId);
+  }
+  if (options.pruneRemoved) {
+    const runsRoot = projectRunsDir(repoRoot);
+    if (fs.existsSync(runsRoot)) {
+      for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
+        fs.rmSync(runEventsFilePath(repoRoot, entry.name), { force: true });
+      }
+    }
+  }
+  return listLocalRunEvents(repoRoot);
+}
+
+function writeRunProgressObjects(repoRoot, objects, options = {}) {
+  const keep = new Set();
+  for (const object of objects) {
+    const runId = String((object.payload && object.payload.id) || object.objectId || '');
+    if (!runId) continue;
+    const filePath = runProgressFilePath(repoRoot, runId);
+    if (object.deletedAt !== null) {
+      if (options.pruneRemoved) fs.rmSync(filePath, { force: true });
+      continue;
+    }
+    ensureDir(path.dirname(filePath));
+    fs.writeFileSync(filePath, String((object.payload && object.payload.content) || ''), 'utf8');
+    keep.add(runId);
+  }
+  if (options.pruneRemoved) {
+    const runsRoot = projectRunsDir(repoRoot);
+    if (fs.existsSync(runsRoot)) {
+      for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
+        fs.rmSync(runProgressFilePath(repoRoot, entry.name), { force: true });
+      }
+    }
+  }
+  return listLocalRunProgressFiles(repoRoot);
+}
+
+function runTranscriptPayloadFromLocal(local) {
+  return {
+    schemaVersion: 1,
+    objectType: 'run_transcript',
+    id: String(local.id || local.runId),
+    title: String(local.title || local.id || local.runId || 'Run Transcript'),
+    content: String(local.content || ''),
+    updatedAt: String(local.updatedAt || nowIso()),
+  };
+}
+
+function runTranscriptLegacyObject(local) {
+  const payload = runTranscriptPayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function runChatLogPayloadFromLocal(local) {
+  return {
+    schemaVersion: 1,
+    objectType: 'run_chat_log',
+    id: String(local.id || local.runId),
+    title: String(local.title || local.id || local.runId || 'Run Chat Log'),
+    content: String(local.content || ''),
+    updatedAt: String(local.updatedAt || nowIso()),
+  };
+}
+
+function runChatLogLegacyObject(local) {
+  const payload = runChatLogPayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function runEventPayloadFromLocal(local) {
+  return {
+    schemaVersion: 1,
+    objectType: 'run_event_log',
+    id: String(local.id || local.runId),
+    title: String(local.title || local.id || local.runId || 'Run Event Log'),
+    content: String(local.content || ''),
+    updatedAt: String(local.updatedAt || nowIso()),
+  };
+}
+
+function runEventLegacyObject(local) {
+  const payload = runEventPayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function runProgressPayloadFromLocal(local) {
+  return {
+    schemaVersion: 1,
+    objectType: 'run_progress',
+    id: String(local.id || local.runId),
+    title: String(local.title || local.id || local.runId || 'Run Progress'),
+    content: String(local.content || ''),
+    updatedAt: String(local.updatedAt || nowIso()),
+  };
+}
+
+function runProgressLegacyObject(local) {
+  const payload = runProgressPayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
 function promptTemplatePayloadFromLocal(local) {
   const prompt = normalizePromptTemplate(local);
   return {
@@ -1150,6 +1735,56 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     toPayload: projectSettingPayloadFromLocal,
     writeFromStore: writeProjectSettingObjects,
   });
+  const runManifests = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'run_manifest'),
+    store: storeResult.store,
+    objectType: 'run_manifest',
+    repoRoot,
+    listLocal: () => listLocalRunManifestEntries(repoRoot),
+    toLegacy: runManifestLegacyObject,
+    toPayload: runManifestPayloadFromLocal,
+    writeFromStore: writeRunManifestObjects,
+  });
+  const runTranscripts = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'run_transcript'),
+    store: storeResult.store,
+    objectType: 'run_transcript',
+    repoRoot,
+    listLocal: () => listLocalRunTranscripts(repoRoot),
+    toLegacy: runTranscriptLegacyObject,
+    toPayload: runTranscriptPayloadFromLocal,
+    writeFromStore: writeRunTranscriptObjects,
+  });
+  const runChatLogs = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'run_chat_log'),
+    store: storeResult.store,
+    objectType: 'run_chat_log',
+    repoRoot,
+    listLocal: () => listLocalRunChatLogs(repoRoot),
+    toLegacy: runChatLogLegacyObject,
+    toPayload: runChatLogPayloadFromLocal,
+    writeFromStore: writeRunChatLogObjects,
+  });
+  const runEvents = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'run_event_log'),
+    store: storeResult.store,
+    objectType: 'run_event_log',
+    repoRoot,
+    listLocal: () => listLocalRunEvents(repoRoot),
+    toLegacy: runEventLegacyObject,
+    toPayload: runEventPayloadFromLocal,
+    writeFromStore: writeRunEventObjects,
+  });
+  const runProgress = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'run_progress'),
+    store: storeResult.store,
+    objectType: 'run_progress',
+    repoRoot,
+    listLocal: () => listLocalRunProgressFiles(repoRoot),
+    toLegacy: runProgressLegacyObject,
+    toPayload: runProgressPayloadFromLocal,
+    writeFromStore: writeRunProgressObjects,
+  });
 
   function importAllLocal() {
     return {
@@ -1163,6 +1798,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       appInfo: appInfo.importLocalSnapshot(),
       memory: memory.importLocalSnapshot(),
       projectSettings: projectSettings.importLocalSnapshot(),
+      runManifests: runManifests.importLocalSnapshot(),
+      runTranscripts: runTranscripts.importLocalSnapshot(),
+      runChatLogs: runChatLogs.importLocalSnapshot(),
+      runEvents: runEvents.importLocalSnapshot(),
+      runProgress: runProgress.importLocalSnapshot(),
     };
   }
 
@@ -1178,6 +1818,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       appInfo: appInfo.hydrateFromStore(options),
       memory: memory.hydrateFromStore(options),
       projectSettings: projectSettings.hydrateFromStore(options),
+      runManifests: runManifests.hydrateFromStore(options),
+      runTranscripts: runTranscripts.hydrateFromStore(options),
+      runChatLogs: runChatLogs.hydrateFromStore(options),
+      runEvents: runEvents.hydrateFromStore(options),
+      runProgress: runProgress.hydrateFromStore(options),
     };
   }
 
@@ -1193,6 +1838,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       appInfo: appInfo.syncLocalToStore(),
       memory: memory.syncLocalToStore(),
       projectSettings: projectSettings.syncLocalToStore(),
+      runManifests: runManifests.syncLocalToStore(),
+      runTranscripts: runTranscripts.syncLocalToStore(),
+      runChatLogs: runChatLogs.syncLocalToStore(),
+      runEvents: runEvents.syncLocalToStore(),
+      runProgress: runProgress.syncLocalToStore(),
     };
   }
 
@@ -1208,6 +1858,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       appInfo: appInfo.captureLocalState(),
       memory: memory.captureLocalState(),
       projectSettings: projectSettings.captureLocalState(),
+      runManifests: runManifests.captureLocalState(),
+      runTranscripts: runTranscripts.captureLocalState(),
+      runChatLogs: runChatLogs.captureLocalState(),
+      runEvents: runEvents.captureLocalState(),
+      runProgress: runProgress.captureLocalState(),
     };
   }
 
@@ -1222,6 +1877,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     const appInfoResult = appInfo.queueLocalChanges(previousState.appInfo || {});
     const memoryResult = memory.queueLocalChanges(previousState.memory || {});
     const settingsResult = projectSettings.queueLocalChanges(previousState.projectSettings || {});
+    const runManifestResult = runManifests.queueLocalChanges(previousState.runManifests || {});
+    const runTranscriptResult = runTranscripts.queueLocalChanges(previousState.runTranscripts || {});
+    const runChatLogResult = runChatLogs.queueLocalChanges(previousState.runChatLogs || {});
+    const runEventResult = runEvents.queueLocalChanges(previousState.runEvents || {});
+    const runProgressResult = runProgress.queueLocalChanges(previousState.runProgress || {});
     return {
       changes: {
         issues: issueResult.changes,
@@ -1234,6 +1894,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
         appInfo: appInfoResult.changes,
         memory: memoryResult.changes,
         projectSettings: settingsResult.changes,
+        runManifests: runManifestResult.changes,
+        runTranscripts: runTranscriptResult.changes,
+        runChatLogs: runChatLogResult.changes,
+        runEvents: runEventResult.changes,
+        runProgress: runProgressResult.changes,
       },
       state: {
         issues: issueResult.state,
@@ -1246,6 +1911,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
         appInfo: appInfoResult.state,
         memory: memoryResult.state,
         projectSettings: settingsResult.state,
+        runManifests: runManifestResult.state,
+        runTranscripts: runTranscriptResult.state,
+        runChatLogs: runChatLogResult.state,
+        runEvents: runEventResult.state,
+        runProgress: runProgressResult.state,
       },
     };
   }
@@ -1281,6 +1951,11 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     appInfo,
     memory,
     projectSettings,
+    runManifests,
+    runTranscripts,
+    runChatLogs,
+    runEvents,
+    runProgress,
     importAllLocal,
     captureLocalState,
     queueLocalChanges,
@@ -1308,21 +1983,36 @@ module.exports = {
   listLocalIssues,
   listLocalTests,
   listProjectWorkflows,
+  listLocalRunManifestEntries,
+  listLocalRunChatLogs,
+  listLocalRunEvents,
+  listLocalRunProgressFiles,
+  listLocalRunTranscripts,
   issuePayloadFromLocal,
-    testPayloadFromLocal,
-    recipePayloadFromWorkflow,
-    agentPayloadFromLocal,
-    mcpServerPayloadFromLocal,
-    issueFromPayload,
-    testFromPayload,
-    tasksFilePath,
-    testsFilePath,
-    projectWorkflowsDir,
-    projectAgentsFilePath,
-    projectMcpFilePath,
-    projectModesFilePath,
-    projectPromptsDir,
-    PROJECT_SYNC_SETTING_KEYS,
-    modePayloadFromLocal,
-    promptTemplatePayloadFromLocal,
+  testPayloadFromLocal,
+  recipePayloadFromWorkflow,
+  agentPayloadFromLocal,
+  mcpServerPayloadFromLocal,
+  modePayloadFromLocal,
+  promptTemplatePayloadFromLocal,
+  runManifestPayloadFromLocal,
+  runChatLogPayloadFromLocal,
+  runEventPayloadFromLocal,
+  runProgressPayloadFromLocal,
+  runTranscriptPayloadFromLocal,
+  issueFromPayload,
+  testFromPayload,
+  tasksFilePath,
+  testsFilePath,
+  projectWorkflowsDir,
+  projectAgentsFilePath,
+  projectMcpFilePath,
+  projectModesFilePath,
+  projectPromptsDir,
+  projectRunsDir,
+  runChatLogFilePath,
+  runEventsFilePath,
+  runProgressFilePath,
+  runTranscriptFilePath,
+  PROJECT_SYNC_SETTING_KEYS,
 };
