@@ -31,6 +31,14 @@ const {
 const { mcpServersForRole } = require('./mcp-injector');
 const { createCloudBoundary } = require('./cloud');
 const { runCloudCommand, CLOUD_COMMAND_USAGE } = require('./cloud/cli-auth');
+const {
+  CLOUD_RUN_ARG_SPEC,
+  buildCloudRunOptions,
+  createCloudRunEventBridge,
+  emitCloudRunRawEvent,
+  loadCloudRunSpec,
+  writeCloudRunArtifacts,
+} = require('./cloud-run');
 
 function usage() {
   return `qapanda
@@ -49,6 +57,8 @@ Commands:
   qapanda agents                  List all available agents
   qapanda modes                   List all available modes
   qapanda cloud <subcommand>      Cloud auth, identity, and hosted links
+  qapanda cloud-run --spec <file> --raw-events
+                                  Execute a versioned cloud-run spec file
 
 Common options:
   --repo <path>                      Project root directory
@@ -469,10 +479,18 @@ async function runOneShot(argv) {
   if (!message) message = (await readAllStdin()).trim();
   if (!message) throw new Error('Missing initial user message.');
 
+  await runPreparedOneShot(message, options, { preloadCloud: true });
+}
+
+async function runPreparedOneShot(message, options, { preloadCloud = true, onEvent = null, afterRun = null, printSummary = true } = {}) {
+  const normalizedOptions = normalizeOptions(options);
+
   // Load config and apply mode/agent/MCP injection
-  const config = loadConfig(options.repoRoot);
-  await config.cloud.preload();
-  const { options: enriched, directAgent } = applyConfigToOptions(options, config);
+  const config = loadConfig(normalizedOptions.repoRoot);
+  if (preloadCloud) {
+    await config.cloud.preload();
+  }
+  const { options: enriched, directAgent } = applyConfigToOptions(normalizedOptions, config);
 
   // Verify CLIs — only check binaries that are actually configured
   const controllerIsCodex = !enriched.controllerCli || enriched.controllerCli === 'codex' || enriched.controllerCli === 'qa-remote-codex';
@@ -506,15 +524,62 @@ async function runOneShot(argv) {
     if (directAgent || enriched.print) {
       // Direct agent mode or print mode — skip controller
       const agentId = directAgent || null;
-      await runDirectWorkerTurn(manifest, renderer, { userMessage: message, agentId });
+      await runDirectWorkerTurn(manifest, renderer, { userMessage: message, agentId, onEvent });
     } else {
-      await runManagerLoop(manifest, renderer, { userMessage: message });
+      await runManagerLoop(manifest, renderer, { userMessage: message, onEvent });
     }
   } finally {
     renderer.close();
     await saveManifest(manifest);
   }
-  await printRunSummary(manifest);
+  if (typeof afterRun === 'function') {
+    await afterRun(manifest);
+  }
+  if (printSummary) {
+    await printRunSummary(manifest);
+  }
+  return manifest;
+}
+
+async function runCloudRunCommand(argv) {
+  const parsed = parseArgs(argv, CLOUD_RUN_ARG_SPEC);
+  if (parsed.positionals.length > 0) {
+    throw new Error(`Unexpected positional arguments for cloud-run: ${parsed.positionals.join(' ')}`);
+  }
+  const { spec } = loadCloudRunSpec(parsed.options.specPath);
+  const options = buildCloudRunOptions(spec, parsed.options);
+  emitCloudRunRawEvent({ type: 'session.started', mode: 'cloud-run', targetUrl: spec.targetUrl || undefined });
+  if (spec.targetUrl) {
+    emitCloudRunRawEvent({ type: 'browser.navigation', url: spec.targetUrl });
+  }
+  const bridge = createCloudRunEventBridge(spec);
+  try {
+    const manifest = await runPreparedOneShot(spec.prompt, options, {
+      preloadCloud: false,
+      onEvent: bridge,
+      printSummary: false,
+      afterRun: async (completedManifest) => {
+        const artifacts = await writeCloudRunArtifacts(completedManifest, spec);
+        for (const artifact of artifacts) {
+          emitCloudRunRawEvent({
+            type: 'artifact.created',
+            artifactType: artifact.artifactType,
+            filename: artifact.filename,
+          });
+        }
+      },
+    });
+    emitCloudRunRawEvent({
+      type: 'session.completed',
+      outcome: manifest.status === 'idle' ? 'succeeded' : manifest.status,
+    });
+  } catch (error) {
+    emitCloudRunRawEvent({
+      type: 'session.failed',
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 async function resumeRun(argv) {
@@ -657,6 +722,7 @@ async function main(argv) {
   if (command === 'agents') { await listAgentsCmd(rest); return; }
   if (command === 'modes') { await listModesCmd(rest); return; }
   if (command === 'cloud') { await runCloudCommand(rest); return; }
+  if (command === 'cloud-run') { await runCloudRunCommand(rest); return; }
   if (command === 'mcp') { await mcpCmd(rest); return; }
 
   if (command === 'help' || command === '--help' || command === '-h') {
@@ -667,4 +733,4 @@ async function main(argv) {
   throw new Error(`Unknown command: ${command}\n\n${usage()}`);
 }
 
-module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions, runCloudCommand };
+module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions, runCloudCommand, runCloudRunCommand };

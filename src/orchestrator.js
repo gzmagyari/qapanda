@@ -187,8 +187,11 @@ async function appendProgress(manifest, line, renderer) {
   }
 }
 
-async function emitEvent(manifest, event, renderer) {
+async function emitEvent(manifest, event, renderer, onEvent) {
   await appendJsonl(manifest.files.events, event);
+  if (typeof onEvent === 'function') {
+    await onEvent(event);
+  }
   if (renderer && event.source === 'shell' && event.text) {
     renderer.shell(event.text);
   }
@@ -290,6 +293,7 @@ async function startUserRequest(manifest, renderer, userMessage, options = {}) {
     manifest,
     { ts: nowIso(), source: 'user-message', requestId: request.id, text: userMessage },
     renderer,
+    options.onEvent,
   );
   await saveManifest(manifest);
   return request;
@@ -370,7 +374,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
             await appendJsonl(loop.controller.stderrFile, { text: event.text });
           }
-          await emitEvent(manifest, event, renderer);
+          await emitEvent(manifest, event, renderer, options.onEvent);
           await appendBackendTranscriptEvent(manifest, event, {
             sessionKey: controllerSessionKey(),
             backend: controllerBackend,
@@ -444,6 +448,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
             stopReason: request.stopReason,
           },
           renderer,
+          options.onEvent,
         );
         await saveManifest(manifest);
         return manifest;
@@ -498,6 +503,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           prompt: controllerResult.decision.claude_message,
         },
         renderer,
+        options.onEvent,
       );
 
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
@@ -525,7 +531,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
               await appendJsonl(workerRecord.stderrFile, { text: event.text });
             }
             activityLog.feed(event.parsed);
-            await emitEvent(manifest, event, renderer);
+            await emitEvent(manifest, event, renderer, options.onEvent);
             await appendBackendTranscriptEvent(manifest, event, {
               sessionKey: workerMeta.sessionKey,
               backend: workerMeta.backend,
@@ -567,6 +573,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           text: workerResult.resultText,
         },
         renderer,
+        options.onEvent,
       );
 
       loop.finishedAt = nowIso();
@@ -587,6 +594,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       manifest,
       { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message },
       renderer,
+      options.onEvent,
     );
     await saveManifest(manifest);
     throw error;
@@ -670,7 +678,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       payload: { role: 'user', content: userMessage },
       display: false,
     });
-    await emitEvent(manifest, { ts: nowIso(), source: 'delegation', requestId: request.id, text: userMessage, agentId }, renderer);
+    await emitEvent(manifest, { ts: nowIso(), source: 'delegation', requestId: request.id, text: userMessage, agentId }, renderer, options.onEvent);
     await saveManifest(manifest);
   } else {
     request = await startUserRequest(manifest, renderer, userMessage, {
@@ -718,6 +726,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         prompt: userMessage,
       },
       renderer,
+      options.onEvent,
     );
 
     const runWorker = getWorkerRunner(manifest, agentConfig);
@@ -746,7 +755,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
             await appendJsonl(workerRecord.stderrFile, { text: event.text });
           }
           activityLog.feed(event.parsed);
-          await emitEvent(manifest, event, renderer);
+          await emitEvent(manifest, event, renderer, options.onEvent);
           await appendBackendTranscriptEvent(manifest, event, {
             sessionKey: workerMeta.sessionKey,
             backend: workerMeta.backend,
@@ -809,6 +818,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       manifest,
       { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message },
       renderer,
+      options.onEvent,
     );
     await saveManifest(manifest);
     throw error;
@@ -882,7 +892,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
           if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
             await appendJsonl(loop.controller.stderrFile, { text: event.text });
           }
-          await emitEvent(manifest, event, renderer);
+          await emitEvent(manifest, event, renderer, options.onEvent);
           await appendBackendTranscriptEvent(manifest, event, {
             sessionKey: controllerSessionKey(),
             backend: controllerBackend,
@@ -907,7 +917,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
           controllerCli: manifest.controller.cli || 'codex',
           requestId: request.id, loopIndex: loop.index,
         });
-        await emitEvent(manifest, { ts: nowIso(), source: 'controller-message', requestId: request.id, loopIndex: loop.index, text: message }, renderer);
+        await emitEvent(manifest, { ts: nowIso(), source: 'controller-message', requestId: request.id, loopIndex: loop.index, text: message }, renderer, options.onEvent);
       }
 
       for (const line of controllerResult.decision.progress_updates || []) {
@@ -991,7 +1001,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
           emitEvent: async (event) => {
             if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
             if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
-            await emitEvent(manifest, event, renderer);
+            await emitEvent(manifest, event, renderer, options.onEvent);
             await appendBackendTranscriptEvent(manifest, event, {
               sessionKey: workerMeta.sessionKey,
               backend: workerMeta.backend,
@@ -1037,7 +1047,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
     const message = summarizeError(error);
     const request = manifest.requests && manifest.requests[manifest.requests.length - 1];
     if (request) markInterrupted(manifest, request, message);
-    await emitEvent(manifest, { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message }, renderer);
+    await emitEvent(manifest, { ts: nowIso(), source: 'run-error', requestId: request ? request.id : null, text: message }, renderer, options.onEvent);
     await saveManifest(manifest);
     throw error;
   } finally {
