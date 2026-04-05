@@ -39,6 +39,9 @@
   const fatalRecoveryDetailEl = document.getElementById('fatal-recovery-detail');
   const fatalRecoveryReloadBtn = document.getElementById('fatal-recovery-reload');
   let fatalRecoveryShown = false;
+  let initConfigReceived = false;
+  let readyRetryCount = 0;
+  let readyRetryTimer = null;
 
   function formatFatalDetail(kind, errorLike) {
     const prefix = `Fatal ${kind}`;
@@ -125,14 +128,21 @@
     const btn = e.target.closest('.tab-btn');
     if (!btn) return;
     const tab = btn.dataset.tab;
+    _dbg('TAB click: ' + tab);
     tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     for (const [key, el] of Object.entries(tabPanels)) {
       if (key === tab) el.classList.remove('tab-hidden');
       else el.classList.add('tab-hidden');
     }
-    if (tab === 'tasks') vscode.postMessage({ type: 'tasksLoad' });
-    if (tab === 'tests') vscode.postMessage({ type: 'testsLoad' });
+    if (tab === 'tasks') {
+      _dbg('TAB postMessage: tasksLoad');
+      vscode.postMessage({ type: 'tasksLoad' });
+    }
+    if (tab === 'tests') {
+      _dbg('TAB postMessage: testsLoad');
+      vscode.postMessage({ type: 'testsLoad' });
+    }
     if (tab === 'appinfo') vscode.postMessage({ type: 'appInfoLoad' });
     if (tab === 'memory') vscode.postMessage({ type: 'memoryLoad' });
     if (tab === 'agents') vscode.postMessage({ type: 'agentsLoad' });
@@ -1192,6 +1202,14 @@
     toolbar.appendChild(summaryEl);
     testBoardEl.appendChild(toolbar);
 
+    if (testBoardData.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.textContent = 'No tests yet';
+      testBoardEl.appendChild(empty);
+      return;
+    }
+
     // Columns
     const cols = document.createElement('div');
     cols.className = 'kanban-columns';
@@ -2149,6 +2167,14 @@
     addBtn.addEventListener('click', () => showTaskForm(null));
     toolbar.appendChild(addBtn);
     kanbanBoard.appendChild(toolbar);
+
+    if (kanbanTasks.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mcp-empty';
+      empty.textContent = 'No issues yet';
+      kanbanBoard.appendChild(empty);
+      return;
+    }
 
     const columnsRow = document.createElement('div');
     columnsRow.className = 'kanban-columns';
@@ -5377,6 +5403,12 @@
     },
 
     initConfig(msg) {
+      initConfigReceived = true;
+      if (readyRetryTimer) {
+        clearInterval(readyRetryTimer);
+        readyRetryTimer = null;
+      }
+      _dbg('initConfig received: panelId=' + (msg.panelId || ''));
       if (msg.apiCatalog) {
         applyApiCatalog(msg.apiCatalog);
       }
@@ -5557,6 +5589,7 @@
     },
 
     tasksData(msg) {
+      _dbg('tasksData received: count=' + ((msg.tasks && msg.tasks.length) || 0));
       kanbanTasks = msg.tasks || [];
       // If we're viewing a task detail, refresh it; otherwise refresh board
       if (taskDetail.style.display !== 'none') {
@@ -5570,6 +5603,7 @@
     },
 
     testsData(msg) {
+      _dbg('testsData received: count=' + ((msg.tests && msg.tests.length) || 0));
       testBoardData = msg.tests || [];
       if (testDetailEl && testDetailEl.style.display !== 'none') {
         // If detail is open, refresh it
@@ -5816,6 +5850,9 @@
     },
 
     cloudSessionData(msg) {
+      if (msg.cloud) {
+        cloudBootstrap = msg.cloud;
+      }
       if (msg.cloudSession) {
         cloudSessionState = msg.cloudSession;
       }
@@ -6058,6 +6095,7 @@
   function sendInput() {
     const text = textarea.value.trim();
     if (!text) return;
+    _dbg('sendInput: text=' + text.slice(0, 120));
     textarea.value = '';
     textarea.style.height = 'auto';
     suggestionsEl.style.display = 'none';
@@ -6135,5 +6173,18 @@
   // Request persisted config from extension host, include saved runId for reattach
   _dbg('PRE-READY DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '"');
   _dbg('READY sent: runId=' + currentRunId + ' panelId=' + panelId);
-  vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId });
+  function postReady() {
+    vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId });
+  }
+  postReady();
+  readyRetryTimer = setInterval(() => {
+    if (initConfigReceived || readyRetryCount >= 10) {
+      clearInterval(readyRetryTimer);
+      readyRetryTimer = null;
+      return;
+    }
+    readyRetryCount += 1;
+    _dbg('READY retry #' + readyRetryCount + ': runId=' + currentRunId + ' panelId=' + panelId);
+    postReady();
+  }, 500);
 })();

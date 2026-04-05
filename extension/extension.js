@@ -33,6 +33,21 @@ let _cloudSyncRuntime = null;
 let _cloudSyncStartPromise = null;
 let _cloudStatusBarItem = null;
 
+function appendPanelDebugLog(repoRoot, text) {
+  const candidates = [];
+  if (repoRoot) {
+    candidates.push(path.join(repoRoot, '.qpanda', 'wizard-debug.log'));
+  }
+  candidates.push(path.join(os.homedir(), '.qpanda', 'wizard-debug.log'));
+  for (const logPath of candidates) {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${text}\n`);
+      return;
+    } catch {}
+  }
+}
+
 try {
   ({ WebviewRenderer } = require('./webview-renderer'));
   _aDbg('require OK: webview-renderer');
@@ -199,15 +214,16 @@ function defaultCloudRuntimeState(sessionState) {
   };
 }
 
-async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = null) {
-  const [packages, sessionState] = await Promise.all([
-    cloudBoundary.loadPackages(),
-    buildCloudSessionPayload(cloudBoundary, context),
-  ]);
-  const status = runtimeStatus || (_cloudSyncRuntime ? _cloudSyncRuntime.getStatus() : defaultCloudRuntimeState(sessionState));
+async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = null, sessionState = null) {
+  const resolvedSession = sessionState || await buildCloudSessionPayload(cloudBoundary, context);
+  if (!resolvedSession || !resolvedSession.loggedIn) {
+    return buildFallbackCloudStatusPayload(cloudBoundary, resolvedSession);
+  }
+  const packages = await cloudBoundary.loadPackages();
+  const status = runtimeStatus || (_cloudSyncRuntime ? _cloudSyncRuntime.getStatus() : defaultCloudRuntimeState(resolvedSession));
   const notificationSummary = status.notificationSummary || { unreadCount: 0, latest: [] };
   return {
-    session: sessionState,
+    session: resolvedSession,
     sync: {
       started: Boolean(status.started),
       registered: Boolean(status.registered),
@@ -306,6 +322,9 @@ async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtim
 }
 
 async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg) {
+  if (!msg || (msg.type !== 'cloudSyncRefreshConflicts' && msg.type !== 'cloudSyncResolveConflict')) {
+    return false;
+  }
   const runtime = _cloudSyncRuntime || await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
   if (!runtime) {
     await postSettingsData(panel, session, cloudBoundary, context);
@@ -351,12 +370,13 @@ async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, con
 }
 
 async function postSettingsData(panel, session, cloudBoundary, context) {
+  const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
   const payload = {
     type: 'settingsData',
     settings: loadSettings(),
     defaults: buildSelfTestingPrompt.DEFAULTS,
-    cloudSession: await buildCloudSessionPayload(cloudBoundary, context),
-    cloudStatus: await buildCloudStatusPayload(cloudBoundary, context),
+    cloudSession,
+    cloudStatus: await buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
   };
   try { panel.webview.postMessage(payload); } catch {}
 }
@@ -365,6 +385,11 @@ async function ensureExtensionCloudSyncRuntime(cloudBoundary, context) {
   if (_cloudSyncRuntime) return _cloudSyncRuntime;
   if (_cloudSyncStartPromise) return _cloudSyncStartPromise;
   _cloudSyncStartPromise = (async () => {
+    const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+    if (!cloudSession || !cloudSession.loggedIn) {
+      await refreshExtensionCloudStatusSurface(cloudBoundary, context, null);
+      return null;
+    }
     const runtime = await cloudBoundary.createRepositorySyncRuntime({
       secretStorage: context.secrets,
       appName: 'VS Code',
@@ -432,7 +457,7 @@ function _activateInner(context) {
   _aDbg('checkpoint: starting MCP servers');
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
   const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot: defaultRepoRoot });
-  const cloudBootstrapPromise = cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
+  const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
   if (!_cloudStatusBarItem) {
     _cloudStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
     _cloudStatusBarItem.name = 'QA Panda Cloud';
@@ -470,7 +495,6 @@ function _activateInner(context) {
     );
 
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.svg');
-    panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
     const renderer = new WebviewRenderer(panel);
     const repoRoot = getRepoRoot(context.extensionUri);
@@ -511,15 +535,14 @@ function _activateInner(context) {
 
     panel.webview.onDidReceiveMessage(
       async (msg) => {
+        try {
         if (msg.type === 'configChanged') {
           session.applyConfig(msg.config);
           Object.assign(panelConfig, msg.config);
           return;
         }
         if (msg.type === '_debugLog') {
-          const logPath = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
-          try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
-          try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
+          appendPanelDebugLog(repoRoot, msg.text);
           return;
         }
         if (msg.type === 'onboardingDetect') {
@@ -556,13 +579,10 @@ function _activateInner(context) {
           return;
         }
         if (msg.type === 'ready') {
-          const cloud = await cloudBootstrapPromise;
+          appendPanelDebugLog(repoRoot, `EXT-HOST: ready message received repoRoot=${repoRoot} runId=${msg.runId || ''} panelId=${msg.panelId || ''}`);
+          const cloud = cloudBoundary.summarize();
           const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
           const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
-          // Debug: log that we got ready message
-          const _dlog = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
-          try { fs.mkdirSync(path.dirname(_dlog), { recursive: true }); } catch {}
-          try { fs.appendFileSync(_dlog, `[${new Date().toISOString()}] EXT-HOST: ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, msg.panelId=${msg.panelId}\n`); } catch {}
           // Restore panelId from webview persisted state if available
           _extDbg(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
           if (msg.panelId) session._panelId = msg.panelId;
@@ -589,11 +609,15 @@ function _activateInner(context) {
             cloudSession: initialCloudSession,
             cloudStatus: initialCloudStatus,
           });
+          appendPanelDebugLog(repoRoot, `EXT-HOST: initConfig posted panelId=${session.panelId} runId=${reattached ? session.getRunId() || '' : ''}`);
           void (async () => {
             const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
-            const cloudStatus = await buildCloudStatusPayload(cloudBoundary, context);
+            const [cloud, cloudStatus] = await Promise.all([
+              cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
+              buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
+            ]);
             try {
-              panel.webview.postMessage({ type: 'cloudSessionData', cloudSession, cloudStatus });
+              panel.webview.postMessage({ type: 'cloudSessionData', cloud, cloudSession, cloudStatus });
             } catch {}
           })();
           // Re-link to existing container if still running (don't create a new one)
@@ -617,6 +641,9 @@ function _activateInner(context) {
           _extDbg(`ready: calling prestart() with stable panelId=${session._panelId}`);
           session.prestart();
           return;
+        }
+        if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput') {
+          appendPanelDebugLog(repoRoot, `EXT-HOST: incoming ${msg.type}${msg.text ? ` text=${String(msg.text).slice(0, 120)}` : ''}`);
         }
         if (msg.type === 'cloudSessionLogin') {
           const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
@@ -689,10 +716,18 @@ function _activateInner(context) {
         }
         // Task CRUD messages
         const taskReply = await handleTaskMessage(msg, repoRoot);
-        if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+        if (taskReply) {
+          appendPanelDebugLog(repoRoot, `EXT-HOST: posting ${taskReply.type} count=${Array.isArray(taskReply.tasks) ? taskReply.tasks.length : 0}`);
+          try { panel.webview.postMessage(taskReply); } catch {}
+          return;
+        }
         // Test CRUD messages
         const testReply = await handleTestMessage(msg, repoRoot);
-        if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
+        if (testReply) {
+          appendPanelDebugLog(repoRoot, `EXT-HOST: posting ${testReply.type} count=${Array.isArray(testReply.tests) ? testReply.tests.length : 0}`);
+          try { panel.webview.postMessage(testReply); } catch {}
+          return;
+        }
         // Agent CRUD messages
         const agentReply = handleAgentMessage(msg, repoRoot, extensionPath1);
         if (agentReply) {
@@ -722,11 +757,18 @@ function _activateInner(context) {
           }
           return;
         }
+        appendPanelDebugLog(repoRoot, `EXT-HOST: forwarding to session.handleMessage type=${msg.type}`);
         session.handleMessage(msg);
+        } catch (error) {
+          appendPanelDebugLog(repoRoot, `EXT-HOST ERROR type=${msg && msg.type ? msg.type : 'unknown'} message=${error && error.message ? error.message : String(error)} stack=${error && error.stack ? error.stack.replace(/\s+/g, ' ') : ''}`);
+          throw error;
+        }
       },
       undefined,
       context.subscriptions
     );
+
+    panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
     activePanels.add(panel);
 
@@ -771,12 +813,10 @@ function _activateInner(context) {
 }
 
 async function _deserializeInner(panel, state, context) {
-      panel.webview.html = getWebviewHtml(panel, context.extensionUri);
-
       const renderer = new WebviewRenderer(panel);
       const repoRoot = getRepoRoot(context.extensionUri);
       const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot });
-      const cloudBootstrapPromise = cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
+      const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
       // Per-panel config restored from webview state (per-panel, not shared)
       const panelConfig = (state && state.config) || {};
       const savedRunId = (state && state.runId) || null;
@@ -809,10 +849,9 @@ async function _deserializeInner(panel, state, context) {
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
+          try {
           if (msg.type === '_debugLog') {
-            const logPath = path.join(repoRoot, '.qpanda', 'wizard-debug.log');
-            try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
-            try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg.text}\n`); } catch {}
+            appendPanelDebugLog(repoRoot, msg.text);
             return;
           }
           if (msg.type === 'onboardingDetect') {
@@ -863,6 +902,9 @@ async function _deserializeInner(panel, state, context) {
             const mcpData = loadMergedMcpServers(repoRoot);
             session.setMcpServers(mcpData);
             return;
+          }
+          if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput') {
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): incoming ${msg.type}${msg.text ? ` text=${String(msg.text).slice(0, 120)}` : ''}`);
           }
           if (msg.type === 'cloudSessionLogin') {
             const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
@@ -919,10 +961,18 @@ async function _deserializeInner(panel, state, context) {
           }
           // Task CRUD messages
           const taskReply = await handleTaskMessage(msg, repoRoot);
-          if (taskReply) { try { panel.webview.postMessage(taskReply); } catch {} return; }
+          if (taskReply) {
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): posting ${taskReply.type} count=${Array.isArray(taskReply.tasks) ? taskReply.tasks.length : 0}`);
+            try { panel.webview.postMessage(taskReply); } catch {}
+            return;
+          }
           // Test CRUD messages
           const testReply = await handleTestMessage(msg, repoRoot);
-          if (testReply) { try { panel.webview.postMessage(testReply); } catch {} return; }
+          if (testReply) {
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): posting ${testReply.type} count=${Array.isArray(testReply.tests) ? testReply.tests.length : 0}`);
+            try { panel.webview.postMessage(testReply); } catch {}
+            return;
+          }
           // Agent CRUD messages
           const agentReply = handleAgentMessage(msg, repoRoot, extensionPath2);
           if (agentReply) {
@@ -953,13 +1003,10 @@ async function _deserializeInner(panel, state, context) {
             return;
           }
           if (msg.type === 'ready') {
-            const cloud = await cloudBootstrapPromise;
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): ready message received repoRoot=${repoRoot} runId=${msg.runId || ''} savedRunId=${savedRunId || ''} panelId=${msg.panelId || ''}`);
+            const cloud = cloudBoundary.summarize();
             const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
             const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
-            // Debug: log that we got ready message (deserialized)
-            const _dlog2 = path.join(os.homedir(), '.qpanda', 'wizard-debug.log');
-            try { fs.mkdirSync(path.dirname(_dlog2), { recursive: true }); } catch {}
-            try { fs.appendFileSync(_dlog2, `[${new Date().toISOString()}] EXT-HOST(deserialized): ready received, repoRoot=${repoRoot}, msg.runId=${msg.runId}, savedRunId=${savedRunId}, msg.panelId=${msg.panelId}\n`); } catch {}
             // Restore panelId from webview persisted state if available
             _extDbg2(`ready: msg.panelId=${msg.panelId} current _panelId=${session._panelId}`);
             if (msg.panelId) session._panelId = msg.panelId;
@@ -986,11 +1033,15 @@ async function _deserializeInner(panel, state, context) {
               cloudSession: initialCloudSession,
               cloudStatus: initialCloudStatus,
             });
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): initConfig posted panelId=${session.panelId} runId=${reattached ? session.getRunId() || '' : ''}`);
             void (async () => {
               const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
-              const cloudStatus = await buildCloudStatusPayload(cloudBoundary, context);
+              const [cloud, cloudStatus] = await Promise.all([
+                cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
+                buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
+              ]);
               try {
-                panel.webview.postMessage({ type: 'cloudSessionData', cloudSession, cloudStatus });
+                panel.webview.postMessage({ type: 'cloudSessionData', cloud, cloudSession, cloudStatus });
               } catch {}
             })();
             // Re-link to existing container if still running (don't create a new one)
@@ -1015,11 +1066,18 @@ async function _deserializeInner(panel, state, context) {
             session.prestart();
             return;
           }
+          appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): forwarding to session.handleMessage type=${msg.type}`);
           session.handleMessage(msg);
+          } catch (error) {
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized) ERROR type=${msg && msg.type ? msg.type : 'unknown'} message=${error && error.message ? error.message : String(error)} stack=${error && error.stack ? error.stack.replace(/\s+/g, ' ') : ''}`);
+            throw error;
+          }
         },
         undefined,
         context.subscriptions
       );
+
+      panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
       activePanels.add(panel);
 
