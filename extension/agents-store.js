@@ -36,12 +36,12 @@ function saveAgentsFile(filePath, data) {
  *   agents: { [id]: agentObj }  — removed agents excluded
  *   meta:   { [id]: { hasUserOverride: bool } }
  */
-function loadSystemAgents(extensionDir) {
+function loadSystemAgents(extensionDir, repoRoot) {
   const bundledPath = path.join(extensionDir, 'resources', 'system-agents.json');
   const bundled = loadAgentsFile(bundledPath);
   const userOverrides = loadAgentsFile(systemAgentsOverridePath());
   const { loadFeatureFlags } = require('./src/feature-flags');
-  const flags = loadFeatureFlags(extensionDir);
+  const flags = loadFeatureFlags(extensionDir, repoRoot);
 
   const agents = {};
   const meta = {};
@@ -70,7 +70,7 @@ function loadMergedAgents(repoRoot, extensionDir) {
   let systemAgents = {};
   let systemMeta = {};
   if (extensionDir) {
-    const result = loadSystemAgents(extensionDir);
+    const result = loadSystemAgents(extensionDir, repoRoot);
     systemAgents = result.agents;
     systemMeta = result.meta;
   }

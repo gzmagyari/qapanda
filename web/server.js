@@ -326,7 +326,7 @@ wss.on('connection', (ws) => {
           panelId: attachedEntry.session.panelId,
           runId: reattached ? attachedEntry.session.getRunId() : null,
           onboarding: { complete: isOnboardingComplete(), data: onboardingData },
-          featureFlags: loadFeatureFlags(path.join(__dirname, '..')),
+          featureFlags: loadFeatureFlags(path.join(__dirname, '..'), repoRoot),
           apiCatalog: buildApiCatalogPayload(),
           cloud,
         });

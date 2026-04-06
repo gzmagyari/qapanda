@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 
 const { workerLabelFor } = require('./render');
+const { ensureWorkerSessionState } = require('./state');
 const { buildTranscriptTail } = require('./transcript');
 const { readText, safeJsonParse } = require('./utils');
 
@@ -94,26 +95,12 @@ function getDirectWorkerSessionState(manifest, agentId, options = {}) {
     }
     if (!manifest.worker.agentSessions[agentId]) {
       if (!create) return null;
-      manifest.worker.agentSessions[agentId] = {
-        lastSeenChatLine: 0,
-        lastSeenTranscriptLine: 0,
-      };
-    } else {
-      if (!Number.isFinite(manifest.worker.agentSessions[agentId].lastSeenChatLine)) {
-        manifest.worker.agentSessions[agentId].lastSeenChatLine = 0;
-      }
-      if (!Number.isFinite(manifest.worker.agentSessions[agentId].lastSeenTranscriptLine)) {
-        manifest.worker.agentSessions[agentId].lastSeenTranscriptLine = 0;
-      }
+      manifest.worker.agentSessions[agentId] = {};
     }
+    manifest.worker.agentSessions[agentId] = ensureWorkerSessionState(manifest.worker.agentSessions[agentId]);
     return manifest.worker.agentSessions[agentId];
   }
-  if (!Number.isFinite(manifest.worker.lastSeenChatLine)) {
-    manifest.worker.lastSeenChatLine = 0;
-  }
-  if (!Number.isFinite(manifest.worker.lastSeenTranscriptLine)) {
-    manifest.worker.lastSeenTranscriptLine = 0;
-  }
+  manifest.worker = ensureWorkerSessionState(manifest.worker);
   return manifest.worker;
 }
 

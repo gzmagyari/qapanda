@@ -6,7 +6,7 @@ const { buildDefaultWorkerAppendSystemPrompt, buildAgentWorkerSystemPrompt } = r
 const { buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
-const { lookupAgentConfig } = require('./state');
+const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 /**
@@ -38,7 +38,9 @@ function buildClaudeArgs(manifest, options = {}) {
   }
 
   // Use agent-specific session if provided, otherwise default worker session
-  const session = agentSession || manifest.worker;
+  const session = agentSession
+    ? ensureWorkerSessionState(agentSession)
+    : ensureWorkerSessionState(manifest.worker);
   if (session.hasStarted) {
     args.push('--resume', session.sessionId);
   } else {
@@ -173,16 +175,8 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   if (isCustomAgent) {
     agentConfig = lookupAgentConfig(manifest.agents, agentId);
     if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
-    if (!manifest.worker.agentSessions[agentId]) {
-      manifest.worker.agentSessions[agentId] = {
-        sessionId: crypto.randomUUID(),
-        hasStarted: false,
-        boundBrowserPort: null,
-        lastSeenChatLine: 0,
-        lastSeenTranscriptLine: 0,
-      };
-    }
-    agentSession = manifest.worker.agentSessions[agentId];
+    agentSession = ensureWorkerSessionState(manifest.worker.agentSessions[agentId]);
+    manifest.worker.agentSessions[agentId] = agentSession;
   }
 
   let args = buildClaudeArgs(manifest, { agentConfig, agentSession });

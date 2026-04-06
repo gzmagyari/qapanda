@@ -56,13 +56,13 @@ function findResourcesDir(hint) {
 
 // ── System agents ────────────────────────────────────────────────
 
-function loadSystemAgents(resourcesDir) {
+function loadSystemAgents(resourcesDir, repoRoot) {
   if (!resourcesDir) return { agents: {}, meta: {} };
   const bundledPath = path.join(resourcesDir, 'system-agents.json');
   const bundled = readJsonFile(bundledPath);
   const userOverrides = readJsonFile(systemAgentsOverridePath());
   const { loadFeatureFlags } = require('./feature-flags');
-  const flags = loadFeatureFlags();
+  const flags = loadFeatureFlags(null, repoRoot);
 
   const agents = {};
   const meta = {};
@@ -83,7 +83,7 @@ function loadSystemAgents(resourcesDir) {
 function loadMergedAgents(repoRoot, resourcesDir) {
   const globalAgents = readJsonFile(globalAgentsPath());
   const projectAgents = readJsonFile(projectAgentsPath(repoRoot));
-  const { agents: systemAgents, meta: systemMeta } = loadSystemAgents(resourcesDir);
+  const { agents: systemAgents, meta: systemMeta } = loadSystemAgents(resourcesDir, repoRoot);
   return { system: systemAgents, systemMeta, global: globalAgents, project: projectAgents };
 }
 

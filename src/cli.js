@@ -1,7 +1,7 @@
 const path = require('node:path');
 
 const { loadFeatureFlags } = require('./feature-flags');
-const _flags = loadFeatureFlags();
+const _flags = loadFeatureFlags(null, process.cwd());
 const { execForText } = require('./process-utils');
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');

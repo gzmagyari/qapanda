@@ -512,7 +512,7 @@ class SessionManager {
         };
       }
     }
-    if (this._qaDesktopMcpPort && require('./src/feature-flags').getFlag('enableRemoteDesktop')) {
+    if (this._qaDesktopMcpPort && require('./src/feature-flags').getFlag('enableRemoteDesktop', this._extensionPath || null, this._repoRoot)) {
       result['qa-desktop'] = { type: 'http', url: `http://${mcpHost}:${this._qaDesktopMcpPort}/mcp` };
     }
     // Auto-inject agent delegation MCP

@@ -31,6 +31,10 @@
     "platform:cloud:install": "node scripts/platform-cloud/install-client-safe-packages.js",
     "platform:cloud:verify-imports": "node scripts/platform-cloud/verify-client-safe-imports.mjs",
     "platform:cloud:refresh": "npm run platform:cloud:pack && npm run platform:cloud:install && npm run platform:cloud:verify-imports",
+    "platform:start": "pnpm --dir \"propanda/qapanda-platform\" infra:start:local",
+    "platform:status": "pnpm --dir \"propanda/qapanda-platform\" infra:status:local",
+    "platform:stop": "pnpm --dir \"propanda/qapanda-platform\" infra:stop:local",
+    "platform:restart": "pnpm --dir \"propanda/qapanda-platform\" infra:restart:local",
     "ext:clean": "node -e \"fs.rmSync('extension/src',{recursive:true,force:true});fs.rmSync('extension/claude-parser',{recursive:true,force:true});fs.rmSync('extension/qapanda.vsix',{force:true});fs.rmSync('extension/cc-manager.vsix',{force:true})\" --input-type=commonjs"
   },
   "engines": {

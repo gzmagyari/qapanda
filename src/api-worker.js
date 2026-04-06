@@ -8,7 +8,7 @@ const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
-const { lookupAgentConfig } = require('./state');
+const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
 const { compactApiSessionHistory } = require('./api-compaction');
@@ -119,19 +119,11 @@ async function runApiWorkerTurn({
   const tools = await loadAllTools(allMcpServers, manifest.repoRoot);
 
   if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
-  if (!manifest.worker.agentSessions[manifestSessionKey]) {
-    manifest.worker.agentSessions[manifestSessionKey] = { boundBrowserPort: null, lastSeenChatLine: 0, lastSeenTranscriptLine: 0 };
-  }
-  const agentSession = manifest.worker.agentSessions[manifestSessionKey];
+  const agentSession = ensureWorkerSessionState(manifest.worker.agentSessions[manifestSessionKey]);
+  manifest.worker.agentSessions[manifestSessionKey] = agentSession;
   if (manifest.chromeDebugPort != null) {
     agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
     manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
-  }
-  if (!Number.isFinite(agentSession.lastSeenChatLine)) {
-    agentSession.lastSeenChatLine = 0;
-  }
-  if (!Number.isFinite(agentSession.lastSeenTranscriptLine)) {
-    agentSession.lastSeenTranscriptLine = 0;
   }
   const recordedPrompt = visiblePrompt == null ? prompt : visiblePrompt;
 

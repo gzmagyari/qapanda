@@ -138,4 +138,17 @@ describe('direct worker handoff', () => {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  it('creates a full worker session state for new direct-worker handoff targets', () => {
+    const manifest = makeManifest('c:/repo', 'c:/repo/.qpanda/runs/run-1/chat.jsonl');
+
+    const state = getDirectWorkerSessionState(manifest, 'dev', { create: true });
+
+    assert.equal(typeof state.sessionId, 'string');
+    assert.ok(state.sessionId.length > 0);
+    assert.equal(state.hasStarted, false);
+    assert.equal(state.boundBrowserPort, null);
+    assert.equal(state.lastSeenChatLine, 0);
+    assert.equal(state.lastSeenTranscriptLine, 0);
+  });
 });

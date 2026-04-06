@@ -188,6 +188,40 @@ function normalizeRunOptions(options = {}) {
   };
 }
 
+function ensureWorkerSessionState(session) {
+  const target = session && typeof session === 'object' ? session : {};
+  if (typeof target.sessionId !== 'string' || !target.sessionId.trim()) {
+    target.sessionId = randomId();
+  }
+  if (typeof target.hasStarted !== 'boolean') {
+    target.hasStarted = false;
+  }
+  if (!Number.isFinite(target.boundBrowserPort)) {
+    target.boundBrowserPort = null;
+  }
+  if (!Number.isFinite(target.lastSeenChatLine)) {
+    target.lastSeenChatLine = 0;
+  }
+  if (!Number.isFinite(target.lastSeenTranscriptLine)) {
+    target.lastSeenTranscriptLine = 0;
+  }
+  return target;
+}
+
+function normalizeManifestWorkerState(manifest) {
+  if (!manifest || !manifest.worker || typeof manifest.worker !== 'object') {
+    return manifest;
+  }
+  manifest.worker = ensureWorkerSessionState(manifest.worker);
+  if (!manifest.worker.agentSessions || typeof manifest.worker.agentSessions !== 'object') {
+    manifest.worker.agentSessions = {};
+  }
+  for (const [agentId, session] of Object.entries(manifest.worker.agentSessions)) {
+    manifest.worker.agentSessions[agentId] = ensureWorkerSessionState(session);
+  }
+  return manifest;
+}
+
 async function prepareNewRun(initialMessage, options = {}) {
   const normalized = normalizeRunOptions({ ...options, initialMessage });
   const runDir = runDirFromId(normalized.stateRoot, normalized.runId);
@@ -298,6 +332,7 @@ async function loadManifestFromDir(runDir) {
   if (!manifest) {
     throw new Error(`No manifest found in ${runDir}`);
   }
+  normalizeManifestWorkerState(manifest);
   return manifest;
 }
 
@@ -439,10 +474,12 @@ module.exports = {
   manifestPath,
   lookupAgentConfig,
   normalizeRunOptions,
+  ensureWorkerSessionState,
   parseWaitDelay,
   prepareNewRun,
   progressPath,
   resolveRunDir,
   runDirFromId,
   saveManifest,
+  normalizeManifestWorkerState,
 };

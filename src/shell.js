@@ -3,7 +3,7 @@ const readline = require('node:readline/promises');
 const path = require('node:path');
 
 const { loadFeatureFlags } = require('./feature-flags');
-const _flags = loadFeatureFlags();
+const _flags = loadFeatureFlags(null, process.cwd());
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
 const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./prompts');

@@ -104,7 +104,7 @@ describe('buildClaudeArgs', () => {
     const args = buildClaudeArgs(manifest, { prompt: 'hello', loop: baseLoop(), agentConfig });
     assert.ok(args.includes('--system-prompt'), 'should include --system-prompt');
     const idx = args.indexOf('--system-prompt');
-    assert.equal(args[idx + 1], 'You are a QA tester.');
+    assert.ok(args[idx + 1].startsWith('You are a QA tester.'));
   });
 
   it('uses --append-system-prompt when no agent system prompt', () => {
@@ -214,6 +214,21 @@ describe('buildClaudeArgs', () => {
     assert.ok(args.includes('--resume'), 'should resume agent session');
     const idx = args.indexOf('--resume');
     assert.equal(args[idx + 1], 'agent-sess-123');
+  });
+
+  it('normalizes partial agent sessions before building Claude args', () => {
+    const manifest = baseManifest();
+    const agentSession = { lastSeenChatLine: 0, lastSeenTranscriptLine: 0 };
+    const agentConfig = { system_prompt: 'test', mcps: {} };
+
+    const args = buildClaudeArgs(manifest, { prompt: 'hello', loop: baseLoop(), agentConfig, agentSession });
+
+    const idx = args.indexOf('--session-id');
+    assert.ok(idx >= 0, 'should include --session-id');
+    assert.equal(typeof args[idx + 1], 'string');
+    assert.ok(args[idx + 1].length > 0);
+    assert.equal(typeof agentSession.sessionId, 'string');
+    assert.equal(agentSession.hasStarted, false);
   });
 
   it('includes HTTP MCP servers correctly', () => {

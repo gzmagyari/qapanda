@@ -166,7 +166,7 @@ function createPanelReadyHandler({
       panelId: session.panelId,
       runId: reattached ? session.getRunId() : null,
       onboarding: { complete: isOnboardingComplete(), data: onboardingData },
-      featureFlags: loadFeatureFlags(context.extensionUri.fsPath),
+      featureFlags: loadFeatureFlags(context.extensionUri.fsPath, repoRoot),
       apiCatalog: buildApiCatalogPayload(),
       cloud,
       cloudSession: initialCloudSession,
@@ -582,7 +582,7 @@ function _activateInner(context) {
   const defaultMemoryFile = path.join(defaultRepoRoot, '.qpanda', 'MEMORY.md');
   startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
   _aDbg('checkpoint: calling loadFeatureFlags');
-  if (loadFeatureFlags(context.extensionUri.fsPath).enableRemoteDesktop) {
+  if (loadFeatureFlags(context.extensionUri.fsPath, defaultRepoRoot).enableRemoteDesktop) {
     startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
   }
 
