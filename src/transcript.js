@@ -5,6 +5,7 @@ const { formatToolCall, summarizeClaudeEvent } = require('./events');
 const { controllerLabelFor, workerLabelFor } = require('./render');
 const { CARD_MAP } = require('./mcp-cards');
 const { normalizeToolResultOutput } = require('./tool-result-normalizer');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 const TRANSCRIPT_V2 = 2;
 const CONTROLLER_SESSION_KEY = 'controller:main';
@@ -76,7 +77,7 @@ function createTranscriptRecord({
 
 async function appendTranscriptRecord(manifest, record) {
   if (!manifest || !manifest.files || !manifest.files.transcript) return;
-  await appendJsonl(manifest.files.transcript, record);
+  await appendJsonl(manifest.files.transcript, redactHostedWorkflowValue(manifest, record));
 }
 
 async function readTranscriptEntries(filePath) {

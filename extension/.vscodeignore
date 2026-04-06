@@ -6,6 +6,7 @@ node_modules/*
 !node_modules/@xterm
 !node_modules/openai
 !node_modules/@modelcontextprotocol
+!node_modules/yaml
 !node_modules/zod
 !node_modules/zod-to-json-schema
 !node_modules/content-type

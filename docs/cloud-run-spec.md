@@ -54,6 +54,50 @@ Nullable fields:
 - `browserPreset`
 - `aiProfile`
 
+Optional hosted workflow fields:
+- `workflowDefinition`
+- `workflowProfile`
+- `workflowInputs`
+- `workflowSecretRefs`
+
+### Hosted workflow extension
+
+Cloud-run specs may also carry structured workflow metadata for hosted workflow execution. The base `title` and `prompt` fields remain required for backward compatibility, but hosted workflow runs add the workflow-specific blocks below:
+
+```json
+{
+  "workflowDefinition": {
+    "id": "deep-login",
+    "name": "Deep Login",
+    "description": "Hosted login workflow",
+    "preferredMode": "orchestrate",
+    "suggestedAgent": "QA-Browser",
+    "body": "# Goal\n\nTest the login page deeply.\n",
+    "inputs": [
+      { "id": "environment_url", "label": "Environment URL", "type": "text", "required": true },
+      { "id": "login_password", "label": "Password", "type": "text", "secret": true, "required": true }
+    ]
+  },
+  "workflowProfile": {
+    "profileId": "staging-login",
+    "name": "Staging Login"
+  },
+  "workflowInputs": {
+    "environment_url": "https://staging.example.test/login"
+  },
+  "workflowSecretRefs": {
+    "login_password": "secret-login-password"
+  }
+}
+```
+
+Notes:
+- Hosted workflow execution currently supports project workflows only.
+- Hosted workflow execution currently supports orchestrate-style workflows only.
+- `workflowInputs` is for non-secret launch values only.
+- Secret-marked workflow fields must be passed by reference through `workflowSecretRefs`, never inline in `workflowInputs`.
+- `workflowSecretRefs` stores opaque secret ids only. Raw secret values must not be written into spec files, manifests, sync payloads, or output bundles.
+
 ## Behavior
 
 - `qapanda cloud-run` loads and validates the JSON file explicitly.

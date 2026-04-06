@@ -23,6 +23,8 @@ const {
 } = require('./repository-sync');
 const { createRepositorySyncAdapters } = require('./sync-adapters');
 const { createRepositorySyncRuntime } = require('./sync-runtime');
+const { createCloudWorkflowSecretStore } = require('./workflow-secrets');
+const { buildHostedWorkflowCloudRunSpec, materializeHostedWorkflowRun } = require('./workflow-hosted-runs');
 
 function buildBootstrapSummary({ target, config, auth, ready, error, sync }) {
   return {
@@ -138,6 +140,15 @@ function createCloudBoundary(options = {}) {
     async getSyncBootstrap(options = {}) {
       return resolveCloudSyncBootstrap({ target, repoRoot, loadPackages: loadCloudPackages, config }, options);
     },
+    createWorkflowSecretStore(options = {}) {
+      return createCloudWorkflowSecretStore(options);
+    },
+    buildHostedWorkflowCloudRunSpec(options = {}) {
+      return buildHostedWorkflowCloudRunSpec({ repoRoot, ...options });
+    },
+    async materializeHostedWorkflowRun(spec, options = {}) {
+      return materializeHostedWorkflowRun(spec, { repoRoot, ...options });
+    },
     saveCloudSyncProjectConfig(updates = {}) {
       return saveCloudSyncProjectConfig(repoRoot, updates);
     },
@@ -166,7 +177,10 @@ module.exports = {
   createLocalSyncStore,
   createRepositorySyncRuntime,
   createRepositorySyncAdapters,
+  createCloudWorkflowSecretStore,
   loadCloudSyncProjectConfig,
+  buildHostedWorkflowCloudRunSpec,
+  materializeHostedWorkflowRun,
   resolveRepositoryIdentity,
   resolveExtensionCloudState,
   saveCloudSyncProjectConfig,

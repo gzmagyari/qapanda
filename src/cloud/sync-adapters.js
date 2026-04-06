@@ -2,7 +2,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { projectModesPath, readJsonFile, writeJsonFile } = require('../config-loader');
-const { loadWorkflows } = require('../prompts');
+const {
+  compactWorkflowPresetValues,
+  listWorkflowPresets,
+  materializeWorkflowPreset,
+  replaceWorkflowPresets,
+} = require('../workflow-presets-store');
+const { buildWorkflowDocument, loadWorkflows } = require('../workflow-store');
 const {
   appInfoPath,
   loadProjectConfig,
@@ -310,16 +316,20 @@ function recipePayloadFromWorkflow(workflow) {
   const content = fs.readFileSync(filePath, 'utf8');
   const stat = fs.statSync(filePath);
   const relativePath = path.relative(workflow.repoRoot, filePath).split(path.sep).join('/');
-  const directoryName = normalizeRecipeDirectoryName(path.basename(workflow.dir), workflow.name);
+  const directoryName = normalizeRecipeDirectoryName(path.basename(workflow.dir), workflow.id || workflow.name);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     objectType: 'recipe',
-    id: directoryName,
+    id: workflow.id || directoryName,
     title: workflow.name,
     name: workflow.name,
     description: workflow.description || '',
+    preferredMode: workflow.preferredMode || 'continue',
+    suggestedAgent: workflow.suggestedAgent || null,
+    inputs: cloneJson(workflow.inputs || []),
     directoryName,
     relativePath,
+    body: workflow.body || '',
     content,
     updatedAt: stat.mtime.toISOString(),
   };
@@ -336,10 +346,65 @@ function recipeLegacyObject(workflow) {
 }
 
 function listProjectWorkflows(repoRoot) {
-  const projectDir = path.resolve(projectWorkflowsDir(repoRoot));
   return loadWorkflows(repoRoot)
-    .filter((workflow) => path.resolve(workflow.path).startsWith(projectDir))
+    .filter((workflow) => workflow.scope === 'project')
     .map((workflow) => ({ ...workflow, repoRoot }));
+}
+
+function workflowProfileObjectId(workflowId, profileId) {
+  return `${String(workflowId || '').trim()}:${String(profileId || '').trim()}`;
+}
+
+function workflowProfilePayloadFromLocal(local) {
+  const workflow = local && local.workflow;
+  if (!workflow || !workflow.id) {
+    throw new Error('Workflow profile payloads require a project workflow.');
+  }
+  const profileId = String(local.id || '').trim();
+  if (!profileId) {
+    throw new Error('Workflow profile id is required.');
+  }
+  const values = compactWorkflowPresetValues(workflow, local.values || {}, local.secretRefs || {});
+  return {
+    schemaVersion: 1,
+    objectType: 'workflow_profile',
+    id: workflowProfileObjectId(workflow.id, profileId),
+    title: `${workflow.name} / ${local.name}`,
+    workflowId: workflow.id,
+    profileId,
+    name: String(local.name || ''),
+    values: cloneJson(values),
+    updatedAt: String(local.updatedAt || nowIso()),
+  };
+}
+
+function workflowProfileLegacyObject(local) {
+  const payload = workflowProfilePayloadFromLocal(local);
+  return {
+    objectId: payload.id,
+    title: payload.title,
+    payload,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function listProjectWorkflowProfiles(repoRoot) {
+  const profiles = [];
+  for (const workflow of listProjectWorkflows(repoRoot)) {
+    for (const preset of listWorkflowPresets(repoRoot, workflow)) {
+      profiles.push({
+        ...preset,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        workflow,
+      });
+    }
+  }
+  return profiles.sort((left, right) => {
+    const a = `${left.workflowName || ''}\u0000${left.name || ''}\u0000${left.id || ''}`.toLowerCase();
+    const b = `${right.workflowName || ''}\u0000${right.name || ''}\u0000${right.id || ''}`.toLowerCase();
+    return a.localeCompare(b);
+  });
 }
 
 function ensureDir(dirPath) {
@@ -390,7 +455,17 @@ function writeRecipeObjects(repoRoot, objects, options = {}) {
     const directoryName = normalizeRecipeDirectoryName(payload.directoryName || object.objectId, object.objectId);
     const workflowDir = path.join(baseDir, directoryName);
     ensureDir(workflowDir);
-    fs.writeFileSync(path.join(workflowDir, 'WORKFLOW.md'), String(payload.content || ''), 'utf8');
+    const content = typeof payload.content === 'string' && payload.content.trim()
+      ? payload.content
+      : buildWorkflowDocument({
+          name: payload.name || payload.title || object.objectId,
+          description: payload.description || '',
+          preferredMode: payload.preferredMode || 'continue',
+          suggestedAgent: payload.suggestedAgent || null,
+          inputs: ensureArray(payload.inputs),
+          body: typeof payload.body === 'string' ? payload.body : '',
+        });
+    fs.writeFileSync(path.join(workflowDir, 'WORKFLOW.md'), String(content), 'utf8');
     keep.add(directoryName);
   }
   if (options.pruneRemoved) {
@@ -401,6 +476,53 @@ function writeRecipeObjects(repoRoot, objects, options = {}) {
     }
   }
   return Array.from(keep.values());
+}
+
+function writeWorkflowProfileObjects(repoRoot, objects, options = {}) {
+  const workflows = listProjectWorkflows(repoRoot);
+  const workflowsById = new Map(workflows.map((workflow) => [workflow.id, workflow]));
+  const touchedWorkflowIds = new Set();
+  const nextByWorkflowId = new Map();
+
+  for (const object of objects) {
+    const payload = object.payload || {};
+    const workflowId = String(payload.workflowId || String(object.objectId || '').split(':')[0] || '').trim();
+    if (!workflowId) continue;
+    touchedWorkflowIds.add(workflowId);
+    if (object.deletedAt !== null) continue;
+    const workflow = workflowsById.get(workflowId);
+    if (!workflow) continue;
+    const profileId = String(payload.profileId || String(object.objectId || '').split(':').slice(1).join(':') || '').trim();
+    if (!profileId) continue;
+    const profile = materializeWorkflowPreset(workflow, {
+      id: profileId,
+      name: String(payload.name || profileId),
+      updatedAt: payload.updatedAt ? String(payload.updatedAt) : null,
+      values: payload.values && typeof payload.values === 'object' ? payload.values : {},
+    });
+    if (!nextByWorkflowId.has(workflowId)) {
+      nextByWorkflowId.set(workflowId, []);
+    }
+    nextByWorkflowId.get(workflowId).push(profile);
+  }
+
+  for (const workflowId of touchedWorkflowIds) {
+    const workflow = workflowsById.get(workflowId);
+    if (!workflow) continue;
+    replaceWorkflowPresets(repoRoot, workflow, nextByWorkflowId.get(workflowId) || []);
+  }
+
+  if (options.pruneRemoved) {
+    for (const workflow of workflows) {
+      if (touchedWorkflowIds.has(workflow.id)) continue;
+      replaceWorkflowPresets(repoRoot, workflow, nextByWorkflowId.get(workflow.id) || []);
+    }
+  }
+
+  return workflows.map((workflow) => ({
+    workflowId: workflow.id,
+    profiles: listWorkflowPresets(repoRoot, workflow),
+  }));
 }
 
 function listLocalIssues(repoRoot) {
@@ -1702,6 +1824,16 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     toPayload: (workflow) => recipePayloadFromWorkflow(workflow),
     writeFromStore: writeRecipeObjects,
   });
+  const workflowProfiles = createDomainAdapter({
+    domain: createStoreBackedDomain(storeResult.store, 'workflow_profile'),
+    store: storeResult.store,
+    objectType: 'workflow_profile',
+    repoRoot,
+    listLocal: () => listProjectWorkflowProfiles(repoRoot),
+    toLegacy: workflowProfileLegacyObject,
+    toPayload: workflowProfilePayloadFromLocal,
+    writeFromStore: writeWorkflowProfileObjects,
+  });
   const agentConfigs = createDomainAdapter({
     domain: createStoreBackedDomain(storeResult.store, 'agent'),
     store: storeResult.store,
@@ -1828,6 +1960,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       issues: issues.importLocalSnapshot(),
       tests: tests.importLocalSnapshot(),
       recipes: recipes.importLocalSnapshot(),
+      workflowProfiles: workflowProfiles.importLocalSnapshot(),
       agentConfigs: agentConfigs.importLocalSnapshot(),
       mcpServers: mcpServers.importLocalSnapshot(),
       modes: modes.importLocalSnapshot(),
@@ -1848,6 +1981,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       issues: issues.hydrateFromStore(options),
       tests: tests.hydrateFromStore(options),
       recipes: recipes.hydrateFromStore(options),
+      workflowProfiles: workflowProfiles.hydrateFromStore(options),
       agentConfigs: agentConfigs.hydrateFromStore(options),
       mcpServers: mcpServers.hydrateFromStore(options),
       modes: modes.hydrateFromStore(options),
@@ -1868,6 +2002,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       issues: issues.syncLocalToStore(),
       tests: tests.syncLocalToStore(),
       recipes: recipes.syncLocalToStore(),
+      workflowProfiles: workflowProfiles.syncLocalToStore(),
       agentConfigs: agentConfigs.syncLocalToStore(),
       mcpServers: mcpServers.syncLocalToStore(),
       modes: modes.syncLocalToStore(),
@@ -1888,6 +2023,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
       issues: issues.captureLocalState(),
       tests: tests.captureLocalState(),
       recipes: recipes.captureLocalState(),
+      workflowProfiles: workflowProfiles.captureLocalState(),
       agentConfigs: agentConfigs.captureLocalState(),
       mcpServers: mcpServers.captureLocalState(),
       modes: modes.captureLocalState(),
@@ -1907,6 +2043,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     const issueResult = issues.queueLocalChanges(previousState.issues || {});
     const testResult = tests.queueLocalChanges(previousState.tests || {});
     const recipeResult = recipes.queueLocalChanges(previousState.recipes || {});
+    const workflowProfileResult = workflowProfiles.queueLocalChanges(previousState.workflowProfiles || {});
     const agentResult = agentConfigs.queueLocalChanges(previousState.agentConfigs || {});
     const mcpResult = mcpServers.queueLocalChanges(previousState.mcpServers || {});
     const modeResult = modes.queueLocalChanges(previousState.modes || {});
@@ -1924,6 +2061,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
         issues: issueResult.changes,
         tests: testResult.changes,
         recipes: recipeResult.changes,
+        workflowProfiles: workflowProfileResult.changes,
         agentConfigs: agentResult.changes,
         mcpServers: mcpResult.changes,
         modes: modeResult.changes,
@@ -1941,6 +2079,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
         issues: issueResult.state,
         tests: testResult.state,
         recipes: recipeResult.state,
+        workflowProfiles: workflowProfileResult.state,
         agentConfigs: agentResult.state,
         mcpServers: mcpResult.state,
         modes: modeResult.state,
@@ -1981,6 +2120,7 @@ async function createRepositorySyncAdapters(boundary, options = {}) {
     issues,
     tests,
     recipes,
+    workflowProfiles,
     agentConfigs,
     mcpServers,
     modes,
@@ -2020,6 +2160,7 @@ module.exports = {
   listLocalIssues,
   listLocalTests,
   listProjectWorkflows,
+  listProjectWorkflowProfiles,
   listLocalRunManifestEntries,
   listLocalRunChatLogs,
   listLocalRunEvents,
@@ -2028,6 +2169,7 @@ module.exports = {
   issuePayloadFromLocal,
   testPayloadFromLocal,
   recipePayloadFromWorkflow,
+  workflowProfilePayloadFromLocal,
   agentPayloadFromLocal,
   mcpServerPayloadFromLocal,
   modePayloadFromLocal,

@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { truncate } = require('./utils');
+const { buildHostedWorkflowControllerSection } = require('./cloud/workflow-hosted-runs');
+const { loadWorkflows } = require('./workflow-store');
 const {
   isAppInfoEnabled,
   isMemoryEnabled,
@@ -276,7 +278,7 @@ function scanWorkflowDir(baseDir) {
  * Load all available workflows from project and global directories.
  * Project-level workflows take precedence over global ones with the same name.
  */
-function loadWorkflows(repoRoot) {
+function legacyLoadWorkflows(repoRoot) {
   const seen = new Set();
   const all = [];
 
@@ -393,6 +395,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
       : null,
     loadCcManagerMd(manifest.repoRoot),
     ...buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true }),
+    buildHostedWorkflowControllerSection(manifest),
     manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),
@@ -507,6 +510,7 @@ function buildControllerPrompt(manifest, request) {
       : null,
     loadCcManagerMd(manifest.repoRoot),
     ...buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true }),
+    buildHostedWorkflowControllerSection(manifest),
     manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
     buildWorkflowSection(manifest.repoRoot),
     buildAgentsSection(manifest),

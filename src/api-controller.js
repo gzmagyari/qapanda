@@ -7,6 +7,7 @@ const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-cli
 const { buildControllerPrompt } = require('./prompts');
 const { controllerDecisionSchema, validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
 const { writeText } = require('./utils');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 /**
  * Run a controller turn via API.
@@ -22,7 +23,7 @@ const { writeText } = require('./utils');
  */
 async function runApiControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
   const prompt = buildControllerPrompt(manifest, request);
-  await writeText(loop.controller.promptFile, `${prompt}\n`);
+  await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   // Resolve API config: controller manifest config → global config
   const apiConfig = manifest.controller.apiConfig || manifest.apiConfig || {};

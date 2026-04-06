@@ -32,6 +32,13 @@ const { mcpServersForRole } = require('./mcp-injector');
 const { createCloudBoundary } = require('./cloud');
 const { runCloudCommand, CLOUD_COMMAND_USAGE } = require('./cloud/cli-auth');
 const {
+  createHostedWorkflowRedactor,
+  materializeHostedWorkflowRun,
+  redactHostedWorkflowValue,
+  sanitizeHostedWorkflowCloudRunSpec,
+  setHostedWorkflowExecutionContext,
+} = require('./cloud/workflow-hosted-runs');
+const {
   CLOUD_RUN_ARG_SPEC,
   buildCloudRunOptions,
   createCloudRunEventBridge,
@@ -541,6 +548,64 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
   return manifest;
 }
 
+async function runPreparedHostedWorkflowCloudRun(spec, options) {
+  const normalizedOptions = normalizeOptions(options);
+  const config = loadConfig(normalizedOptions.repoRoot);
+  await config.cloud.preload();
+  const workflowContext = await materializeHostedWorkflowRun(spec, {
+    repoRoot: normalizedOptions.repoRoot,
+    secretStore: config.cloud.createWorkflowSecretStore(),
+  });
+  if (!workflowContext) {
+    throw new Error('Hosted workflow cloud-run spec is missing workflowDefinition.');
+  }
+
+  workflowContext.targetUrl = spec.targetUrl || null;
+  workflowContext.targetType = spec.targetType || null;
+  workflowContext.browserPreset = spec.browserPreset || null;
+  workflowContext.aiProfile = spec.aiProfile || null;
+  const redactor = createHostedWorkflowRedactor(workflowContext);
+  const redactValue = redactor ? (value) => redactor.redactValue(value) : (value) => value;
+  const bridge = createCloudRunEventBridge(spec, { redactValue });
+
+  const { options: enriched, directAgent } = applyConfigToOptions(normalizedOptions, config);
+  if (directAgent) {
+    throw new Error('Hosted workflow cloud-run specs do not support direct agent mode.');
+  }
+
+  const controllerIsCodex = !enriched.controllerCli || enriched.controllerCli === 'codex' || enriched.controllerCli === 'qa-remote-codex';
+  const controllerIsClaude = enriched.controllerCli === 'claude' || enriched.controllerCli === 'qa-remote-claude';
+  const workerIsClaude = enriched.workerCli === 'claude' || enriched.workerCli === 'qa-remote-claude';
+  if (controllerIsCodex) {
+    await ensureBinaryAvailable(enriched.codexBin || 'codex');
+  }
+  if (controllerIsClaude || workerIsClaude) {
+    await ensureBinaryAvailable(enriched.claudeBin || 'claude');
+  }
+
+  const manifest = await prepareNewRun(workflowContext.launchInstruction, enriched);
+  const renderer = new Renderer({ rawEvents: manifest.settings.rawEvents, quiet: manifest.settings.quiet });
+  manifest.cloudRunSpec = sanitizeHostedWorkflowCloudRunSpec(enriched.cloudRunSpec || {});
+  setHostedWorkflowExecutionContext(manifest, workflowContext);
+  renderer.redactValue = redactValue;
+  renderer.requestStarted(manifest.runId);
+
+  try {
+    await saveManifest(manifest);
+    await runManagerLoop(manifest, renderer, { userMessage: workflowContext.launchInstruction, onEvent: bridge });
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message = String(redactHostedWorkflowValue(workflowContext, error.message));
+    }
+    throw error;
+  } finally {
+    renderer.close();
+    await saveManifest(manifest);
+  }
+
+  return manifest;
+}
+
 async function runCloudRunCommand(argv) {
   const parsed = parseArgs(argv, CLOUD_RUN_ARG_SPEC);
   if (parsed.positionals.length > 0) {
@@ -552,23 +617,22 @@ async function runCloudRunCommand(argv) {
   if (spec.targetUrl) {
     emitCloudRunRawEvent({ type: 'browser.navigation', url: spec.targetUrl });
   }
-  const bridge = createCloudRunEventBridge(spec);
   try {
-    const manifest = await runPreparedOneShot(spec.prompt, options, {
-      preloadCloud: false,
-      onEvent: bridge,
-      printSummary: false,
-      afterRun: async (completedManifest) => {
-        const artifacts = await writeCloudRunArtifacts(completedManifest, spec);
-        for (const artifact of artifacts) {
-          emitCloudRunRawEvent({
-            type: 'artifact.created',
-            artifactType: artifact.artifactType,
-            filename: artifact.filename,
-          });
-        }
-      },
-    });
+    const manifest = spec.workflowDefinition
+      ? await runPreparedHostedWorkflowCloudRun(spec, options)
+      : await runPreparedOneShot(spec.prompt, options, {
+          preloadCloud: false,
+          onEvent: createCloudRunEventBridge(spec),
+          printSummary: false,
+        });
+    const artifacts = await writeCloudRunArtifacts(manifest, spec);
+    for (const artifact of artifacts) {
+      emitCloudRunRawEvent({
+        type: 'artifact.created',
+        artifactType: artifact.artifactType,
+        filename: artifact.filename,
+      });
+    }
     emitCloudRunRawEvent({
       type: 'session.completed',
       outcome: manifest.status === 'idle' ? 'succeeded' : manifest.status,

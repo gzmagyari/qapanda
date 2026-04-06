@@ -3,6 +3,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 
 const { ensureDir, nowIso, pathExists, readText, writeJson, writeText } = require('./utils');
+const { redactHostedWorkflowValue, sanitizeHostedWorkflowCloudRunSpec } = require('./cloud/workflow-hosted-runs');
 
 const CLOUD_RUN_SPEC_VERSION = 'qapanda.cloud-run/v1';
 
@@ -41,6 +42,14 @@ function expectOptionalObject(value, field) {
   return value;
 }
 
+function expectOptionalArray(value, field) {
+  if (value == null) return null;
+  if (!Array.isArray(value)) {
+    fail(field, 'must be an array or null.');
+  }
+  return value;
+}
+
 function validateAiProfile(value) {
   const aiProfile = expectOptionalObject(value, 'aiProfile');
   if (!aiProfile) return null;
@@ -52,6 +61,54 @@ function validateAiProfile(value) {
   };
 }
 
+function validateWorkflowDefinition(value) {
+  const definition = expectOptionalObject(value, 'workflowDefinition');
+  if (!definition) return null;
+  const inputs = expectOptionalArray(definition.inputs, 'workflowDefinition.inputs');
+  return {
+    id: expectOptionalString(definition.id, 'workflowDefinition.id'),
+    workflowId: expectOptionalString(definition.workflowId, 'workflowDefinition.workflowId'),
+    name: expectRequiredString(definition.name, 'workflowDefinition.name'),
+    description: expectOptionalString(definition.description, 'workflowDefinition.description'),
+    preferredMode: expectOptionalString(definition.preferredMode, 'workflowDefinition.preferredMode'),
+    suggestedAgent: expectOptionalString(definition.suggestedAgent, 'workflowDefinition.suggestedAgent'),
+    directoryName: expectOptionalString(definition.directoryName, 'workflowDefinition.directoryName'),
+    relativePath: expectOptionalString(definition.relativePath, 'workflowDefinition.relativePath'),
+    body: expectOptionalString(definition.body, 'workflowDefinition.body'),
+    content: expectOptionalString(definition.content, 'workflowDefinition.content'),
+    inputs: inputs ? inputs.map((input, index) => {
+      const fieldPath = `workflowDefinition.inputs[${index}]`;
+      const field = expectOptionalObject(input, fieldPath);
+      if (!field) fail(fieldPath, 'must contain input field objects.');
+      return { ...field };
+    }) : [],
+  };
+}
+
+function validateWorkflowProfile(value) {
+  const profile = expectOptionalObject(value, 'workflowProfile');
+  if (!profile) return null;
+  return {
+    profileId: expectOptionalString(profile.profileId, 'workflowProfile.profileId'),
+    id: expectOptionalString(profile.id, 'workflowProfile.id'),
+    name: expectOptionalString(profile.name, 'workflowProfile.name'),
+  };
+}
+
+function validateWorkflowInputs(value) {
+  const inputs = expectOptionalObject(value, 'workflowInputs');
+  if (!inputs) return null;
+  return { ...inputs };
+}
+
+function validateWorkflowSecretRefs(value) {
+  const refs = expectOptionalObject(value, 'workflowSecretRefs');
+  if (!refs) return null;
+  return Object.fromEntries(
+    Object.entries(refs).map(([fieldId, secretId]) => [fieldId, expectRequiredString(secretId, `workflowSecretRefs.${fieldId}`)])
+  );
+}
+
 function validateCloudRunSpec(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Invalid cloud-run spec: root must be a JSON object.');
@@ -61,7 +118,7 @@ function validateCloudRunSpec(input) {
       `Invalid cloud-run spec: version must be "${CLOUD_RUN_SPEC_VERSION}".`,
     );
   }
-  return {
+  const validated = {
     version: input.version,
     runId: expectRequiredString(input.runId, 'runId'),
     attemptId: expectRequiredString(input.attemptId, 'attemptId'),
@@ -74,7 +131,22 @@ function validateCloudRunSpec(input) {
     targetType: expectOptionalString(input.targetType, 'targetType'),
     browserPreset: expectOptionalString(input.browserPreset, 'browserPreset'),
     aiProfile: validateAiProfile(input.aiProfile),
+    workflowDefinition: validateWorkflowDefinition(input.workflowDefinition),
+    workflowProfile: validateWorkflowProfile(input.workflowProfile),
+    workflowInputs: validateWorkflowInputs(input.workflowInputs),
+    workflowSecretRefs: validateWorkflowSecretRefs(input.workflowSecretRefs),
   };
+  const secretFieldIds = new Set(
+    ((validated.workflowDefinition && validated.workflowDefinition.inputs) || [])
+      .filter((field) => field && field.secret === true && typeof field.id === 'string' && field.id.trim())
+      .map((field) => field.id.trim())
+  );
+  for (const fieldId of secretFieldIds) {
+    if (validated.workflowInputs && Object.prototype.hasOwnProperty.call(validated.workflowInputs, fieldId)) {
+      fail(`workflowInputs.${fieldId}`, 'must not include secret field values; use workflowSecretRefs instead.');
+    }
+  }
+  return sanitizeHostedWorkflowCloudRunSpec(validated);
 }
 
 function loadCloudRunSpec(specPath) {
@@ -120,6 +192,10 @@ function buildCloudRunOptions(spec, cliOptions = {}) {
       targetType: spec.targetType,
       browserPreset: spec.browserPreset,
       aiProfile: spec.aiProfile,
+      workflowDefinition: spec.workflowDefinition,
+      workflowProfile: spec.workflowProfile,
+      workflowInputs: spec.workflowInputs,
+      workflowSecretRefs: spec.workflowSecretRefs,
     },
   };
 }
@@ -128,7 +204,8 @@ function emitCloudRunRawEvent(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-function createCloudRunEventBridge(spec) {
+function createCloudRunEventBridge(spec, options = {}) {
+  const redactValue = typeof options.redactValue === 'function' ? options.redactValue : (value) => value;
   return async (event) => {
     if (!event || typeof event !== 'object') return;
     if (event.source === 'launch-claude' || event.source === 'launch-claude-direct') {
@@ -139,19 +216,21 @@ function createCloudRunEventBridge(spec) {
       return;
     }
     if (event.source === 'worker-result') {
+      const redactedText = redactValue(event.text);
       emitCloudRunRawEvent({
         type: 'session.note',
-        message: typeof event.text === 'string' && event.text.trim()
-          ? event.text.trim()
+        message: typeof redactedText === 'string' && redactedText.trim()
+          ? redactedText.trim()
           : 'Worker turn completed.',
       });
       return;
     }
     if (event.source === 'run-error') {
+      const redactedText = redactValue(event.text);
       emitCloudRunRawEvent({
         type: 'session.failed',
-        message: typeof event.text === 'string' && event.text.trim()
-          ? event.text.trim()
+        message: typeof redactedText === 'string' && redactedText.trim()
+          ? redactedText.trim()
           : 'QA Panda cloud-run failed.',
       });
     }
@@ -206,7 +285,12 @@ async function writeCloudRunArtifacts(manifest, spec) {
 
   for (const [filename, sourcePath] of copyTargets) {
     if (!sourcePath || !(await pathExists(sourcePath))) continue;
-    await fsp.copyFile(sourcePath, path.join(runFilesDir, filename));
+    const sourceText = await readText(sourcePath, null);
+    if (sourceText == null) {
+      await fsp.copyFile(sourcePath, path.join(runFilesDir, filename));
+    } else {
+      await writeText(path.join(runFilesDir, filename), redactHostedWorkflowValue(manifest, sourceText));
+    }
     copiedArtifacts.push({ artifactType: filename.endsWith('.md') || filename.endsWith('.jsonl') ? 'log' : 'evidence_bundle', filename: `run-files/${filename}` });
   }
 
@@ -247,24 +331,28 @@ async function writeCloudRunArtifacts(manifest, spec) {
     targetType: spec.targetType,
     browserPreset: spec.browserPreset,
     aiProfile: spec.aiProfile,
+    workflowDefinition: spec.workflowDefinition,
+    workflowProfile: spec.workflowProfile,
+    workflowInputs: spec.workflowInputs,
+    workflowSecretRefs: spec.workflowSecretRefs,
     status: manifest.status,
     stopReason: manifest.stopReason || null,
     summary: manifest.transcriptSummary || null,
     generatedAt: nowIso(),
     runDir: manifest.runDir,
   };
-  await writeJson(path.join(outputDir, 'run-report.json'), summary);
+  await writeJson(path.join(outputDir, 'run-report.json'), redactHostedWorkflowValue(manifest, summary));
   copiedArtifacts.push({ artifactType: 'report_json', filename: 'run-report.json' });
 
   const eventLog = manifest.files && manifest.files.events ? await readText(manifest.files.events, '') : '';
-  await writeText(path.join(outputDir, 'session.log'), eventLog);
+  await writeText(path.join(outputDir, 'session.log'), redactHostedWorkflowValue(manifest, eventLog));
   copiedArtifacts.push({ artifactType: 'log', filename: 'session.log' });
 
-  await writeJson(path.join(outputDir, 'evidence-bundle.json'), {
+  await writeJson(path.join(outputDir, 'evidence-bundle.json'), redactHostedWorkflowValue(manifest, {
     generatedAt: nowIso(),
     runId: manifest.runId,
     artifacts: copiedArtifacts,
-  });
+  }));
   copiedArtifacts.push({ artifactType: 'evidence_bundle', filename: 'evidence-bundle.json' });
 
   return copiedArtifacts;

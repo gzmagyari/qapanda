@@ -11,6 +11,7 @@ const { formatToolCall, summarizeCodexWorkerEvent } = require('./events');
 const { closeConnection } = require('./codex-app-server');
 const { TurnEntityTracker } = require('./turn-entity-tracker');
 const { buildFinalQaReportState, loadQaState } = require('./qa-report');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 const {
   buildDirectWorkerPrompt,
   syncDirectWorkerChatCursor,
@@ -178,9 +179,17 @@ function progressTimestamp() {
   return `${hh}:${mm}:${ss}`;
 }
 
+function redactRuntimeValue(manifest, value) {
+  return redactHostedWorkflowValue(manifest, value);
+}
+
+async function appendJsonlRedacted(manifest, filePath, value) {
+  await appendJsonl(filePath, redactRuntimeValue(manifest, value));
+}
+
 async function appendProgress(manifest, line, renderer) {
   if (!manifest.files || !manifest.files.progress) return;
-  const entry = `[${progressTimestamp()}] ${line}\n`;
+  const entry = String(redactRuntimeValue(manifest, `[${progressTimestamp()}] ${line}\n`));
   try {
     await appendText(manifest.files.progress, entry);
   } catch {
@@ -192,12 +201,13 @@ async function appendProgress(manifest, line, renderer) {
 }
 
 async function emitEvent(manifest, event, renderer, onEvent) {
-  await appendJsonl(manifest.files.events, event);
+  const safeEvent = redactRuntimeValue(manifest, event);
+  await appendJsonl(manifest.files.events, safeEvent);
   if (typeof onEvent === 'function') {
-    await onEvent(event);
+    await onEvent(safeEvent);
   }
-  if (renderer && event.source === 'shell' && event.text) {
-    renderer.shell(event.text);
+  if (renderer && safeEvent.source === 'shell' && safeEvent.text) {
+    renderer.shell(safeEvent.text);
   }
 }
 
@@ -373,10 +383,10 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         abortSignal: signalController.signal,
         emitEvent: async (event) => {
           if (event.rawLine && loop.controller.stdoutFile) {
-            await appendJsonl(loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            await appendJsonlRedacted(manifest, loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
           }
           if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
-            await appendJsonl(loop.controller.stderrFile, { text: event.text });
+            await appendJsonlRedacted(manifest, loop.controller.stderrFile, { text: event.text });
           }
           await emitEvent(manifest, event, renderer, options.onEvent);
           await appendBackendTranscriptEvent(manifest, event, {
@@ -529,10 +539,10 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           abortSignal: signalController.signal,
           emitEvent: async (event) => {
             if (event.rawLine && workerRecord.stdoutFile) {
-              await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+              await appendJsonlRedacted(manifest, workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
             }
             if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
-              await appendJsonl(workerRecord.stderrFile, { text: event.text });
+              await appendJsonlRedacted(manifest, workerRecord.stderrFile, { text: event.text });
             }
             activityLog.feed(event.parsed);
             await emitEvent(manifest, event, renderer, options.onEvent);
@@ -757,10 +767,10 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         abortSignal: signalController.signal,
         emitEvent: async (event) => {
           if (event.rawLine && workerRecord.stdoutFile) {
-            await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            await appendJsonlRedacted(manifest, workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
           }
           if (event.source === 'worker-stderr' && workerRecord.stderrFile) {
-            await appendJsonl(workerRecord.stderrFile, { text: event.text });
+            await appendJsonlRedacted(manifest, workerRecord.stderrFile, { text: event.text });
           }
           activityLog.feed(event.parsed);
           await emitEvent(manifest, event, renderer, options.onEvent);
@@ -896,10 +906,10 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
         abortSignal: signalController.signal,
         emitEvent: async (event) => {
           if (event.rawLine && loop.controller.stdoutFile) {
-            await appendJsonl(loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            await appendJsonlRedacted(manifest, loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
           }
           if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
-            await appendJsonl(loop.controller.stderrFile, { text: event.text });
+            await appendJsonlRedacted(manifest, loop.controller.stderrFile, { text: event.text });
           }
           await emitEvent(manifest, event, renderer, options.onEvent);
           await appendBackendTranscriptEvent(manifest, event, {
@@ -1008,8 +1018,8 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
           renderer,
           abortSignal: signalController.signal,
           emitEvent: async (event) => {
-            if (event.rawLine && workerRecord.stdoutFile) await appendJsonl(workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
-            if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonl(workerRecord.stderrFile, { text: event.text });
+            if (event.rawLine && workerRecord.stdoutFile) await appendJsonlRedacted(manifest, workerRecord.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            if (event.source === 'worker-stderr' && workerRecord.stderrFile) await appendJsonlRedacted(manifest, workerRecord.stderrFile, { text: event.text });
             await emitEvent(manifest, event, renderer, options.onEvent);
             await appendBackendTranscriptEvent(manifest, event, {
               sessionKey: workerMeta.sessionKey,

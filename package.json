@@ -51,6 +51,7 @@
     "@qapanda/sync-core": "file:.qpanda/platform-client-safe/qapanda-sync-core-1.0.0.tgz",
     "@qapanda/ui": "file:.qpanda/platform-client-safe/qapanda-ui-1.0.0.tgz",
     "openai": "^6.33.0",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "yaml": "^2.8.3"
   }
 }

@@ -11,6 +11,7 @@ const {
   writeJson,
 } = require('./utils');
 const { defaultSchemaPath, writeControllerSchema } = require('./schema');
+const { redactHostedWorkflowValue, sanitizeHostedWorkflowCloudRunSpec } = require('./cloud/workflow-hosted-runs');
 
 function defaultStateRoot(cwd) {
   return path.join(cwd, '.qpanda');
@@ -285,7 +286,11 @@ async function saveManifest(manifest) {
     worker: workerToSave,
     apiConfig: scrubApiConfig(manifest.apiConfig),
   };
-  await writeJson(manifest.files.manifest, toSave);
+  if (toSave.cloudRunSpec) {
+    toSave.cloudRunSpec = sanitizeHostedWorkflowCloudRunSpec(toSave.cloudRunSpec);
+  }
+  const sanitized = redactHostedWorkflowValue(manifest, toSave);
+  await writeJson(manifest.files.manifest, sanitized);
 }
 
 async function loadManifestFromDir(runDir) {

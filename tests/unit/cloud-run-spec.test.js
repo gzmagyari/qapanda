@@ -7,10 +7,12 @@ const Module = require('node:module');
 
 const {
   CLOUD_RUN_SPEC_VERSION,
+  createCloudRunEventBridge,
   loadCloudRunSpec,
   validateCloudRunSpec,
   writeCloudRunArtifacts,
 } = require('../../src/cloud-run');
+const { setHostedWorkflowExecutionContext } = require('../../src/cloud/workflow-hosted-runs');
 const { parseCliRawEventLine } = require('@qapanda/run-protocol');
 
 function createSpecFile(overrides = {}) {
@@ -43,6 +45,61 @@ function createSpecFile(overrides = {}) {
 test('validateCloudRunSpec accepts the documented v1 shape', () => {
   const { spec } = createSpecFile();
   assert.equal(validateCloudRunSpec(spec).version, CLOUD_RUN_SPEC_VERSION);
+});
+
+test('validateCloudRunSpec accepts optional hosted workflow metadata blocks', () => {
+  const { spec } = createSpecFile({
+    workflowDefinition: {
+      id: 'deep-login',
+      name: 'Deep Login',
+      description: 'Hosted login workflow',
+      preferredMode: 'orchestrate',
+      suggestedAgent: 'QA-Browser',
+      body: '# Goal\n\nTest the login page deeply.\n',
+      inputs: [
+        { id: 'environment_url', label: 'Environment URL', type: 'text', required: true },
+        { id: 'login_password', label: 'Password', type: 'text', secret: true, required: true },
+      ],
+    },
+    workflowProfile: {
+      profileId: 'staging-login',
+      name: 'Staging Login',
+    },
+    workflowInputs: {
+      environment_url: 'https://staging.example.test/login',
+    },
+    workflowSecretRefs: {
+      login_password: 'secret-login-password',
+    },
+  });
+  const validated = validateCloudRunSpec(spec);
+  assert.equal(validated.workflowDefinition.id, 'deep-login');
+  assert.equal(validated.workflowProfile.profileId, 'staging-login');
+  assert.equal(validated.workflowInputs.environment_url, 'https://staging.example.test/login');
+  assert.equal(validated.workflowSecretRefs.login_password, 'secret-login-password');
+});
+
+test('validateCloudRunSpec rejects plaintext secret workflow inputs', () => {
+  const { spec } = createSpecFile({
+    workflowDefinition: {
+      id: 'deep-login',
+      name: 'Deep Login',
+      preferredMode: 'orchestrate',
+      inputs: [
+        { id: 'environment_url', label: 'Environment URL', type: 'text', required: true },
+        { id: 'login_password', label: 'Password', type: 'text', secret: true, required: true },
+      ],
+    },
+    workflowInputs: {
+      environment_url: 'https://staging.example.test/login',
+      login_password: 'plaintext-secret',
+    },
+    workflowSecretRefs: {
+      login_password: 'secret-login-password',
+    },
+  });
+
+  assert.throws(() => validateCloudRunSpec(spec), /workflowInputs\.login_password must not include secret field values/i);
 });
 
 test('loadCloudRunSpec rejects unsupported versions clearly', () => {
@@ -138,6 +195,102 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('writeCloudRunArtifacts redacts hosted workflow secrets in copied text artifacts and reports', async () => {
+  const { tempDir, spec } = createSpecFile({
+    workflowDefinition: {
+      id: 'deep-login',
+      name: 'Deep Login',
+      preferredMode: 'orchestrate',
+      inputs: [
+        { id: 'login_password', label: 'Password', type: 'text', secret: true, required: true },
+      ],
+    },
+    workflowSecretRefs: {
+      login_password: 'secret-login-password',
+    },
+  });
+  const runDir = path.join(tempDir, 'run');
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const manifestPath = path.join(runDir, 'manifest.json');
+  const eventsPath = path.join(runDir, 'events.jsonl');
+  const transcriptPath = path.join(runDir, 'transcript.jsonl');
+  const chatPath = path.join(runDir, 'chat.jsonl');
+  const progressPath = path.join(runDir, 'progress.md');
+
+  fs.writeFileSync(manifestPath, JSON.stringify({ note: 'super-secret-password' }, null, 2));
+  fs.writeFileSync(eventsPath, '{"text":"super-secret-password"}\n');
+  fs.writeFileSync(chatPath, '{"text":"super-secret-password"}\n');
+  fs.writeFileSync(progressPath, 'Password: super-secret-password\n');
+  fs.writeFileSync(transcriptPath, '{"text":"super-secret-password"}\n');
+
+  const manifest = {
+    runId: 'run_123',
+    runDir,
+    status: 'idle',
+    stopReason: 'done',
+    transcriptSummary: 'super-secret-password',
+    files: {
+      manifest: manifestPath,
+      events: eventsPath,
+      transcript: transcriptPath,
+      chatLog: chatPath,
+      progress: progressPath,
+    },
+  };
+  setHostedWorkflowExecutionContext(manifest, {
+    resolvedSecretValues: {
+      login_password: 'super-secret-password',
+    },
+  });
+
+  try {
+    await writeCloudRunArtifacts(manifest, spec);
+    const outputDir = spec.outputDir;
+    const reportRaw = fs.readFileSync(path.join(outputDir, 'run-report.json'), 'utf8');
+    const sessionLogRaw = fs.readFileSync(path.join(outputDir, 'session.log'), 'utf8');
+    const transcriptRaw = fs.readFileSync(path.join(outputDir, 'run-files', 'transcript.jsonl'), 'utf8');
+
+    assert.match(reportRaw, /\[REDACTED_WORKFLOW_SECRET:login_password\]/);
+    assert.match(sessionLogRaw, /\[REDACTED_WORKFLOW_SECRET:login_password\]/);
+    assert.match(transcriptRaw, /\[REDACTED_WORKFLOW_SECRET:login_password\]/);
+    assert.doesNotMatch(reportRaw, /super-secret-password/);
+    assert.doesNotMatch(sessionLogRaw, /super-secret-password/);
+    assert.doesNotMatch(transcriptRaw, /super-secret-password/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('createCloudRunEventBridge redacts hosted workflow secrets in raw worker result events', async () => {
+  const rawEvents = [];
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk, encoding, callback) => {
+    rawEvents.push(String(chunk));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+
+  try {
+    const bridge = createCloudRunEventBridge({ title: 'Deep Login' }, {
+      redactValue(value) {
+        return String(value).split('super-secret-password').join('[REDACTED_WORKFLOW_SECRET:login_password]');
+      },
+    });
+    await bridge({
+      source: 'worker-result',
+      text: 'Use super-secret-password to sign in.',
+    });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  const event = parseCliRawEventLine(rawEvents[0]);
+  assert.equal(event.type, 'session.note');
+  assert.match(event.message, /\[REDACTED_WORKFLOW_SECRET:login_password\]/);
+  assert.doesNotMatch(event.message, /super-secret-password/);
 });
 
 test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
@@ -276,6 +429,170 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
     assert.ok(rawLines.some((event) => event && event.type === 'session.started'));
     assert.ok(rawLines.some((event) => event && event.type === 'browser.navigation'));
     assert.ok(rawLines.some((event) => event && event.type === 'artifact.created' && event.filename === 'run-report.json'));
+    assert.ok(rawLines.some((event) => event && event.type === 'session.completed'));
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    Module._load = originalLoad;
+    delete require.cache[cliPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('main dispatches workflow-backed cloud-run specs through the controller path', async () => {
+  const { tempDir, specPath } = createSpecFile({
+    prompt: 'Run the hosted workflow "Deep Login".',
+    workflowDefinition: {
+      id: 'deep-login',
+      name: 'Deep Login',
+      description: 'Hosted login workflow',
+      preferredMode: 'orchestrate',
+      suggestedAgent: 'QA-Browser',
+      body: '# Goal\n\nTest the login page deeply.\n',
+      inputs: [
+        { id: 'environment_url', label: 'Environment URL', type: 'text', required: true },
+      ],
+    },
+    workflowInputs: {
+      environment_url: 'https://staging.example.test/login',
+    },
+  });
+  const cliPath = require.resolve('../../src/cli');
+  const originalLoad = Module._load;
+  const calls = {
+    prepareNewRun: [],
+    runManagerLoop: [],
+    runDirectWorkerTurn: [],
+    saveManifest: 0,
+    requestStarted: [],
+    rawEvents: [],
+  };
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk, encoding, callback) => {
+    calls.rawEvents.push(String(chunk));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+
+  Module._load = function patchedLoader(request, parent, isMain) {
+    if (parent && parent.id === cliPath) {
+      if (request === './state') {
+        return {
+          defaultStateRoot: () => path.join(tempDir, '.qpanda'),
+          listRunManifests: async () => [],
+          loadManifestFromDir: async () => { throw new Error('not used'); },
+          lookupAgentConfig: () => null,
+          prepareNewRun: async (message, options) => {
+            calls.prepareNewRun.push({ message, options });
+            const runDir = path.join(tempDir, 'run');
+            const outputDir = path.join(tempDir, 'output');
+            fs.mkdirSync(runDir, { recursive: true });
+            fs.mkdirSync(outputDir, { recursive: true });
+            const files = {
+              manifest: path.join(runDir, 'manifest.json'),
+              events: path.join(runDir, 'events.jsonl'),
+              transcript: path.join(runDir, 'transcript.jsonl'),
+              chatLog: path.join(runDir, 'chat.jsonl'),
+              progress: path.join(runDir, 'progress.md'),
+            };
+            fs.writeFileSync(files.manifest, JSON.stringify({ runId: 'run_123' }, null, 2));
+            fs.writeFileSync(files.events, '');
+            fs.writeFileSync(files.transcript, '');
+            fs.writeFileSync(files.chatLog, '');
+            fs.writeFileSync(files.progress, '');
+            return {
+              runId: 'run_123',
+              runDir,
+              status: 'idle',
+              stopReason: null,
+              transcriptSummary: 'done',
+              settings: { rawEvents: true, quiet: false },
+              controller: { cli: 'codex', extraInstructions: null },
+              worker: { cli: 'codex' },
+              files,
+            };
+          },
+          resolveRunDir: async () => '',
+          saveManifest: async () => { calls.saveManifest += 1; },
+        };
+      }
+      if (request === './orchestrator') {
+        return {
+          printEventTail: async () => {},
+          printRunSummary: async () => {},
+          runManagerLoop: async (manifest, _renderer, options) => {
+            calls.runManagerLoop.push({ manifest, options });
+          },
+          runDirectWorkerTurn: async () => {
+            calls.runDirectWorkerTurn.push(true);
+          },
+        };
+      }
+      if (request === './render') {
+        return {
+          Renderer: class Renderer {
+            constructor() {}
+            requestStarted(runId) { calls.requestStarted.push(runId); }
+            close() {}
+          },
+        };
+      }
+      if (request === './process-utils') {
+        return {
+          execForText: async () => ({ code: 0, stdout: 'codex 0.0.0', stderr: '' }),
+        };
+      }
+      if (request === './config-loader') {
+        return {
+          findResourcesDir: () => tempDir,
+          loadMergedAgents: () => ({ QA: { name: 'QA', cli: 'codex' } }),
+          loadMergedModes: () => ({}),
+          loadMergedMcpServers: () => ({ global: {}, project: {} }),
+          enabledAgents: (data) => data,
+          enabledModes: (data) => data,
+          resolveByEnv: (value) => value,
+          getCliDefaults: () => ({ controllerCli: 'codex', workerCli: 'codex' }),
+          loadOnboarding: () => null,
+          isOnboardingComplete: () => true,
+        };
+      }
+      if (request === './mcp-injector') {
+        return {
+          mcpServersForRole: () => ({}),
+        };
+      }
+      if (request === './cloud') {
+        return {
+          createCloudBoundary: () => ({
+            preload: async () => {},
+            createWorkflowSecretStore: () => ({
+              isAvailable() {
+                return false;
+              },
+            }),
+          }),
+        };
+      }
+      if (request === './cloud/cli-auth') {
+        return {
+          runCloudCommand: async () => {},
+          CLOUD_COMMAND_USAGE: '  qapanda cloud status',
+        };
+      }
+    }
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[cliPath];
+  try {
+    const { main } = require('../../src/cli');
+    await main(['cloud-run', '--spec', specPath, '--raw-events']);
+    assert.equal(calls.prepareNewRun.length, 1);
+    assert.equal(calls.prepareNewRun[0].message, 'Run the hosted workflow "Deep Login".');
+    assert.equal(calls.runDirectWorkerTurn.length, 0);
+    assert.equal(calls.runManagerLoop.length, 1);
+    assert.equal(calls.runManagerLoop[0].options.userMessage, 'Run the hosted workflow "Deep Login".');
+    assert.deepEqual(calls.requestStarted, ['run_123']);
+    const rawLines = calls.rawEvents.join('').split(/\r?\n/).filter(Boolean).map((line) => parseCliRawEventLine(line));
     assert.ok(rawLines.some((event) => event && event.type === 'session.completed'));
   } finally {
     process.stdout.write = originalStdoutWrite;

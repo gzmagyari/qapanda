@@ -4,6 +4,7 @@ const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 const { countTranscriptLinesSync } = require('./transcript');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 function buildClaudeControllerArgs(manifest, loop) {
   const args = [
@@ -68,7 +69,7 @@ function buildClaudeControllerArgs(manifest, loop) {
 
 async function runClaudeControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
   const prompt = buildControllerPrompt(manifest, request);
-  await writeText(loop.controller.promptFile, `${prompt}\n`);
+  await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const args = buildClaudeControllerArgs(manifest, loop);
   let discoveredSessionId = manifest.controller.sessionId;

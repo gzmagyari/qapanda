@@ -7,6 +7,7 @@ const { validateControllerDecision, controllerDecisionSchema } = require('./sche
 const { getOrCreateConnection } = require('./codex-app-server');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 const { countTranscriptLinesSync } = require('./transcript');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
@@ -155,7 +156,7 @@ function buildCodexArgs(manifest, loop) {
 
 async function runControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
   const prompt = buildControllerPrompt(manifest, request);
-  await writeText(loop.controller.promptFile, `${prompt}\n`);
+  await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const args = buildCodexArgs(manifest, loop);
   let discoveredSessionId = manifest.controller.sessionId;
@@ -261,7 +262,7 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
  */
 async function runControllerTurnAppServer({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
   const prompt = buildControllerPrompt(manifest, request);
-  await writeText(loop.controller.promptFile, `${prompt}\n`);
+  await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-controller: runId=${manifest.runId} controllerMcpKeys=${JSON.stringify(Object.keys(manifest.controllerMcpServers || {}))} codexMode=${manifest.controller.codexMode}\n`); } catch {}
@@ -361,7 +362,7 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   const decision = validateControllerDecision(parsePossiblyFencedJson(agentMessageText));
   loop.controller.decision = decision;
   request.latestControllerDecision = decision;
-  await writeText(loop.controller.finalFile, agentMessageText);
+  await writeText(loop.controller.finalFile, String(redactHostedWorkflowValue(manifest, agentMessageText)));
 
   // Track session for transcript
   const sessionId = manifest.controller.appServerThreadId;

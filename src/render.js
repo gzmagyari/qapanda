@@ -124,6 +124,7 @@ class Renderer {
     this.workerLabel = 'Worker';
     // Chat log path — set when manifest is available
     this.chatLogPath = null;
+    this.redactValue = null;
   }
 
   /** Append a message to chat.jsonl — the unified chat history file. */
@@ -131,7 +132,8 @@ class Renderer {
     if (!this.chatLogPath || !msg || !msg.type) return;
     try {
       const entry = { ts: new Date().toISOString(), ...msg };
-      fs.appendFileSync(this.chatLogPath, JSON.stringify(entry) + '\n');
+      const safeEntry = typeof this.redactValue === 'function' ? this.redactValue(entry) : entry;
+      fs.appendFileSync(this.chatLogPath, JSON.stringify(safeEntry) + '\n');
     } catch {}
   }
 

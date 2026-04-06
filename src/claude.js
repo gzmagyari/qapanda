@@ -7,6 +7,7 @@ const { buildPromptsDirs } = require('./prompt-tags');
 const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig } = require('./state');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 /**
  * @param {object} manifest
@@ -162,7 +163,7 @@ function buildClaudeArgs(manifest, options = {}) {
 }
 
 async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
-  await writeText(workerRecord.promptFile, `${prompt}\n`);
+  await writeText(workerRecord.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   // Resolve agent config and session
   const isCustomAgent = agentId && agentId !== 'default';
@@ -402,7 +403,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   };
 
   request.latestWorkerResult = workerResult;
-  await writeJson(workerRecord.finalFile, workerResult);
+  await writeJson(workerRecord.finalFile, redactHostedWorkflowValue(manifest, workerResult));
   return workerResult;
 }
 
@@ -480,7 +481,7 @@ function buildInteractiveArgs(manifest, options = {}) {
  * instead of spawning a fresh process per turn.
  */
 async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord, prompt, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
-  await writeText(workerRecord.promptFile, `${prompt}\n`);
+  await writeText(workerRecord.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -600,7 +601,7 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
     };
 
     request.latestWorkerResult = workerResult;
-    await writeJson(workerRecord.finalFile, workerResult);
+    await writeJson(workerRecord.finalFile, redactHostedWorkflowValue(manifest, workerResult));
     return workerResult;
   } catch (err) {
     renderer.workerLabel = prevWorkerLabel;

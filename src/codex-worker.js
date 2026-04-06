@@ -9,6 +9,7 @@ const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun } = re
 const { lookupAgentConfig } = require('./state');
 const { getOrCreateConnection } = require('./codex-app-server');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
+const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
 /**
  * Build args for Codex used as a worker backend.
@@ -262,7 +263,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   }
   const stdinText = buildCodexWorkerStdin(prompt, agentConfig, manifest.selfTesting ? { selfTesting: true } : undefined, manifest.repoRoot);
 
-  await writeText(workerRecord.promptFile, `${stdinText}\n`);
+  await writeText(workerRecord.promptFile, `${redactHostedWorkflowValue(manifest, stdinText)}\n`);
 
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let finalResultText = '';
@@ -438,7 +439,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   };
 
   request.latestWorkerResult = workerResult;
-  await writeJson(workerRecord.finalFile, workerResult);
+  await writeJson(workerRecord.finalFile, redactHostedWorkflowValue(manifest, workerResult));
   return workerResult;
 }
 
@@ -463,7 +464,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
 
   // Build stdin text with system prompt prepended
   const stdinText = buildCodexWorkerStdin(prompt, agentConfig, manifest.selfTesting ? { selfTesting: true } : undefined, manifest.repoRoot);
-  await writeText(workerRecord.promptFile, `${stdinText}\n`);
+  await writeText(workerRecord.promptFile, `${redactHostedWorkflowValue(manifest, stdinText)}\n`);
 
   // Get or create a connection keyed by a worker-specific key
   // Use a separate manifest-like object so worker connections don't collide with controller
@@ -657,7 +658,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
   };
 
   request.latestWorkerResult = workerResult;
-  await writeJson(workerRecord.finalFile, workerResult);
+  await writeJson(workerRecord.finalFile, redactHostedWorkflowValue(manifest, workerResult));
   return workerResult;
 }
 
