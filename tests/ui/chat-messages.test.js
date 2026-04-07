@@ -100,4 +100,16 @@ describe('Chat messages', () => {
     const msgs = wv.document.getElementById('messages');
     assert.ok(msgs.innerHTML.includes('Reattached to run abc'));
   });
+
+  it('keeps only the latest visible history tail in the live webview', async () => {
+    for (let index = 0; index < 80; index += 1) {
+      wv.postMessage({ type: 'user', text: `entry-${index} ` + 'x'.repeat(900) });
+    }
+    await wv.flush();
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('Showing only the latest chat tail for this run.'));
+    assert.ok(msgs.textContent.includes('entry-79'));
+    assert.ok(!msgs.textContent.includes('entry-0 '));
+  });
 });

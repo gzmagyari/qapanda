@@ -187,6 +187,7 @@ function createPanelReadyHandler({
           panel.webview.postMessage(desktopReadyMessage);
         }
       } catch {}
+      await session.sendReviewState(true);
       if (reattached) {
         session.syncAttachedRunState();
         await session.sendTranscript();
@@ -704,7 +705,7 @@ function _activateInner(context) {
           await handleReady(msg);
           return;
         }
-        if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput') {
+        if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput' || msg.type === 'reviewRequest') {
           appendPanelDebugLog(repoRoot, `EXT-HOST: incoming ${msg.type}${msg.text ? ` text=${String(msg.text).slice(0, 120)}` : ''}`);
         }
         if (msg.type === 'cloudSessionLogin') {

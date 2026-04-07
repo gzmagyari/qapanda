@@ -35,6 +35,14 @@
     "enabled": true,
     "cli": "codex"
   },
+  "reviewer": {
+    "name": "Code Reviewer",
+    "description": "Reviews git changes for bugs, regressions, risks, and missing tests",
+    "system_prompt": "@@code_reviewer",
+    "mcps": {},
+    "enabled": true,
+    "cli": "codex"
+  },
   "setup-browser": {
     "name": "Setup (Browser)",
     "description": "Sets up and starts the app locally for browser-based testing",

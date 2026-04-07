@@ -34,7 +34,7 @@ function makeManifest() {
   };
 }
 
-function buildSession({ runDirectWorkerTurnImpl, runManagerLoopImpl } = {}) {
+function buildSession({ runDirectWorkerTurnImpl, runManagerLoopImpl, prepareNewRunImpl } = {}) {
   const posted = [];
 
   delete require.cache[smPath];
@@ -46,7 +46,7 @@ function buildSession({ runDirectWorkerTurnImpl, runManagerLoopImpl } = {}) {
     exports: {
       ...origState,
       saveManifest: async () => {},
-      prepareNewRun: async () => makeManifest(),
+      prepareNewRun: prepareNewRunImpl || (async () => makeManifest()),
     },
   };
 
@@ -82,6 +82,7 @@ function buildSession({ runDirectWorkerTurnImpl, runManagerLoopImpl } = {}) {
     system: {
       'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', mcps: {}, enabled: true },
       dev: { name: 'Developer', cli: 'codex', mcps: {}, enabled: true },
+      reviewer: { name: 'Code Reviewer', cli: 'codex', mcps: {}, enabled: true },
     },
     global: {},
     project: {},
@@ -192,6 +193,93 @@ test('controller-launched worker turns also get self-delegation protection', asy
   sessionRef = session;
   try {
     await session._runLoop({ userMessage: 'orchestrate next step' });
+  } finally {
+    cleanup();
+  }
+});
+
+test('delegation forwards optional chat-tail settings to the worker turn', async () => {
+  let capturedOptions = null;
+  const { session, cleanup } = buildSession({
+    runDirectWorkerTurnImpl: async (manifest, _renderer, options) => {
+      capturedOptions = options;
+      return {
+        ...manifest,
+        requests: [...(manifest.requests || []), { latestWorkerResult: { resultText: 'review complete' } }],
+      };
+    },
+  });
+  try {
+    const result = await session._handleDelegation('reviewer', 'Review the latest changes.', {
+      includeChatTail: true,
+      chatTailMaxChars: 12345,
+      launchLabelHint: 'Code review',
+      launchSource: 'review',
+      workerPromptBase: 'Review unstaged git changes in this repository.',
+    });
+
+    assert.equal(result, 'review complete');
+    assert.equal(capturedOptions.agentId, 'reviewer');
+    assert.equal(capturedOptions.isDelegation, true);
+    assert.equal(capturedOptions.includeChatTail, true);
+    assert.equal(capturedOptions.chatTailMaxChars, 12345);
+    assert.equal(capturedOptions.launchLabelHint, 'Code review');
+    assert.equal(capturedOptions.launchSource, 'review');
+    assert.equal(capturedOptions.workerPromptBase, 'Review unstaged git changes in this repository.');
+  } finally {
+    cleanup();
+  }
+});
+
+test('review request creates a run, keeps the current target, and launches reviewer delegation', async () => {
+  const createdRunIds = [];
+  let capturedOptions = null;
+  const { session, posted, cleanup } = buildSession({
+    runDirectWorkerTurnImpl: async (manifest, _renderer, options) => {
+      capturedOptions = options;
+      return {
+        ...manifest,
+        requests: [...(manifest.requests || []), { latestWorkerResult: { resultText: 'review complete' } }],
+      };
+    },
+    prepareNewRunImpl: async () => {
+      createdRunIds.push('review-run');
+      const manifest = makeManifest();
+      manifest.runId = 'review-run';
+      manifest.requests = [];
+      return manifest;
+    },
+  });
+
+  session._activeManifest = null;
+  session._chatTarget = 'agent-dev';
+  session.sendReviewState = async () => ({
+    visible: true,
+    isGitRepo: true,
+    hasChanges: true,
+    hasUnstaged: true,
+    hasStaged: false,
+    defaultScope: 'unstaged',
+    unstagedCount: 2,
+    stagedCount: 0,
+    unstagedFiles: ['src/a.js', 'src/b.js'],
+    stagedFiles: [],
+  });
+
+  try {
+    await session._handleReviewRequest('unstaged', 'Focus on regressions in auth.');
+
+    assert.deepEqual(createdRunIds, ['review-run']);
+    assert.equal(session._chatTarget, 'agent-dev');
+    assert.equal(capturedOptions.agentId, 'reviewer');
+    assert.equal(capturedOptions.isDelegation, true);
+    assert.equal(capturedOptions.includeChatTail, true);
+    assert.equal(capturedOptions.launchLabelHint, 'Code review');
+    assert.match(capturedOptions.userMessage, /Review unstaged git changes in this repository\./);
+    assert.match(capturedOptions.userMessage, /Additional guidance: Focus on regressions in auth\./);
+    assert.match(capturedOptions.workerPromptBase, /Repository root: \/tmp\/fake-repo/);
+    assert.match(capturedOptions.workerPromptBase, /Inspect the git state directly/);
+    assert.ok(posted.some((msg) => msg.type === 'setRunId' && msg.runId === 'review-run'));
   } finally {
     cleanup();
   }

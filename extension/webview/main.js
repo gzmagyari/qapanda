@@ -28,6 +28,10 @@
   const textarea = document.getElementById('user-input');
   const btnSend = document.getElementById('btn-send');
   const btnContinue = document.getElementById('btn-continue');
+  const reviewSplit = document.getElementById('review-split');
+  const btnReview = document.getElementById('btn-review');
+  const btnReviewMenu = document.getElementById('btn-review-menu');
+  const reviewMenu = document.getElementById('review-menu');
   const btnOrchestrate = document.getElementById('btn-orchestrate');
   const btnStop = document.getElementById('btn-stop');
   const loopToggle = document.getElementById('loop-toggle');
@@ -3139,8 +3143,22 @@
   // ── Persisted state ─────────────────────────────────────────────────
   // messageLog: array of message objects replayed on restore
   // runId: currently attached run id
+  const VISIBLE_HISTORY_MAX_CHARS = 50_000;
+  const VISIBLE_HISTORY_TRUNCATION_BANNER = 'Showing only the latest chat tail for this run.';
+  const VISIBLE_HISTORY_SCREENSHOT_PLACEHOLDER = '[Screenshot]';
+  const VISIBLE_HISTORY_CARD_PLACEHOLDER = '[Card]';
   let messageLog = [];
   let currentRunId = null;
+  let pendingVisibleHistoryTrim = false;
+  let reviewState = {
+    visible: false,
+    isGitRepo: false,
+    hasUnstaged: false,
+    hasStaged: false,
+    defaultScope: null,
+    unstagedCount: 0,
+    stagedCount: 0,
+  };
 
   function saveState() {
     // Persist run ID, config, and desktop info per panel. Chat history is
@@ -3149,6 +3167,74 @@
     if (novncPort) state.novncPort = novncPort;
     if (panelId) state.panelId = panelId;
     vscode.setState(state);
+  }
+
+  function _reviewScopeAvailable(scope) {
+    if (!reviewState) return false;
+    if (scope === 'unstaged') return !!reviewState.hasUnstaged;
+    if (scope === 'staged') return !!reviewState.hasStaged;
+    if (scope === 'both') return !!(reviewState.hasUnstaged && reviewState.hasStaged);
+    return false;
+  }
+
+  function _defaultReviewScope() {
+    if (reviewState && _reviewScopeAvailable(reviewState.defaultScope)) return reviewState.defaultScope;
+    if (_reviewScopeAvailable('unstaged')) return 'unstaged';
+    if (_reviewScopeAvailable('staged')) return 'staged';
+    if (_reviewScopeAvailable('both')) return 'both';
+    return null;
+  }
+
+  function hideReviewMenu() {
+    if (reviewMenu) reviewMenu.style.display = 'none';
+    if (reviewSplit) reviewSplit.classList.remove('menu-open');
+    if (btnReviewMenu) btnReviewMenu.setAttribute('aria-expanded', 'false');
+  }
+
+  function renderReviewControls() {
+    if (!reviewSplit) return;
+    const visible = !!(reviewState && reviewState.visible);
+    reviewSplit.style.display = visible && !isRunning ? 'inline-flex' : 'none';
+    if (!visible || isRunning) {
+      hideReviewMenu();
+      return;
+    }
+
+    const defaultScope = _defaultReviewScope();
+    const summary = [];
+    if (reviewState.hasUnstaged) summary.push(`unstaged ${reviewState.unstagedCount || 0}`);
+    if (reviewState.hasStaged) summary.push(`staged ${reviewState.stagedCount || 0}`);
+    const title = summary.length > 0
+      ? `Review current git changes (${summary.join(', ')})`
+      : 'Review current git changes';
+
+    if (btnReview) {
+      btnReview.disabled = !defaultScope;
+      btnReview.title = title;
+    }
+    if (btnReviewMenu) {
+      const anyMenuScope = _reviewScopeAvailable('unstaged') || _reviewScopeAvailable('staged') || _reviewScopeAvailable('both');
+      btnReviewMenu.disabled = !anyMenuScope;
+      btnReviewMenu.title = title;
+    }
+    if (reviewMenu) {
+      reviewMenu.querySelectorAll('.split-action-item[data-scope]').forEach((btn) => {
+        const scope = btn.getAttribute('data-scope');
+        btn.disabled = !_reviewScopeAvailable(scope);
+      });
+    }
+  }
+
+  function sendReviewRequest(scope) {
+    if (!_reviewScopeAvailable(scope)) return;
+    const guidance = textarea ? textarea.value.trim() : '';
+    if (textarea) {
+      textarea.value = '';
+      textarea.style.height = 'auto';
+    }
+    suggestionsEl.style.display = 'none';
+    hideReviewMenu();
+    vscode.postMessage({ type: 'reviewRequest', scope, guidance });
   }
 
   function updateLoopObjectiveVisibility() {
@@ -3161,9 +3247,138 @@
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
     // chat history survives reloads via transcript.jsonl on disk.
-    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard'];
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState'];
     if (skipped.includes(msg.type)) return;
     messageLog.push(msg);
+  }
+
+  function isVisibleHistoryTruncationBanner(msg) {
+    return !!(msg && msg.type === 'banner' && msg.text === VISIBLE_HISTORY_TRUNCATION_BANNER);
+  }
+
+  function visibleCardSummary(msg) {
+    if (!msg || typeof msg !== 'object') return VISIBLE_HISTORY_CARD_PLACEHOLDER;
+    const parts = [];
+    if (msg.card) parts.push(String(msg.card));
+    const data = msg.data && typeof msg.data === 'object' ? msg.data : {};
+    for (const key of ['title', 'name', 'text', 'status', 'summary', 'author', 'detail']) {
+      if (data[key] != null && String(data[key]).trim()) {
+        parts.push(String(data[key]).trim());
+      }
+    }
+    if (!parts.length && msg.text) {
+      parts.push(String(msg.text).trim());
+    }
+    return parts.length ? parts.join(' ') : VISIBLE_HISTORY_CARD_PLACEHOLDER;
+  }
+
+  function visibleHistoryText(msg) {
+    if (!msg || typeof msg !== 'object') return '';
+    switch (msg.type) {
+      case 'user':
+      case 'controller':
+      case 'claude':
+      case 'mdLine':
+      case 'line':
+      case 'shell':
+      case 'error':
+      case 'banner':
+        return String(msg.text || '');
+      case 'toolCall':
+        return String(msg.text || '');
+      case 'stop':
+        return 'STOP';
+      case 'chatScreenshot':
+        return VISIBLE_HISTORY_SCREENSHOT_PLACEHOLDER;
+      case 'mcpCardStart':
+      case 'mcpCardComplete':
+        return [msg.text || '', msg.detail || ''].filter(Boolean).join(' ').trim() || VISIBLE_HISTORY_CARD_PLACEHOLDER;
+      case 'mcpCard':
+      case 'testCard':
+      case 'bugCard':
+      case 'taskCard':
+      case 'qaReportCard':
+        return visibleCardSummary(msg);
+      default:
+        return String(msg.text || msg.detail || '');
+    }
+  }
+
+  function buildVisibleHistoryTail(messages, options) {
+    const maxChars = options && Number.isFinite(options.maxChars)
+      ? Math.max(0, Number(options.maxChars))
+      : VISIBLE_HISTORY_MAX_CHARS;
+    const baseMessages = (Array.isArray(messages) ? messages : []).filter((msg) => !isVisibleHistoryTruncationBanner(msg));
+    if (baseMessages.length === 0) {
+      return { messages: [], truncated: false, totalChars: 0 };
+    }
+
+    let start = baseMessages.length - 1;
+    let totalChars = 0;
+    for (let index = baseMessages.length - 1; index >= 0; index -= 1) {
+      totalChars += visibleHistoryText(baseMessages[index]).length;
+      start = index;
+      if (totalChars >= maxChars) break;
+    }
+
+    const truncated = start > 0;
+    const tail = baseMessages.slice(start);
+    return {
+      messages: truncated
+        ? [{ type: 'banner', text: VISIBLE_HISTORY_TRUNCATION_BANNER }, ...tail]
+        : tail,
+      truncated,
+      totalChars,
+    };
+  }
+
+  function resetChatView() {
+    teardownSplitVnc(false);
+    teardownSplitChrome(false);
+    streamingEntry = null;
+    removeLiveEntityCardSlot();
+    removeLiveQaReportCardSlot();
+    closeQaReportOverlay();
+    closeSection();
+    messagesEl.innerHTML = '';
+  }
+
+  function replayVisibleHistory(messages) {
+    resetChatView();
+    messageLog = [];
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return;
+    }
+    suppressUiLog = true;
+    try {
+      for (const entry of messages) {
+        const handler = handlers[entry.type];
+        if (handler) {
+          handler(entry);
+          messageLog.push(entry);
+        }
+      }
+    } finally {
+      suppressUiLog = false;
+    }
+  }
+
+  function shouldDeferVisibleHistoryTrim() {
+    return !!(isRunning && (splitVncWrapper || splitChromeWrapper));
+  }
+
+  function maybeTrimVisibleHistory() {
+    const tail = buildVisibleHistoryTail(messageLog, { maxChars: VISIBLE_HISTORY_MAX_CHARS });
+    if (!tail.truncated) {
+      pendingVisibleHistoryTrim = false;
+      return;
+    }
+    if (shouldDeferVisibleHistoryTrim()) {
+      pendingVisibleHistoryTrim = true;
+      return;
+    }
+    replayVisibleHistory(tail.messages);
+    pendingVisibleHistoryTrim = false;
   }
 
   // ── Progress bubble helpers ───────────────────────────────────────
@@ -5354,15 +5569,9 @@
     },
 
     clear() {
-      teardownSplitVnc(false);
-      teardownSplitChrome(false);
-      streamingEntry = null;
-      removeLiveEntityCardSlot();
-      removeLiveQaReportCardSlot();
-      closeQaReportOverlay();
-      closeSection();
-      messagesEl.innerHTML = '';
+      resetChatView();
       messageLog = [];
+      pendingVisibleHistoryTrim = false;
       currentRunId = null;
       hideProgressBubble();
       saveState();
@@ -5383,8 +5592,10 @@
         isRunning = true;
         lastRunOutcome = null;
         setBuddyState('working');
+        hideReviewMenu();
         btnSend.style.display = 'none';
         if (btnContinue) btnContinue.style.display = 'none';
+        if (reviewSplit) reviewSplit.style.display = 'none';
         if (btnOrchestrate) btnOrchestrate.style.display = 'none';
         btnStop.style.display = msg.showStop === false ? 'none' : 'inline-block';
         textarea.disabled = true;
@@ -5404,6 +5615,10 @@
         if (btnOrchestrate) btnOrchestrate.style.display = 'inline-block';
         btnStop.style.display = 'none';
         textarea.disabled = false;
+        renderReviewControls();
+        if (pendingVisibleHistoryTrim) {
+          maybeTrimVisibleHistory();
+        }
         textarea.focus();
       }
     },
@@ -5516,6 +5731,19 @@
     syncConfig(msg) {
       setConfig(msg.config);
       saveState();
+    },
+
+    reviewState(msg) {
+      reviewState = {
+        visible: !!(msg.reviewState && msg.reviewState.visible),
+        isGitRepo: !!(msg.reviewState && msg.reviewState.isGitRepo),
+        hasUnstaged: !!(msg.reviewState && msg.reviewState.hasUnstaged),
+        hasStaged: !!(msg.reviewState && msg.reviewState.hasStaged),
+        defaultScope: msg.reviewState ? msg.reviewState.defaultScope || null : null,
+        unstagedCount: msg.reviewState ? Number(msg.reviewState.unstagedCount || 0) : 0,
+        stagedCount: msg.reviewState ? Number(msg.reviewState.stagedCount || 0) : 0,
+      };
+      renderReviewControls();
     },
 
     instancesData(msg) {
@@ -5664,15 +5892,9 @@
       // Rebuild chat from transcript on disk — clear existing UI and messageLog.
       // Do NOT call saveState() here: the transcript is authoritative on disk,
       // so there is nothing to persist back into webview state.
-      teardownSplitVnc(false);
-      teardownSplitChrome(false);
-      streamingEntry = null;
-      removeLiveEntityCardSlot();
-      removeLiveQaReportCardSlot();
-      closeQaReportOverlay();
-      closeSection();
-      messagesEl.innerHTML = '';
+      resetChatView();
       messageLog = [];
+      pendingVisibleHistoryTrim = false;
 
       if (Array.isArray(msg.messages)) {
         suppressUiLog = true;
@@ -5935,6 +6157,7 @@
         _dbg('MSG HANDLER ERROR: type=' + msg.type + ' error=' + (e && e.message || e));
       }
       logMessage(msg);
+      maybeTrimVisibleHistory();
     }
   });
 
@@ -6137,7 +6360,37 @@
     btnContinue.addEventListener('click', () => {
       const text = textarea.value.trim();
       textarea.value = '';
+      textarea.style.height = 'auto';
       vscode.postMessage({ type: 'continueInput', text });
+    });
+  }
+
+  if (btnReview) {
+    btnReview.addEventListener('click', () => {
+      const scope = _defaultReviewScope();
+      if (!scope) return;
+      sendReviewRequest(scope);
+    });
+  }
+
+  if (btnReviewMenu) {
+    btnReviewMenu.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btnReviewMenu.disabled || !reviewMenu) return;
+      const open = reviewMenu.style.display !== 'block';
+      reviewMenu.style.display = open ? 'block' : 'none';
+      if (reviewSplit) reviewSplit.classList.toggle('menu-open', open);
+      btnReviewMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+
+  if (reviewMenu) {
+    reviewMenu.addEventListener('click', (e) => {
+      const item = e.target.closest('.split-action-item[data-scope]');
+      if (!item || item.disabled) return;
+      e.preventDefault();
+      sendReviewRequest(item.getAttribute('data-scope'));
     });
   }
 
@@ -6171,6 +6424,7 @@
     }
     if (e.key === 'Escape') {
       suggestionsEl.style.display = 'none';
+      hideReviewMenu();
     }
   });
 
@@ -6188,11 +6442,25 @@
     }
   });
 
+  document.addEventListener('click', (e) => {
+    if (!reviewSplit || !reviewSplit.contains(e.target)) {
+      hideReviewMenu();
+    }
+  });
+
   // Initialize panda buddy
   initPandaBuddy();
 
   // Focus input on load
   textarea.focus();
+  window.addEventListener('focus', () => {
+    vscode.postMessage({ type: 'reviewStateRequest' });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      vscode.postMessage({ type: 'reviewStateRequest' });
+    }
+  });
 
   // Request persisted config from extension host, include saved runId for reattach
   _dbg('PRE-READY DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '"');

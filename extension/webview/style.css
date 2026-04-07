@@ -1053,7 +1053,7 @@ html, body {
   background: var(--vscode-input-background, #2a2a2a);
   border: 1px solid var(--vscode-panel-border, #333);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 #input-box textarea {
@@ -1078,6 +1078,7 @@ html, body {
   justify-content: space-between;
   padding: 6px 12px;
   border-top: 1px solid var(--vscode-panel-border, #2a2a2a);
+  overflow: visible;
 }
 
 #input-toolbar-left {
@@ -1163,6 +1164,64 @@ html, body {
 #btn-send:hover {
   background: #1177bb;
 }
+#review-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+#review-split > button {
+  border-radius: 0;
+}
+
+#btn-review {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+  border-right: none;
+}
+
+#btn-review-menu {
+  min-width: 30px;
+  padding: 4px 8px;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.split-action-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 170px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-editorWidget-border, #3a3a3a);
+  background: var(--vscode-editorWidget-background, #252526);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  z-index: 2000;
+}
+
+.split-action-item {
+  width: 100%;
+  text-align: left;
+  margin: 0;
+}
+
+.split-action-item + .split-action-item {
+  margin-top: 4px;
+}
+
+.split-action-item[disabled],
+#btn-review[disabled],
+#btn-review-menu[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#review-split.menu-open #btn-review-menu {
+  background: var(--vscode-button-secondaryHoverBackground, #3a3a3a);
+}
+
 #btn-stop {
   background: #d32f2f;
   color: #fff;

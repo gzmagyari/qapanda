@@ -15,6 +15,7 @@ describe('webview target dropdown', () => {
 
       assert.ok(values.includes('controller'));
       assert.ok(values.includes('agent-dev'));
+      assert.ok(values.includes('agent-reviewer'));
       assert.ok(values.includes('agent-QA'));
       assert.ok(values.includes('agent-QA-Browser'));
       assert.equal(target.value, 'agent-QA-Browser');

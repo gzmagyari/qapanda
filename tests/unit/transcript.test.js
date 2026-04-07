@@ -1,11 +1,20 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
+  buildDisplayMessageTail,
+  buildTranscriptDisplayTail,
   buildMergedRunView,
   buildSessionReplay,
   buildTranscriptDisplayMessages,
+  countDisplayMessageChars,
   createTranscriptRecord,
   providerMessagesForToolResult,
+  readTranscriptTailEntries,
+  TRANSCRIPT_TAIL_TRUNCATION_BANNER,
+  visibleTextForDisplayMessage,
 } = require('../../src/transcript');
 
 function manifestStub() {
@@ -493,5 +502,115 @@ describe('transcript helpers', () => {
     assert.ok(!replay.some((msg) => msg.role === 'user' && msg.content === 'old prompt'));
     assert.ok(replay.some((msg) => msg.role === 'tool' && msg.tool_call_id === 'shot-1'));
     assert.ok(replay.some((msg) => msg.role === 'assistant' && msg.content === 'Newest reply.'));
+  });
+
+  it('reads only complete transcript JSONL records from the tail window', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-tail-'));
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    const records = [
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        text: 'older-1',
+        payload: { role: 'assistant', content: 'older-1' },
+      }),
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        text: 'older-2',
+        payload: { role: 'assistant', content: 'older-2' },
+      }),
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        text: 'newer-3',
+        payload: { role: 'assistant', content: 'newer-3' },
+      }),
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        text: 'newer-4',
+        payload: { role: 'assistant', content: 'newer-4' },
+      }),
+    ];
+    const raw = records.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+    fs.writeFileSync(transcriptPath, raw, 'utf8');
+
+    try {
+      const lastTwoRaw = `${JSON.stringify(records[2])}\n${JSON.stringify(records[3])}\n`;
+      const result = await readTranscriptTailEntries(transcriptPath, {
+        bytes: Buffer.byteLength(lastTwoRaw, 'utf8') + 5,
+      });
+      assert.deepEqual(result.entries.map((entry) => entry.text), ['newer-3', 'newer-4']);
+      assert.ok(result.startOffset > 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('counts visible display text instead of raw screenshot payload size', () => {
+    const screenshotMessage = {
+      type: 'chatScreenshot',
+      data: 'data:image/png;base64,' + 'a'.repeat(20_000),
+      alt: 'Tool screenshot',
+    };
+    assert.equal(visibleTextForDisplayMessage(screenshotMessage), '[Screenshot]');
+    assert.equal(countDisplayMessageChars([screenshotMessage]), '[Screenshot]'.length);
+  });
+
+  it('builds a truncated display-message tail with a banner', () => {
+    const messages = [
+      { type: 'controller', text: 'z'.repeat(30_000), label: 'Orchestrator (Codex)' },
+      { type: 'user', text: 'a'.repeat(30_000) },
+      { type: 'chatScreenshot', data: 'data:image/png;base64,' + 'b'.repeat(10_000), alt: 'shot' },
+      { type: 'claude', text: 'c'.repeat(30_000), label: 'Developer' },
+    ];
+    const tail = buildDisplayMessageTail(messages, {
+      maxChars: 50_000,
+      truncationBannerText: TRANSCRIPT_TAIL_TRUNCATION_BANNER,
+    });
+    assert.equal(tail.truncated, true);
+    assert.equal(tail.messages[0].type, 'banner');
+    assert.equal(tail.messages[0].text, TRANSCRIPT_TAIL_TRUNCATION_BANNER);
+    assert.ok(tail.messages.some((message) => message.type === 'chatScreenshot'));
+    assert.ok(tail.messages.some((message) => message.type === 'claude'));
+    assert.ok(tail.messages.some((message) => message.type === 'user'));
+    assert.ok(!tail.messages.some((message) => message.type === 'controller' && message.text === messages[0].text));
+  });
+
+  it('builds a transcript display tail from the end of a large transcript file', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-display-tail-'));
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    const entries = [];
+    for (let index = 0; index < 120; index += 1) {
+      entries.push(createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: `entry-${index} ` + 'x'.repeat(700),
+        payload: { role: 'assistant', content: `entry-${index} ` + 'x'.repeat(700) },
+      }));
+    }
+    fs.writeFileSync(transcriptPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
+
+    try {
+      const result = await buildTranscriptDisplayTail(transcriptPath, manifestStub(), {
+        maxChars: 50_000,
+        initialBytes: 256,
+        maxBytes: 1024 * 1024,
+      });
+      assert.equal(result.messages[0].type, 'banner');
+      assert.equal(result.messages[0].text, TRANSCRIPT_TAIL_TRUNCATION_BANNER);
+      assert.ok(result.messages.some((message) => message.type === 'claude' && message.text.includes('entry-119')));
+      assert.ok(!result.messages.some((message) => message.type === 'claude' && message.text.includes('entry-0 ')));
+      assert.ok(result.startOffset > 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

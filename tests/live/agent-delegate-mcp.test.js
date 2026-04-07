@@ -80,11 +80,13 @@ describe('Agent Delegate MCP server', () => {
   it('delegate_to_agent calls onDelegate and returns result', async () => {
     let capturedId = null;
     let capturedMsg = null;
+    let capturedOptions = null;
 
     server = await startAgentDelegateMcpServer({
-      onDelegate: async (agentId, message) => {
+      onDelegate: async (agentId, message, options) => {
         capturedId = agentId;
         capturedMsg = message;
+        capturedOptions = options;
         return 'I fixed the bug in auth.js by adding null check on line 42.';
       },
       onListAgents: () => '[]',
@@ -104,6 +106,33 @@ describe('Agent Delegate MCP server', () => {
     assert.ok(text.includes('fixed the bug'), 'should return the delegate result');
     assert.equal(capturedId, 'dev', 'should pass agent_id to onDelegate');
     assert.equal(capturedMsg, 'Fix the null pointer bug in auth.js', 'should pass message to onDelegate');
+    assert.deepEqual(capturedOptions, { includeChatTail: false, chatTailMaxChars: undefined });
+  });
+
+  it('delegate_to_agent forwards optional chat tail settings', async () => {
+    let capturedOptions = null;
+    server = await startAgentDelegateMcpServer({
+      onDelegate: async (_agentId, _message, options) => {
+        capturedOptions = options;
+        return 'review complete';
+      },
+      onListAgents: () => '[]',
+    });
+
+    await mcpCall(server.port, 'initialize', {
+      protocolVersion: '2024-11-05', capabilities: {},
+      clientInfo: { name: 'test', version: '1.0.0' },
+    });
+
+    const res = await mcpToolCall(server.port, 'delegate_to_agent', {
+      agent_id: 'reviewer',
+      message: 'Review the latest changes',
+      include_chat_tail: true,
+      chat_tail_max_chars: 1234,
+    });
+
+    assert.equal(res.result.content[0].text, 'review complete');
+    assert.deepEqual(capturedOptions, { includeChatTail: true, chatTailMaxChars: 1234 });
   });
 
   it('delegate_to_agent returns error when onDelegate throws', async () => {

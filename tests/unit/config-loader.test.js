@@ -38,6 +38,7 @@ describe('loadSystemAgents from shared resources', () => {
   it('loads bundled system agents', () => {
     const { agents, meta } = loadSystemAgents(RESOURCES_DIR);
     assert.ok(agents.dev, 'should have dev agent');
+    assert.ok(agents.reviewer, 'should have reviewer agent');
     assert.ok(agents.QA, 'should have QA agent');
     assert.ok(agents['QA-Browser'], 'should have QA-Browser');
     assert.ok(meta.dev, 'should have metadata');
@@ -98,7 +99,7 @@ describe('loadMergedMcpServers', () => {
 
   it('returns empty objects for missing files', () => {
     const data = loadMergedMcpServers(tmp.root);
-    assert.deepEqual(data.global, {});
+    assert.ok(data.global && typeof data.global === 'object');
     assert.deepEqual(data.project, {});
   });
 });

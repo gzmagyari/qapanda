@@ -155,11 +155,13 @@ function sampleInitConfig(overrides = {}) {
     agents: {
       system: {
         dev: { name: 'Developer', description: 'Software developer', system_prompt: 'You are a dev.', mcps: {}, cli: 'claude', enabled: true },
+        reviewer: { name: 'Code Reviewer', description: 'Reviews code changes', system_prompt: 'You review code.', mcps: {}, cli: 'claude', enabled: true },
         QA: { name: 'QA Engineer (Computer)', description: 'QA tester', system_prompt: 'You are QA.', mcps: {}, cli: 'qa-remote-claude', enabled: true },
         'QA-Browser': { name: 'QA Engineer (Browser)', description: 'Browser QA', system_prompt: 'You are QA.', mcps: { 'chrome-devtools': { command: 'npx', args: ['mcp'] } }, cli: 'claude', enabled: true },
       },
       systemMeta: {
         dev: { hasUserOverride: false, removed: false },
+        reviewer: { hasUserOverride: false, removed: false },
         QA: { hasUserOverride: false, removed: false },
         'QA-Browser': { hasUserOverride: false, removed: false },
       },

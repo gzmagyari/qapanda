@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 
 const { appendJsonl, nowIso, readText, safeJsonParse } = require('./utils');
 const { formatToolCall, summarizeClaudeEvent } = require('./events');
@@ -11,6 +12,11 @@ const TRANSCRIPT_V2 = 2;
 const CONTROLLER_SESSION_KEY = 'controller:main';
 const DEFAULT_WORKER_SESSION_KEY = 'worker:default';
 const DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS = 50_000;
+const DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES = 256 * 1024;
+const DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES = 16 * 1024 * 1024;
+const TRANSCRIPT_TAIL_TRUNCATION_BANNER = 'Showing only the latest chat tail for this run.';
+const TRANSCRIPT_SCREENSHOT_PLACEHOLDER = '[Screenshot]';
+const TRANSCRIPT_CARD_PLACEHOLDER = '[Card]';
 
 function controllerSessionKey() {
   return CONTROLLER_SESSION_KEY;
@@ -183,6 +189,193 @@ function buildTranscriptTail(lines, options = {}) {
     lines: tail,
     truncated: start > 0,
     totalChars,
+  };
+}
+
+async function readTranscriptTailEntries(filePath, options = {}) {
+  const requestedBytes = Number.isFinite(options.bytes)
+    ? Math.max(1, Number(options.bytes))
+    : DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES;
+
+  let handle;
+  try {
+    handle = await fsp.open(filePath, 'r');
+    const stat = await handle.stat();
+    const fileSize = Number(stat && stat.size) || 0;
+    if (fileSize <= 0) {
+      return { entries: [], fileSize: 0, bytesRead: 0, startOffset: 0 };
+    }
+
+    const bytesRead = Math.min(fileSize, requestedBytes);
+    const startOffset = Math.max(0, fileSize - bytesRead);
+    const buffer = Buffer.alloc(bytesRead);
+    await handle.read(buffer, 0, bytesRead, startOffset);
+
+    let raw = buffer.toString('utf8');
+    if (startOffset > 0) {
+      const newlineIndex = raw.indexOf('\n');
+      raw = newlineIndex >= 0 ? raw.slice(newlineIndex + 1) : '';
+    }
+
+    return {
+      entries: parseTranscriptRaw(raw),
+      fileSize,
+      bytesRead,
+      startOffset,
+    };
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
+function summarizeTranscriptCardMessage(message) {
+  if (!message || typeof message !== 'object') return TRANSCRIPT_CARD_PLACEHOLDER;
+  const parts = [];
+  if (message.card) parts.push(String(message.card));
+  const data = message.data && typeof message.data === 'object' ? message.data : {};
+  for (const key of ['title', 'name', 'text', 'status', 'summary', 'author', 'detail']) {
+    if (data[key] != null && String(data[key]).trim()) {
+      parts.push(String(data[key]).trim());
+    }
+  }
+  if (parts.length === 0 && message.text) {
+    parts.push(String(message.text).trim());
+  }
+  return parts.length ? parts.join(' ') : TRANSCRIPT_CARD_PLACEHOLDER;
+}
+
+function visibleTextForDisplayMessage(message) {
+  if (!message || typeof message !== 'object') return '';
+  switch (message.type) {
+    case 'user':
+    case 'controller':
+    case 'claude':
+    case 'mdLine':
+    case 'line':
+    case 'shell':
+    case 'error':
+    case 'banner':
+      return String(message.text || '');
+    case 'toolCall':
+      return String(message.text || '');
+    case 'stop':
+      return 'STOP';
+    case 'chatScreenshot':
+      return TRANSCRIPT_SCREENSHOT_PLACEHOLDER;
+    case 'mcpCardStart':
+    case 'mcpCardComplete':
+      return [message.text || '', message.detail || ''].filter(Boolean).join(' ').trim() || TRANSCRIPT_CARD_PLACEHOLDER;
+    case 'mcpCard':
+    case 'testCard':
+    case 'bugCard':
+    case 'taskCard':
+    case 'qaReportCard':
+      return summarizeTranscriptCardMessage(message);
+    default:
+      return String(message.text || message.detail || '');
+  }
+}
+
+function countDisplayMessageChars(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .reduce((total, message) => total + visibleTextForDisplayMessage(message).length, 0);
+}
+
+function buildDisplayMessageTail(messages, options = {}) {
+  const allMessages = Array.isArray(messages) ? messages : [];
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(0, Number(options.maxChars))
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS;
+  const truncationBannerText = options.truncationBannerText || null;
+  const omitBannerText = options.omitBannerText || null;
+
+  const normalized = omitBannerText
+    ? allMessages.filter((message) => !(message && message.type === 'banner' && message.text === omitBannerText))
+    : allMessages.slice();
+
+  if (normalized.length === 0) {
+    return { messages: [], truncated: false, totalChars: 0 };
+  }
+
+  let start = normalized.length - 1;
+  let totalChars = 0;
+
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    totalChars += visibleTextForDisplayMessage(normalized[index]).length;
+    start = index;
+    if (totalChars >= maxChars) {
+      break;
+    }
+  }
+
+  let tail = normalized.slice(start);
+  const truncated = start > 0;
+  if (truncated && truncationBannerText) {
+    tail = [{ type: 'banner', text: truncationBannerText }, ...tail];
+  }
+
+  return {
+    messages: tail,
+    truncated,
+    totalChars,
+  };
+}
+
+async function buildTranscriptDisplayTail(filePath, manifest, options = {}) {
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(1, Number(options.maxChars))
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS;
+  const initialBytes = Number.isFinite(options.initialBytes)
+    ? Math.max(1, Number(options.initialBytes))
+    : DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES;
+  const maxBytes = Number.isFinite(options.maxBytes)
+    ? Math.max(initialBytes, Number(options.maxBytes))
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES;
+
+  let bytes = initialBytes;
+  let latest = { entries: [], fileSize: 0, bytesRead: 0, startOffset: 0 };
+  let messages = [];
+
+  for (;;) {
+    latest = await readTranscriptTailEntries(filePath, { bytes });
+    messages = buildTranscriptDisplayMessages(latest.entries, manifest, options.displayOptions || {});
+
+    const visibleChars = countDisplayMessageChars(messages);
+    const reachedFileStart = latest.startOffset === 0;
+    const hitReadCap = latest.bytesRead >= maxBytes;
+    if (visibleChars >= maxChars || reachedFileStart || hitReadCap) {
+      break;
+    }
+
+    const nextBytes = Math.min(
+      maxBytes,
+      latest.fileSize || maxBytes,
+      Math.max(bytes + 1, bytes * 2),
+    );
+    if (nextBytes <= bytes) {
+      break;
+    }
+    bytes = nextBytes;
+  }
+
+  const tail = buildDisplayMessageTail(messages, {
+    maxChars,
+    truncationBannerText: TRANSCRIPT_TAIL_TRUNCATION_BANNER,
+  });
+  const omittedEarlierContent = latest.startOffset > 0;
+
+  if (omittedEarlierContent && !tail.truncated) {
+    tail.messages = [{ type: 'banner', text: TRANSCRIPT_TAIL_TRUNCATION_BANNER }, ...tail.messages];
+  }
+
+  return {
+    messages: tail.messages,
+    truncated: tail.truncated || omittedEarlierContent,
+    fileSize: latest.fileSize,
+    bytesRead: latest.bytesRead,
+    startOffset: latest.startOffset,
   };
 }
 
@@ -811,13 +1004,19 @@ function buildMergedRunView(entries, manifest, options = {}) {
 
 module.exports = {
   TRANSCRIPT_V2,
+  DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES,
+  DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES,
+  TRANSCRIPT_TAIL_TRUNCATION_BANNER,
   agentIdFromSessionKey,
   appendTranscriptRecord,
+  buildDisplayMessageTail,
+  buildTranscriptDisplayTail,
   buildTranscriptTail,
   buildMergedRunView,
   buildSessionReplay,
   buildStartCardMessages,
   buildTranscriptDisplayMessages,
+  countDisplayMessageChars,
   controllerSessionKey,
   countTranscriptLinesSync,
   createTranscriptRecord,
@@ -825,11 +1024,13 @@ module.exports = {
   labelForTranscriptEntry,
   providerMessagesForToolResult,
   readTranscriptEntries,
+  readTranscriptTailEntries,
   readTranscriptEntriesSync,
   summarizeToolResult,
   latestSessionCompaction,
   entryIsCompactedAway,
   transcriptBackend,
   transcriptLineSlice,
+  visibleTextForDisplayMessage,
   workerSessionKey,
 };

@@ -18,9 +18,8 @@ const { readText, summarizeError } = require('./src/utils');
 const { controllerLabelFor, workerLabelFor } = require('./src/render');
 const {
   appendTranscriptRecord,
-  buildTranscriptDisplayMessages,
+  buildTranscriptDisplayTail,
   createTranscriptRecord,
-  readTranscriptEntries,
   transcriptBackend,
   workerSessionKey,
 } = require('./src/transcript');
@@ -107,6 +106,7 @@ class SessionManager {
     this._prestartPromise = null;
     this._prestartDone = false;
     this._lastBrowserBannerKey = null;
+    this._lastReviewStateKey = null;
     this._memoryMcpPort = null;
     // Set the qa-desktop path so remote-desktop.js can find the bundled CLI/proxy
     try {
@@ -560,7 +560,7 @@ class SessionManager {
     try {
       const { startAgentDelegateMcpServer } = require('./agent-delegate-mcp');
       this._agentDelegateMcpServer = await startAgentDelegateMcpServer({
-        onDelegate: (agentId, message) => this._handleDelegation(agentId, message),
+        onDelegate: (agentId, message, options) => this._handleDelegation(agentId, message, options),
         onListAgents: () => this._handleListAgents(),
       });
     } catch (err) {
@@ -580,12 +580,18 @@ class SessionManager {
    * Handle a delegate_to_agent tool call from an agent.
    * Runs the target agent to completion and returns its response text.
    */
-  async _handleDelegation(agentId, message) {
+  async _handleDelegation(agentId, message, options = {}) {
     if (this._delegationDepth >= 3) {
       throw new Error('Delegation depth limit reached (max 3). Cannot delegate further to prevent infinite loops.');
     }
     if (!this._activeManifest) {
-      throw new Error('No active run. Cannot delegate.');
+      if (options.allowCreateRun) {
+        this._activeManifest = await prepareNewRun(String(message || '').trim() || '[delegation]', this._buildNewRunOpts());
+        this._syncChatLogPath();
+        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      } else {
+        throw new Error('No active run. Cannot delegate.');
+      }
     }
     const agents = this._enabledAgents();
     if (!agents[agentId]) {
@@ -607,6 +613,7 @@ class SessionManager {
     const endActivity = this._beginActivity('foreground');
     try {
       // Setup for the delegated agent (same steps as _runDirectAgent)
+      await this._startAgentDelegateMcp();
       this._syncMcpToManifest(agentId);
       await this._ensureChromeIfNeeded(agentId);
       if (this._extensionPath && this._activeManifest) {
@@ -615,9 +622,14 @@ class SessionManager {
 
       const { runDirectWorkerTurn } = require('./src/orchestrator');
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
-        userMessage: message,
+        userMessage: String(message || '').trim(),
         agentId,
         isDelegation: true,
+        includeChatTail: options.includeChatTail === true,
+        chatTailMaxChars: options.chatTailMaxChars,
+        workerPromptBase: options.workerPromptBase,
+        launchLabelHint: options.launchLabelHint,
+        launchSource: options.launchSource,
         abortSignal: this._abortController ? this._abortController.signal : undefined,
         ...this._workerRunHooks(),
       });
@@ -649,6 +661,79 @@ class SessionManager {
       description: agent.description || '',
     })).filter((agent) => agent.id !== currentAgentId);
     return JSON.stringify(list, null, 2);
+  }
+
+  _buildVisibleReviewRequest(scope, guidance) {
+    const normalizedScope = scope === 'staged' || scope === 'both' ? scope : 'unstaged';
+    const base = `Review ${normalizedScope} git changes in this repository.`;
+    const extra = String(guidance || '').replace(/\s+/g, ' ').trim();
+    return extra ? `${base} Additional guidance: ${extra}` : base;
+  }
+
+  _buildReviewWorkerPrompt(scope, reviewState, guidance) {
+    const { buildReviewScopeSummaryLines } = require('./src/git-review');
+    const normalizedScope = scope === 'staged' || scope === 'both' ? scope : 'unstaged';
+    const summaryLines = buildReviewScopeSummaryLines(reviewState, normalizedScope, { maxFiles: 12 });
+    const sections = [
+      `Review ${normalizedScope} git changes in this repository.`,
+      `Repository root: ${this._repoRoot}`,
+      summaryLines.length > 0 ? ['Git status summary:', ...summaryLines].join('\n') : 'Git status summary: No matching files were detected for this review scope.',
+      'Inspect the git state directly with commands and file reads. Do not assume the full diff is included in this prompt.',
+    ];
+    const extra = String(guidance || '').trim();
+    if (extra) {
+      sections.push(`Additional user guidance:\n${extra}`);
+    }
+    return sections.join('\n\n');
+  }
+
+  async _handleReviewRequest(scope, guidance = '') {
+    if (this._running) return;
+    const reviewState = await this.sendReviewState(true);
+    if (!reviewState || !reviewState.visible) {
+      this._renderer.banner('No git changes are available to review in this repository.');
+      return;
+    }
+
+    const normalizedScope = scope === 'staged' || scope === 'both' ? scope : 'unstaged';
+    const scopeAllowed = (
+      (normalizedScope === 'unstaged' && reviewState.hasUnstaged) ||
+      (normalizedScope === 'staged' && reviewState.hasStaged) ||
+      (normalizedScope === 'both' && reviewState.hasUnstaged && reviewState.hasStaged)
+    );
+    if (!scopeAllowed) {
+      this._renderer.banner(`Review scope "${normalizedScope}" is not available for the current git state.`);
+      return;
+    }
+
+    const visibleMessage = this._buildVisibleReviewRequest(normalizedScope, guidance);
+    if (!this._activeManifest) {
+      this._activeManifest = await prepareNewRun(visibleMessage, this._buildNewRunOpts());
+      this._syncChatLogPath();
+      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      this._renderer.requestStarted(this._activeManifest.runId);
+    }
+
+    this._applyWorkerThinking();
+    try {
+      await this._handleDelegation('reviewer', visibleMessage, {
+        allowCreateRun: false,
+        includeChatTail: true,
+        chatTailMaxChars: 50_000,
+        workerPromptBase: this._buildReviewWorkerPrompt(normalizedScope, reviewState, guidance),
+        launchLabelHint: 'Code review',
+        launchSource: 'review',
+      });
+    } catch (error) {
+      if (!isAbortError(error)) {
+        this._renderer.banner(`Run error: ${formatRunError(error)}`);
+      } else {
+        this._renderer.banner('Run stopped by user.');
+      }
+    } finally {
+      this._renderer.close();
+      await this.sendReviewState(true);
+    }
   }
 
   applyConfig(config) {
@@ -804,6 +889,36 @@ class SessionManager {
     }
   }
 
+  async sendReviewState(force = false) {
+    let state;
+    try {
+      const { probeGitReviewState } = require('./src/git-review');
+      state = await probeGitReviewState(this._repoRoot);
+    } catch {
+      state = {
+        isGitRepo: false,
+        hasChanges: false,
+        hasUnstaged: false,
+        hasStaged: false,
+        unstagedCount: 0,
+        stagedCount: 0,
+        unstagedFiles: [],
+        stagedFiles: [],
+        defaultScope: null,
+      };
+    }
+
+    const payload = {
+      ...state,
+      visible: !!(state && state.isGitRepo && state.hasChanges),
+    };
+    const nextKey = JSON.stringify(payload);
+    if (!force && this._lastReviewStateKey === nextKey) return payload;
+    this._lastReviewStateKey = nextKey;
+    this._postMessage({ type: 'reviewState', reviewState: payload });
+    return payload;
+  }
+
   /**
    * Try to reattach to a previously saved run by ID.
    * Returns true if successful, false if the run no longer exists.
@@ -876,10 +991,13 @@ class SessionManager {
     try {
       const filePath = this._activeManifest.files.transcript;
       if (!filePath) return;
-      const entries = await readTranscriptEntries(filePath);
-      if (entries.length === 0) return;
-      const messages = buildTranscriptDisplayMessages(entries, this._activeManifest, {
-        fallbackWorkerLabel: this._renderer && this._renderer.workerLabel,
+      const { messages } = await buildTranscriptDisplayTail(filePath, this._activeManifest, {
+        maxChars: 50_000,
+        initialBytes: 256 * 1024,
+        maxBytes: 16 * 1024 * 1024,
+        displayOptions: {
+          fallbackWorkerLabel: this._renderer && this._renderer.workerLabel,
+        },
       });
       if (messages.length > 0) {
         this._postMessage({ type: 'transcriptHistory', messages });
@@ -1097,9 +1215,22 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'reviewRequest') {
+      const scope = String(msg.scope || '').trim();
+      const guidance = (msg.guidance || '').trim();
+      this._clearLoopContinueTimer();
+      await this._handleReviewRequest(scope, guidance);
+      return;
+    }
+
     if (msg.type === 'userInput') {
       this._clearLoopContinueTimer();
       await this._handleInput(String(msg.text || '').trim());
+      return;
+    }
+
+    if (msg.type === 'reviewStateRequest') {
+      await this.sendReviewState(true);
       return;
     }
 
@@ -1329,6 +1460,7 @@ class SessionManager {
       this._renderer.banner('Session cleared.');
       // Re-prestart app-server so next message is fast
       this.prestart();
+      await this.sendReviewState(true);
       return;
     }
 
@@ -1346,6 +1478,7 @@ class SessionManager {
       this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Detached from the current run.');
       this.prestart();
+      await this.sendReviewState(true);
       return;
     }
 
@@ -2059,6 +2192,7 @@ class SessionManager {
     } finally {
       this._abortController = null;
       endActivity();
+      await this.sendReviewState(true);
     }
   }
 
@@ -2089,6 +2223,7 @@ class SessionManager {
     } finally {
       this._abortController = null;
       endActivity();
+      await this.sendReviewState(true);
     }
   }
 
@@ -2265,6 +2400,7 @@ class SessionManager {
     } finally {
       this._abortController = null;
       endActivity();
+      await this.sendReviewState(true);
     }
   }
 

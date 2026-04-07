@@ -6,8 +6,10 @@ const { buildTranscriptTail } = require('./transcript');
 const { readText, safeJsonParse } = require('./utils');
 
 const DIRECT_WORKER_HANDOFF_MAX_CHARS = 50_000;
-const DIRECT_WORKER_HANDOFF_NOTICE =
-  `System: Earlier chat context since your last turn was omitted. Only the latest ~${DIRECT_WORKER_HANDOFF_MAX_CHARS} characters are shown.`;
+function buildDirectWorkerHandoffNotice(maxChars = DIRECT_WORKER_HANDOFF_MAX_CHARS) {
+  return `System: Earlier chat context since your last turn was omitted. Only the latest ~${maxChars} characters are shown.`;
+}
+const DIRECT_WORKER_HANDOFF_NOTICE = buildDirectWorkerHandoffNotice();
 
 function readChatEntriesSync(filePath) {
   try {
@@ -104,8 +106,13 @@ function getDirectWorkerSessionState(manifest, agentId, options = {}) {
   return manifest.worker;
 }
 
-async function buildDirectWorkerPrompt(manifest, agentId, visiblePrompt) {
+async function buildDirectWorkerPrompt(manifest, agentId, visiblePrompt, options = {}) {
   const promptText = visiblePrompt == null ? '' : String(visiblePrompt);
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(1, Number(options.maxChars))
+    : DIRECT_WORKER_HANDOFF_MAX_CHARS;
+  const contextLabel = options.contextLabel || 'Context since your last turn in this run:';
+  const requestLabel = options.requestLabel || 'Current user request:';
   const sessionState = getDirectWorkerSessionState(manifest, agentId, { create: true });
   if (!manifest || !manifest.files || !manifest.files.chatLog || !sessionState) {
     return {
@@ -130,17 +137,17 @@ async function buildDirectWorkerPrompt(manifest, agentId, visiblePrompt) {
     };
   }
 
-  const tail = buildTranscriptTail(handoffEntries, { maxChars: DIRECT_WORKER_HANDOFF_MAX_CHARS });
+  const tail = buildTranscriptTail(handoffEntries, { maxChars });
   const handoffLines = tail.truncated
-    ? [DIRECT_WORKER_HANDOFF_NOTICE, ...tail.lines]
+    ? [buildDirectWorkerHandoffNotice(maxChars), ...tail.lines]
     : tail.lines;
 
   return {
     prompt: [
-      'Context since your last turn in this run:',
+      contextLabel,
       ...handoffLines,
       '',
-      'Current user request:',
+      requestLabel,
       promptText,
     ].join('\n'),
     handoffLines,
@@ -159,6 +166,7 @@ function syncDirectWorkerChatCursor(manifest, agentId) {
 module.exports = {
   DIRECT_WORKER_HANDOFF_MAX_CHARS,
   DIRECT_WORKER_HANDOFF_NOTICE,
+  buildDirectWorkerHandoffNotice,
   buildDirectWorkerPrompt,
   countChatLinesSync,
   getDirectWorkerSessionState,

@@ -808,6 +808,50 @@ test('sendTranscript does not duplicate v2 tool cards or mirrored screenshots', 
   }
 });
 
+test('sendTranscript restores only the latest visible transcript tail for large runs', async () => {
+  const transcriptLines = [];
+  for (let index = 0; index < 120; index += 1) {
+    transcriptLines.push({
+      v: 2,
+      ts: `2025-01-01T00:00:${String(index).padStart(2, '0')}Z`,
+      kind: 'assistant_message',
+      sessionKey: 'worker:agent:dev',
+      backend: 'worker:api',
+      requestId: 'req-0001',
+      loopIndex: 1,
+      agentId: 'dev',
+      text: `entry-${index} ` + 'x'.repeat(700),
+      payload: { role: 'assistant', content: `entry-${index} ` + 'x'.repeat(700) },
+    });
+  }
+
+  const { session, posted, cleanup } = buildTranscriptSession(transcriptLines, {
+    worker: {
+      model: null,
+      cli: 'api',
+      agentSessions: { dev: { hasStarted: true } },
+    },
+    agents: {
+      dev: { name: 'Developer', cli: 'api' },
+    },
+  });
+
+  try {
+    await session.reattachRun('transcript-run');
+    posted.length = 0;
+    await session.sendTranscript();
+    const hist = posted.find(m => m.type === 'transcriptHistory');
+    assert.ok(hist, 'should post transcriptHistory');
+    assert.equal(hist.messages[0].type, 'banner');
+    assert.match(hist.messages[0].text, /latest chat tail/i);
+    assert.ok(hist.messages.some((m) => m.type === 'claude' && m.text.includes('entry-119')));
+    assert.ok(!hist.messages.some((m) => m.type === 'claude' && m.text.includes('entry-0 ')));
+    assert.ok(hist.messages.length < transcriptLines.length);
+  } finally {
+    cleanup();
+  }
+});
+
 test('sendTranscript does nothing when transcript file is empty', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-'));
   const transcriptFile = path.join(tmpDir, 'transcript.jsonl');

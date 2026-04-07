@@ -656,32 +656,46 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
   const agentId = options.agentId || null;
   const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
   const workerMeta = workerTranscriptMeta(manifest, agentId);
-  const actualWorkerPrompt = (options.isDelegation || !options.enableWorkerHandoff)
+  const visibleUserMessage = options.visibleUserMessage == null
     ? userMessage
-    : (await buildDirectWorkerPrompt(manifest, agentId, userMessage)).prompt;
+    : String(options.visibleUserMessage).trim();
+  const workerPromptBase = options.workerPromptBase == null
+    ? userMessage
+    : String(options.workerPromptBase);
+  const shouldInjectChatTail = Boolean(options.enableWorkerHandoff || options.includeChatTail);
+  const actualWorkerPrompt = options.actualWorkerPrompt != null
+    ? String(options.actualWorkerPrompt)
+    : (
+        shouldInjectChatTail
+          ? (await buildDirectWorkerPrompt(manifest, agentId, workerPromptBase, {
+              maxChars: options.chatTailMaxChars,
+            })).prompt
+          : workerPromptBase
+      );
+  const sameSession = agentId && agentId !== 'default'
+    ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted
+    : !!(manifest.worker && manifest.worker.hasStarted);
 
   let request;
   if (options.isDelegation) {
     // Agent-to-agent delegation: create request record and show launch message with "Agent delegation" label
-    request = createRequest(manifest, userMessage);
+    request = createRequest(manifest, visibleUserMessage);
     manifest.status = 'running';
     manifest.phase = 'controller';
     manifest.stopReason = null;
     manifest.error = null;
     const agentCli = (agentConfig && agentConfig.cli) || manifest.worker.cli || 'codex';
     const agentName = agentConfig ? agentConfig.name : null;
-    const sameSession = agentId && agentId !== 'default'
-      ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted
-      : manifest.worker.hasStarted;
-    renderer.launchClaude(userMessage, sameSession, agentId, agentCli, agentName, 'Agent delegation');
+    const launchLabelHint = options.launchLabelHint || 'Agent delegation';
+    renderer.launchClaude(visibleUserMessage, sameSession, agentId, agentCli, agentName, launchLabelHint);
     await appendTranscript(manifest, {
       kind: 'delegation',
       sessionKey: controllerSessionKey(),
       backend: transcriptBackend('controller', manifest.controller.cli || 'codex'),
       requestId: request.id,
       agentId: workerMeta.agentId,
-      text: buildLaunchText(userMessage, sameSession, agentId, agentCli, agentName),
-      labelHint: 'Agent delegation',
+      text: buildLaunchText(visibleUserMessage, sameSession, agentId, agentCli, agentName),
+      labelHint: launchLabelHint,
       controllerCli: manifest.controller.cli || 'codex',
     });
     await appendTranscript(manifest, {
@@ -691,14 +705,25 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       requestId: request.id,
       agentId: workerMeta.agentId,
       workerCli: workerMeta.workerCli,
-      text: userMessage,
-      payload: { role: 'user', content: userMessage },
+      text: visibleUserMessage,
+      payload: { role: 'user', content: visibleUserMessage },
       display: false,
     });
-    await emitEvent(manifest, { ts: nowIso(), source: 'delegation', requestId: request.id, text: userMessage, agentId }, renderer, options.onEvent);
+    await emitEvent(
+      manifest,
+      {
+        ts: nowIso(),
+        source: options.launchSource || 'delegation',
+        requestId: request.id,
+        text: visibleUserMessage,
+        agentId,
+      },
+      renderer,
+      options.onEvent,
+    );
     await saveManifest(manifest);
   } else {
-    request = await startUserRequest(manifest, renderer, userMessage, {
+    request = await startUserRequest(manifest, renderer, visibleUserMessage, {
       phase: 'worker',
       sessionKey: workerMeta.sessionKey,
       agentId: workerMeta.agentId,
@@ -739,8 +764,8 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         source: 'launch-claude-direct',
         requestId: request.id,
         loopIndex: loop.index,
-        sameSession: manifest.worker.hasStarted,
-        prompt: userMessage,
+        sameSession,
+        prompt: visibleUserMessage,
       },
       renderer,
       options.onEvent,
@@ -761,7 +786,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         loop,
         workerRecord,
         prompt: actualWorkerPrompt,
-        visiblePrompt: userMessage,
+        visiblePrompt: visibleUserMessage,
         agentId,
         renderer,
         abortSignal: signalController.signal,
@@ -826,7 +851,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     manifest.phase = 'idle';
     manifest.stopReason = request.stopReason;
     manifest.activeRequestId = null;
-    manifest.transcriptSummary = truncate(workerResult.resultText || userMessage, 120);
+    manifest.transcriptSummary = truncate(workerResult.resultText || visibleUserMessage, 120);
     await emitFinalQaReport(manifest, request, renderer);
     await saveManifest(manifest);
     return manifest;

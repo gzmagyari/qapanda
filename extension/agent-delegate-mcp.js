@@ -18,7 +18,15 @@ const TOOLS = [
         },
         message: {
           type: 'string',
-          description: 'The task instruction for the agent. Be specific — this is the only thing the agent sees.',
+          description: 'The task instruction for the agent. Be specific - this is the only thing the agent sees.',
+        },
+        include_chat_tail: {
+          type: 'boolean',
+          description: 'When true, inject the recent unseen chat tail into the delegated agent turn.',
+        },
+        chat_tail_max_chars: {
+          type: 'number',
+          description: 'Optional max character budget for the injected chat tail. Defaults to 50000.',
         },
       },
       required: ['agent_id', 'message'],
@@ -37,7 +45,7 @@ const TOOLS = [
 /**
  * Start the agent delegation MCP HTTP server.
  * @param {object} options
- * @param {(agentId: string, message: string) => Promise<string>} options.onDelegate
+ * @param {(agentId: string, message: string, options?: object) => Promise<string>} options.onDelegate
  * @param {() => Promise<string>} options.onListAgents
  * @returns {Promise<{port: number, server: object, close: function}>}
  */
@@ -46,7 +54,10 @@ async function startAgentDelegateMcpServer({ onDelegate, onListAgents }) {
     tools: TOOLS,
     handleToolCall: async (name, args) => {
       if (name === 'delegate_to_agent') {
-        return await onDelegate(args.agent_id, args.message);
+        return await onDelegate(args.agent_id, args.message, {
+          includeChatTail: args.include_chat_tail === true,
+          chatTailMaxChars: args.chat_tail_max_chars,
+        });
       }
       if (name === 'list_agents') {
         return await onListAgents();
