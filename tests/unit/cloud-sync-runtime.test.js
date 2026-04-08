@@ -37,6 +37,7 @@ async function createRuntimeHarness(options = {}) {
     sync: [],
     heartbeat: [],
     notifications: [],
+    getNotifications: [],
     getConflicts: [],
     resolve: [],
   };
@@ -129,6 +130,25 @@ async function createRuntimeHarness(options = {}) {
           ],
         };
       },
+      async getNotifications(state) {
+        calls.getNotifications.push(state);
+        if (typeof options.getNotifications === 'function') {
+          return options.getNotifications(state);
+        }
+        return {
+          unreadCount: 2,
+          items: [
+            {
+              notificationId: 'notification-1',
+              eventKey: 'run.failed',
+              title: 'Sync needs attention',
+              body: 'A synced run needs attention.',
+              unread: true,
+              actionUrl: 'https://app.qapanda.localhost/app/runs/run-1',
+            },
+          ],
+        };
+      },
       async getSyncConflicts(repositoryContextId) {
         calls.getConflicts.push(repositoryContextId);
         return {
@@ -208,6 +228,7 @@ async function createRuntimeHarness(options = {}) {
       filePath: path.join(repoRoot, '.qpanda', 'cloud', 'session.json'),
     })),
     disableTimers: options.disableTimers,
+    onNotifications: options.onNotifications,
     setIntervalImpl(callback, intervalMs) {
       const handle = { callback, intervalMs, cleared: false };
       timers.push(handle);
@@ -222,6 +243,63 @@ async function createRuntimeHarness(options = {}) {
 }
 
 describe('createRepositorySyncRuntime', () => {
+  it('summarizes synced tests, issues, and recipes in runtime status', async () => {
+    const { runtime } = await createRuntimeHarness({
+      onExchange() {
+        return {
+          repositoryContext: { id: 'context-1' },
+          checkout: { checkoutId: 'checkout-1' },
+          acceptedMutationIds: [],
+          rejectedMutations: [],
+          remoteEntries: [
+            {
+              sequenceNo: 1,
+              objectType: 'issue',
+              objectId: 'issue-7',
+              action: 'upsert',
+              createdAt: '2026-04-08T19:55:00.000Z',
+              payload: { id: 'issue-7', title: 'Checkout fails on login' },
+            },
+            {
+              sequenceNo: 2,
+              objectType: 'test',
+              objectId: 'test-4',
+              action: 'upsert',
+              createdAt: '2026-04-08T19:56:00.000Z',
+              payload: { id: 'test-4', title: 'Verify login flow' },
+            },
+            {
+              sequenceNo: 3,
+              objectType: 'recipe',
+              objectId: 'recipe-2',
+              action: 'upsert',
+              createdAt: '2026-04-08T19:57:00.000Z',
+              payload: { id: 'recipe-2', title: 'Release smoke' },
+            },
+          ],
+          nextCursorSequenceNo: 3,
+          conflicts: [],
+          syncStatus: 'synced',
+        };
+      },
+    });
+    try {
+      const status = await runtime.start();
+      assert.deepEqual(status.objectCounts, { tests: 1, issues: 1, recipes: 1 });
+      assert.equal(status.recentObjects.length, 3);
+      assert.deepEqual(
+        status.recentObjects.map((item) => [item.objectType, item.objectId, item.title]),
+        [
+          ['recipe', 'recipe-2', 'Release smoke'],
+          ['issue', 'issue-7', 'Checkout fails on login'],
+          ['test', 'test-4', 'Verify login flow'],
+        ],
+      );
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it('registers the checkout, syncs local objects, and persists conflicts', async () => {
     const repoRoot = makeTempRepoRoot();
     writeJson(tasksFilePath(repoRoot), {
@@ -618,6 +696,74 @@ description: Runtime fixture
       await runtime.tick();
       assert.equal(calls.sync.length, 2);
       assert.equal(calls.sync[1].mutations.length, 0);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('baselines existing unread notifications on start and emits only newly unread items on later ticks', async () => {
+    const notificationBatches = [];
+    let notificationPoll = 0;
+    const { runtime, calls } = await createRuntimeHarness({
+      disableTimers: true,
+      onNotifications(batch) {
+        notificationBatches.push(batch);
+      },
+      getNotifications(state) {
+        assert.equal(state, 'unread');
+        notificationPoll += 1;
+        if (notificationPoll === 1) {
+          return {
+            unreadCount: 1,
+            items: [
+              {
+                notificationId: 'notification-old',
+                eventKey: 'run.failed',
+                title: 'Existing failure',
+                body: 'Existing unread item.',
+                unread: true,
+                actionUrl: 'https://app.qapanda.localhost/app/runs/run-old',
+              },
+            ],
+          };
+        }
+        return {
+          unreadCount: 2,
+          items: [
+            {
+              notificationId: 'notification-old',
+              eventKey: 'run.failed',
+              title: 'Existing failure',
+              body: 'Existing unread item.',
+              unread: true,
+              actionUrl: 'https://app.qapanda.localhost/app/runs/run-old',
+            },
+            {
+              notificationId: 'notification-new',
+              eventKey: 'schedule.attention',
+              title: 'Schedule needs attention',
+              body: 'A schedule missed its last run.',
+              unread: true,
+              actionUrl: 'https://app.qapanda.localhost/app/schedules/schedule-1',
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await runtime.start();
+      assert.equal(notificationBatches.length, 0);
+
+      await runtime.tick();
+
+      assert.equal(calls.getNotifications.length >= 2, true);
+      assert.equal(notificationBatches.length, 1);
+      assert.deepEqual(
+        notificationBatches[0].items.map((item) => item.notificationId),
+        ['notification-new'],
+      );
+      assert.equal(notificationBatches[0].summary.unreadCount, 2);
     } finally {
       await runtime.stop();
     }

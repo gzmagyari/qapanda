@@ -471,6 +471,12 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
       for (const line of controllerResult.decision.progress_updates || []) {
         await appendProgress(manifest, line, renderer);
+        await emitEvent(
+          manifest,
+          { ts: nowIso(), source: 'progress-update', requestId: request.id, loopIndex: loop.index, text: line },
+          renderer,
+          options.onEvent,
+        );
       }
 
       if (controllerResult.decision.action === 'stop') {
@@ -1043,6 +1049,12 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
 
       for (const line of controllerResult.decision.progress_updates || []) {
         await appendProgress(manifest, line, renderer);
+        await emitEvent(
+          manifest,
+          { ts: nowIso(), source: 'progress-update', requestId: request.id, loopIndex: loop.index, text: line },
+          renderer,
+          options.onEvent,
+        );
       }
 
       // Decision: stop or delegate

@@ -76,6 +76,7 @@ function buildLoggedOutState(boundary, options = {}) {
     appBaseUrl: boundary.config.appBaseUrl,
     apiBaseUrl: boundary.config.apiBaseUrl,
     actor: null,
+    memberships: [],
     workspace: null,
     session: null,
     refreshed: false,
@@ -94,6 +95,7 @@ function buildLoggedInState(boundary, session, currentActor, options = {}) {
     appBaseUrl: boundary.config.appBaseUrl,
     apiBaseUrl: boundary.config.apiBaseUrl,
     actor: currentActor.actor,
+    memberships: Array.isArray(currentActor.memberships) ? currentActor.memberships : [],
     workspace: currentActor.currentWorkspace,
     session: {
       email: session.email || currentActor.actor.email,
@@ -128,7 +130,10 @@ async function resolveExtensionCloudState(boundary, options = {}) {
     }
 
     try {
-      const refreshedSession = await packages.clientCloud.refreshCloudSession({ tokenStore });
+      const refreshedSession = await packages.clientCloud.refreshCloudSession({
+        tokenStore,
+        env: boundary.env,
+      });
       const currentActor = await fetchCurrentActor(boundary, refreshedSession);
       return buildLoggedInState(boundary, refreshedSession, currentActor, {
         storageMode,
@@ -184,6 +189,56 @@ async function loginExtensionCloud(boundary, options = {}) {
   };
 }
 
+async function switchExtensionCloudWorkspace(boundary, workspaceId, options = {}) {
+  const normalizedWorkspaceId = String(workspaceId || '').trim();
+  if (!normalizedWorkspaceId) {
+    throw new Error('A workspaceId is required to switch the hosted workspace.');
+  }
+  const packages = options.packages || await boundary.loadPackages();
+  const loaded = await loadStoredExtensionSession(boundary, { ...options, packages });
+  const { tokenStore, secretKey, session } = loaded;
+  if (!session || !session.tokens || !session.tokens.accessToken) {
+    throw new Error('Sign in to QA Panda Cloud before switching workspaces.');
+  }
+
+  const api = await boundary.createApiClient();
+  let activeSession = session;
+  try {
+    await api.sdk.withHeaders({
+      authorization: `Bearer ${activeSession.tokens.accessToken}`,
+    }).switchWorkspace(normalizedWorkspaceId);
+  } catch (error) {
+    if (!activeSession.tokens || !activeSession.tokens.refreshToken) {
+      await packages.clientCloud.clearCloudSession(tokenStore);
+      throw new Error('Stored QA Panda Cloud session is no longer valid. Sign in again.');
+    }
+    try {
+      activeSession = await packages.clientCloud.refreshCloudSession({
+        tokenStore,
+        env: boundary.env,
+      });
+      await api.sdk.withHeaders({
+        authorization: `Bearer ${activeSession.tokens.accessToken}`,
+      }).switchWorkspace(normalizedWorkspaceId);
+    } catch (refreshError) {
+      await packages.clientCloud.clearCloudSession(tokenStore);
+      throw new Error(`Stored QA Panda Cloud session expired: ${refreshError.message || String(refreshError)}`);
+    }
+  }
+
+  const updatedSession = {
+    ...activeSession,
+    workspaceId: normalizedWorkspaceId,
+    updatedAt: new Date().toISOString(),
+  };
+  await tokenStore.save(updatedSession);
+  return resolveExtensionCloudState(boundary, {
+    ...options,
+    packages,
+    secretKey,
+  });
+}
+
 async function logoutExtensionCloud(boundary, options = {}) {
   const packages = options.packages || await boundary.loadPackages();
   const { tokenStore, secretKey, storageMode, session } = await loadStoredExtensionSession(boundary, { ...options, packages });
@@ -227,4 +282,5 @@ module.exports = {
   logoutExtensionCloud,
   openExtensionCloudTarget,
   resolveExtensionCloudState,
+  switchExtensionCloudWorkspace,
 };

@@ -206,14 +206,29 @@
   const cloudAccountState = document.getElementById('cloud-account-state');
   const cloudAccountDesc = document.getElementById('cloud-account-desc');
   const cloudAccountWorkspace = document.getElementById('cloud-account-workspace');
+  const cloudAccountWorkspaceSelect = document.getElementById('cloud-account-workspace-select');
+  const cloudAccountWorkspaceSwitch = document.getElementById('cloud-account-workspace-switch');
   const cloudAccountSession = document.getElementById('cloud-account-session');
   const cloudAccountMeta = document.getElementById('cloud-account-meta');
   const cloudAccountStatus = document.getElementById('cloud-account-status');
   const cloudSyncState = document.getElementById('cloud-sync-state');
   const cloudSyncMeta = document.getElementById('cloud-sync-meta');
-  const cloudConflictState = document.getElementById('cloud-conflict-state');
-  const cloudConflictList = document.getElementById('cloud-conflict-list');
-  const cloudConflictsRefresh = document.getElementById('cloud-conflicts-refresh');
+  const cloudRepositoryState = document.getElementById('cloud-repository-state');
+  const cloudRepositoryMeta = document.getElementById('cloud-repository-meta');
+  const cloudContextState = document.getElementById('cloud-context-state');
+  const cloudContextMeta = document.getElementById('cloud-context-meta');
+  const cloudContextMode = document.getElementById('cloud-context-mode');
+  const cloudContextKey = document.getElementById('cloud-context-key');
+  const cloudContextLabel = document.getElementById('cloud-context-label');
+  const cloudContextSave = document.getElementById('cloud-context-save');
+    const cloudContextCreate = document.getElementById('cloud-context-create');
+    const cloudContextOpen = document.getElementById('cloud-context-open');
+    const cloudObjectsState = document.getElementById('cloud-objects-state');
+    const cloudObjectsMeta = document.getElementById('cloud-objects-meta');
+    const cloudObjectsList = document.getElementById('cloud-objects-list');
+    const cloudConflictState = document.getElementById('cloud-conflict-state');
+    const cloudConflictList = document.getElementById('cloud-conflict-list');
+    const cloudConflictsRefresh = document.getElementById('cloud-conflicts-refresh');
   const cloudNotificationState = document.getElementById('cloud-notification-state');
   const cloudNotificationMeta = document.getElementById('cloud-notification-meta');
   const cloudAccountLogin = document.getElementById('cloud-account-login');
@@ -234,6 +249,7 @@
   let cloudStatusState = null;
   let cloudPendingAction = '';
   let cloudNoticeText = '';
+  let cloudContextDraft = { mode: 'shared', explicitContextKey: '', contextLabel: '' };
   let guestModeDismissed = false;
 
   const promptsExpander = document.getElementById('settings-prompts-expander');
@@ -262,6 +278,15 @@
 
   function setCloudAccountStatus(text) {
     if (cloudAccountStatus) cloudAccountStatus.textContent = text || '';
+  }
+
+  function syncCloudContextDraftFromRuntime() {
+    const runtime = cloudStatusState && cloudStatusState.sync ? cloudStatusState.sync : null;
+    cloudContextDraft = {
+      mode: runtime && runtime.contextMode ? runtime.contextMode : 'shared',
+      explicitContextKey: runtime && runtime.explicitContextKey ? runtime.explicitContextKey : '',
+      contextLabel: runtime && runtime.contextLabel ? runtime.contextLabel : '',
+    };
   }
 
   function isExtensionCloudTarget() {
@@ -393,6 +418,122 @@
     });
   }
 
+  function renderCloudWorkspacePicker(loggedIn, busy, memberships, workspace, session) {
+    if (!cloudAccountWorkspaceSelect) return;
+    const selectedWorkspaceId = workspace && workspace.workspaceId
+      ? workspace.workspaceId
+      : (session && session.workspaceId ? session.workspaceId : '');
+    const options = loggedIn && Array.isArray(memberships) ? memberships : [];
+    cloudAccountWorkspaceSelect.innerHTML = '';
+
+    if (!loggedIn || options.length === 0) {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'No hosted workspace available';
+      cloudAccountWorkspaceSelect.appendChild(placeholder);
+      cloudAccountWorkspaceSelect.value = '';
+      cloudAccountWorkspaceSelect.disabled = true;
+      if (cloudAccountWorkspaceSwitch) cloudAccountWorkspaceSwitch.disabled = true;
+      return;
+    }
+
+    options.forEach((membership) => {
+      const option = document.createElement('option');
+      option.value = membership.workspaceId || '';
+      option.textContent = `${membership.name || membership.slug || membership.workspaceId} (${membership.roleKey || 'member'})`;
+      cloudAccountWorkspaceSelect.appendChild(option);
+    });
+
+    if (selectedWorkspaceId) {
+      cloudAccountWorkspaceSelect.value = selectedWorkspaceId;
+    }
+    if (!cloudAccountWorkspaceSelect.value && cloudAccountWorkspaceSelect.options.length > 0) {
+      cloudAccountWorkspaceSelect.selectedIndex = 0;
+    }
+
+    const canSwitch = options.length > 1;
+    cloudAccountWorkspaceSelect.disabled = busy || !canSwitch;
+    if (cloudAccountWorkspaceSwitch) {
+      cloudAccountWorkspaceSwitch.disabled = busy
+        || !canSwitch
+        || !cloudAccountWorkspaceSelect.value
+        || cloudAccountWorkspaceSelect.value === selectedWorkspaceId;
+    }
+  }
+
+  function renderCloudRepositoryIdentity(loggedIn, repository) {
+    if (cloudRepositoryState) {
+      if (!loggedIn) {
+        cloudRepositoryState.textContent = 'Sign in to inspect the hosted repository identity for this checkout.';
+      } else if (!repository) {
+        cloudRepositoryState.textContent = 'Repository identity will appear here after the extension loads cloud sync status.';
+      } else if (repository.kind === 'path_fallback') {
+        cloudRepositoryState.textContent = `Using a local path fallback for ${repository.displayName || 'this checkout'} until the repository has a shared remote.`;
+      } else {
+        cloudRepositoryState.textContent = `Hosted sync resolves this checkout as ${repository.displayName || 'the current repository'} across machines.`;
+      }
+    }
+    if (cloudRepositoryMeta) {
+      const details = [];
+      if (repository && repository.canonicalRemoteUrl) {
+        details.push(`Canonical remote ${repository.canonicalRemoteUrl}`);
+      } else if (repository && repository.kind === 'path_fallback') {
+        details.push('Canonical remote local path fallback');
+      }
+      if (repository && repository.repositoryKey) details.push(`Repository ${repository.repositoryKey}`);
+      if (repository && repository.contextKey) details.push(`Context ${repository.contextKey}`);
+      if (repository && repository.instanceKey) details.push(`Instance ${repository.instanceKey}`);
+      cloudRepositoryMeta.textContent = details.join('\n');
+    }
+  }
+
+  function renderCloudObjects(loggedIn, runtime) {
+    const counts = runtime && runtime.objectCounts ? runtime.objectCounts : { tests: 0, issues: 0, recipes: 0 };
+    const recentObjects = runtime && Array.isArray(runtime.recentObjects) ? runtime.recentObjects : [];
+    const total = Number(counts.tests || 0) + Number(counts.issues || 0) + Number(counts.recipes || 0);
+    if (cloudObjectsState) {
+      if (!loggedIn) {
+        cloudObjectsState.textContent = 'Sign in to inspect synced tests, issues, and recipes for this checkout.';
+      } else if (!runtime) {
+        cloudObjectsState.textContent = 'Checking synced repository objects...';
+      } else if (total === 0) {
+        cloudObjectsState.textContent = 'No synced tests, issues, or recipes yet.';
+      } else {
+        cloudObjectsState.textContent = `${counts.tests || 0} tests, ${counts.issues || 0} issues, and ${counts.recipes || 0} recipes are currently mirrored for this repository context.`;
+      }
+    }
+    if (cloudObjectsMeta) {
+      const details = [];
+      if (runtime && runtime.binding && runtime.binding.repositoryContextId) details.push(`Hosted context ${runtime.binding.repositoryContextId}`);
+      if (runtime && Number.isFinite(runtime.pendingMutationCount)) details.push(`Pending local changes ${runtime.pendingMutationCount}`);
+      cloudObjectsMeta.textContent = details.join('\n');
+    }
+    if (!cloudObjectsList) return;
+    cloudObjectsList.innerHTML = '';
+    if (!loggedIn || !recentObjects.length) return;
+    recentObjects.forEach((object) => {
+      const card = document.createElement('div');
+      card.className = 'cloud-conflict-card';
+      const header = document.createElement('div');
+      header.className = 'cloud-conflict-header';
+      header.textContent = `${object.objectType || 'object'}:${object.objectId || 'unknown'}`;
+      card.appendChild(header);
+
+      const meta = document.createElement('div');
+      meta.className = 'cloud-conflict-meta';
+      meta.textContent = object.updatedAt ? `Updated ${formatCloudTime(object.updatedAt)}` : 'Waiting for synced timestamp';
+      card.appendChild(meta);
+
+      const body = document.createElement('div');
+      body.className = 'cloud-conflict-column';
+      body.innerHTML = `<div class="cloud-conflict-label">Title</div><div class="cloud-conflict-value"></div>`;
+      body.querySelector('.cloud-conflict-value').textContent = object.title || object.objectId || 'Untitled object';
+      card.appendChild(body);
+
+      cloudObjectsList.appendChild(card);
+    });
+  }
+
   function renderCloudAccount() {
     const target = cloudBootstrap && cloudBootstrap.target;
     const isExtension = !target || target === 'extension';
@@ -404,9 +545,11 @@
     const busy = !!cloudPendingAction;
     const authMode = state && state.authMode ? state.authMode : (cloudBootstrap && cloudBootstrap.auth && cloudBootstrap.auth.authMode) || 'disabled';
     const actor = state && state.actor;
+    const memberships = state && Array.isArray(state.memberships) ? state.memberships : [];
     const workspace = state && state.workspace;
     const session = state && state.session;
     const runtime = cloudStatusState && cloudStatusState.sync ? cloudStatusState.sync : null;
+    const repository = runtime && runtime.repository ? runtime.repository : null;
     const notifications = cloudStatusState && cloudStatusState.notifications ? cloudStatusState.notifications : null;
     const unreadCount = notifications ? Number(notifications.unreadCount || 0) : 0;
 
@@ -430,6 +573,7 @@
         ? `${workspace.name} (${workspace.slug})`
         : 'No hosted workspace is currently linked.';
     }
+    renderCloudWorkspacePicker(loggedIn, busy, memberships, workspace, session);
 
     if (cloudAccountSession) {
       const parts = [];
@@ -467,7 +611,11 @@
       cloudSyncMeta.textContent = syncMeta.join('\n');
     }
 
-    renderCloudConflicts(runtime, loggedIn, busy);
+      renderCloudRepositoryIdentity(loggedIn, repository);
+      renderCloudContext(loggedIn, busy, runtime, repository);
+      renderCloudObjects(loggedIn, runtime);
+
+      renderCloudConflicts(runtime, loggedIn, busy);
 
     if (cloudNotificationState) {
       if (!loggedIn) {
@@ -511,6 +659,50 @@
       cloudAccountOpenNotifications.textContent = unreadCount > 0 ? `Notifications (${unreadCount})` : 'Notifications';
     }
     if (cloudAccountLogout) cloudAccountLogout.disabled = busy || !loggedIn;
+  }
+
+  function renderCloudContext(loggedIn, busy, runtime, repository) {
+    const contextMode = cloudContextDraft.mode || (runtime && runtime.contextMode) || 'shared';
+    const explicitContextKey = cloudContextDraft.explicitContextKey || '';
+    const contextLabel = cloudContextDraft.contextLabel || '';
+    const binding = runtime && runtime.binding ? runtime.binding : null;
+    const hasRegistration = !!(binding && binding.repositoryId);
+    if (cloudContextMode) cloudContextMode.value = contextMode;
+    if (cloudContextKey) {
+      cloudContextKey.value = explicitContextKey;
+      cloudContextKey.disabled = busy || !loggedIn || contextMode !== 'custom';
+    }
+    if (cloudContextLabel) {
+      cloudContextLabel.value = contextLabel;
+      cloudContextLabel.disabled = busy || !loggedIn;
+    }
+    if (cloudContextState) {
+      if (!loggedIn) {
+        cloudContextState.textContent = 'Sign in to save a shared, branch, worktree, or named override context for this checkout.';
+      } else if (contextMode === 'custom' && explicitContextKey) {
+        cloudContextState.textContent = `This checkout uses the named override context ${explicitContextKey}.`;
+      } else if (contextMode === 'branch') {
+        cloudContextState.textContent = 'This checkout separates synced objects by git branch.';
+      } else if (contextMode === 'worktree') {
+        cloudContextState.textContent = 'This checkout keeps a separate context per worktree path.';
+      } else {
+        cloudContextState.textContent = 'This checkout shares synced objects with the default repository context.';
+      }
+    }
+    if (cloudContextMeta) {
+      const details = [];
+      if (repository && repository.contextKey) details.push(`Resolved ${repository.contextKey}`);
+      if (runtime && runtime.contextLabel) details.push(`Label ${runtime.contextLabel}`);
+      if (binding && binding.repositoryContextId) details.push(`Hosted context ${binding.repositoryContextId}`);
+      if (!repository || repository.kind === 'path_fallback') {
+        details.push('No shared remote yet. This checkout still works, but hosted matching uses the local path fallback until you add a shared remote.');
+      }
+      cloudContextMeta.textContent = details.join('\n');
+    }
+    if (cloudContextMode) cloudContextMode.disabled = busy || !loggedIn;
+    if (cloudContextSave) cloudContextSave.disabled = busy || !loggedIn || (contextMode === 'custom' && !String(explicitContextKey).trim());
+    if (cloudContextCreate) cloudContextCreate.disabled = busy || !loggedIn || !String(cloudContextKey && cloudContextKey.value || explicitContextKey).trim();
+    if (cloudContextOpen) cloudContextOpen.disabled = busy || !loggedIn || !hasRegistration;
   }
 
   if (selfTestToggle) {
@@ -565,6 +757,93 @@
       setCloudAccountStatus(cloudPendingAction);
       renderCloudAccount();
       vscode.postMessage({ type: 'cloudSessionRefresh' });
+    });
+  }
+  if (cloudAccountWorkspaceSelect) {
+    cloudAccountWorkspaceSelect.addEventListener('change', () => {
+      const currentWorkspaceId = cloudSessionState && cloudSessionState.workspace
+        ? cloudSessionState.workspace.workspaceId
+        : (cloudSessionState && cloudSessionState.session ? cloudSessionState.session.workspaceId : '');
+      if (cloudAccountWorkspaceSwitch) {
+        cloudAccountWorkspaceSwitch.disabled = !cloudAccountWorkspaceSelect.value
+          || cloudAccountWorkspaceSelect.value === currentWorkspaceId
+          || !!cloudPendingAction;
+      }
+    });
+  }
+  if (cloudAccountWorkspaceSwitch) {
+    cloudAccountWorkspaceSwitch.addEventListener('click', () => {
+      const workspaceId = cloudAccountWorkspaceSelect ? cloudAccountWorkspaceSelect.value : '';
+      if (!workspaceId) return;
+      cloudPendingAction = 'Switching hosted workspace...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudSessionSwitchWorkspace', workspaceId });
+    });
+  }
+  if (cloudContextMode) {
+    cloudContextMode.addEventListener('change', () => {
+      cloudContextDraft.mode = cloudContextMode.value || 'shared';
+      const isCustom = cloudContextDraft.mode === 'custom';
+      if (cloudContextKey) cloudContextKey.disabled = !isCustom || !!cloudPendingAction;
+      renderCloudAccount();
+    });
+  }
+  if (cloudContextKey) {
+    cloudContextKey.addEventListener('input', () => {
+      cloudContextDraft.explicitContextKey = cloudContextKey.value || '';
+      renderCloudAccount();
+    });
+  }
+  if (cloudContextLabel) {
+    cloudContextLabel.addEventListener('input', () => {
+      cloudContextDraft.contextLabel = cloudContextLabel.value || '';
+    });
+  }
+  if (cloudContextSave) {
+    cloudContextSave.addEventListener('click', () => {
+      const contextModeValue = cloudContextDraft.mode || 'shared';
+      const explicitContextKey = String(cloudContextDraft.explicitContextKey || '').trim();
+      const contextLabelValue = String(cloudContextDraft.contextLabel || '').trim();
+      cloudPendingAction = 'Saving repository context...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({
+        type: 'cloudContextSave',
+        contextMode: contextModeValue,
+        explicitContextKey,
+        contextLabel: contextLabelValue,
+      });
+    });
+  }
+  if (cloudContextCreate) {
+    cloudContextCreate.addEventListener('click', () => {
+      const explicitContextKey = String(cloudContextDraft.explicitContextKey || '').trim();
+      if (!explicitContextKey) return;
+      const contextLabelValue = String(cloudContextDraft.contextLabel || '').trim();
+      cloudPendingAction = 'Saving named repository context...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      cloudContextDraft.mode = 'custom';
+      if (cloudContextMode) cloudContextMode.value = 'custom';
+      renderCloudAccount();
+      vscode.postMessage({
+        type: 'cloudContextSave',
+        contextMode: 'custom',
+        explicitContextKey,
+        contextLabel: contextLabelValue,
+      });
+    });
+  }
+  if (cloudContextOpen) {
+    cloudContextOpen.addEventListener('click', () => {
+      cloudPendingAction = 'Opening hosted repository context...';
+      cloudNoticeText = '';
+      setCloudAccountStatus(cloudPendingAction);
+      renderCloudAccount();
+      vscode.postMessage({ type: 'cloudContextOpen' });
     });
   }
   if (cloudConflictsRefresh) {
@@ -5821,6 +6100,7 @@
       cloudBootstrap = msg.cloud || cloudBootstrap;
       cloudSessionState = msg.cloudSession || cloudSessionState;
       cloudStatusState = msg.cloudStatus || cloudStatusState;
+      if (msg.cloudStatus) syncCloudContextDraftFromRuntime();
       cloudPendingAction = '';
       cloudNoticeText = '';
       renderCloudAccount();
@@ -6293,6 +6573,7 @@
     cloudStatusData(msg) {
       if (msg.cloudStatus) {
         cloudStatusState = msg.cloudStatus;
+        syncCloudContextDraftFromRuntime();
       }
       renderCloudAccount();
       renderCloudEntryScreen();
@@ -6307,6 +6588,7 @@
       }
       if (msg.cloudStatus) {
         cloudStatusState = msg.cloudStatus;
+        syncCloudContextDraftFromRuntime();
       }
       renderCloudAccount();
       renderCloudEntryScreen();

@@ -136,6 +136,62 @@ describe('resolveRepositoryIdentity', () => {
     assert.equal(custom.identity.contextLabel, 'Release Preview');
     assert.equal(first.syncDbPath, cloudSyncDbPath(repoRoot));
   });
+
+  it('normalizes equivalent SSH and HTTPS remotes to the same canonical repository identity', async () => {
+    const repoRoot = makeTempRepoRoot();
+    const boundary = createCloudBoundary({ target: 'cli', repoRoot, env: {} });
+    const sshIdentity = await resolveRepositoryIdentity(boundary, {
+      git: {
+        localPath: repoRoot,
+        remoteUrl: 'git@github.com:QA-Panda/cc-manager.git',
+        branchName: 'main',
+      },
+    });
+    const httpsIdentity = await resolveRepositoryIdentity(boundary, {
+      git: {
+        localPath: repoRoot,
+        remoteUrl: 'https://github.com/qa-panda/cc-manager',
+        branchName: 'main',
+      },
+    });
+    const sshUrlIdentity = await resolveRepositoryIdentity(boundary, {
+      git: {
+        localPath: repoRoot,
+        remoteUrl: 'ssh://git@github.com/QA-Panda/cc-manager.git',
+        branchName: 'main',
+      },
+    });
+
+    assert.equal(sshIdentity.identity.repositoryKey, 'git:github.com/qa-panda/cc-manager');
+    assert.equal(sshIdentity.identity.repositoryKey, httpsIdentity.identity.repositoryKey);
+    assert.equal(sshIdentity.identity.repositoryKey, sshUrlIdentity.identity.repositoryKey);
+    assert.equal(sshIdentity.identity.instanceKey, httpsIdentity.identity.instanceKey);
+  });
+
+  it('falls back to a stable path-based identity when no shared remote is configured', async () => {
+    const repoRoot = makeTempRepoRoot();
+    const boundary = createCloudBoundary({ target: 'cli', repoRoot, env: {} });
+
+    const first = await resolveRepositoryIdentity(boundary, {
+      git: {
+        localPath: repoRoot,
+        remoteUrl: null,
+        branchName: 'main',
+      },
+    });
+    const second = await resolveRepositoryIdentity(boundary, {
+      git: {
+        localPath: repoRoot,
+        remoteUrl: null,
+        branchName: 'main',
+      },
+    });
+
+    assert.equal(first.identity.kind, 'path_fallback');
+    assert.equal(first.identity.repositoryKey, second.identity.repositoryKey);
+    assert.equal(first.identity.instanceKey, second.identity.instanceKey);
+    assert.equal(first.identity.canonicalRemoteUrl, undefined);
+  });
 });
 
 describe('createLocalSyncStore', () => {

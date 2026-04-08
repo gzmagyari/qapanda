@@ -210,8 +210,32 @@ function createCloudRunEventBridge(spec, options = {}) {
     if (!event || typeof event !== 'object') return;
     if (event.source === 'launch-claude' || event.source === 'launch-claude-direct') {
       emitCloudRunRawEvent({
-        type: 'session.note',
+        type: 'session.progress',
+        phase: 'execution',
+        progressPercent: 15,
         message: `Delegated worker execution for ${spec.title}.`,
+      });
+      return;
+    }
+    if (event.source === 'controller-message') {
+      const redactedText = redactValue(event.text);
+      emitCloudRunRawEvent({
+        type: 'session.note',
+        phase: 'planning',
+        message: typeof redactedText === 'string' && redactedText.trim()
+          ? redactedText.trim()
+          : 'QA Panda updated the run plan.',
+      });
+      return;
+    }
+    if (event.source === 'progress-update') {
+      const redactedText = redactValue(event.text);
+      emitCloudRunRawEvent({
+        type: 'session.progress',
+        phase: 'execution',
+        message: typeof redactedText === 'string' && redactedText.trim()
+          ? redactedText.trim()
+          : 'QA Panda reported progress.',
       });
       return;
     }
@@ -219,6 +243,7 @@ function createCloudRunEventBridge(spec, options = {}) {
       const redactedText = redactValue(event.text);
       emitCloudRunRawEvent({
         type: 'session.note',
+        phase: 'results',
         message: typeof redactedText === 'string' && redactedText.trim()
           ? redactedText.trim()
           : 'Worker turn completed.',

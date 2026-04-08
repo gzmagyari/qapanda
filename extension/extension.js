@@ -25,7 +25,7 @@ let loadFeatureFlags;
 let exportQaReportPdf;
 let buildApiCatalogPayload;
 let createCloudBoundary;
-let loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState;
+let loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState, switchExtensionCloudWorkspace;
 let killChrome, killAllChrome;
 let closeAllCodexConnections;
 let cleanupPanelSession, shutdownExtensionResources;
@@ -89,7 +89,7 @@ try {
   ({ buildApiCatalogPayload } = require('./src/model-catalog'));
   _aDbg('require OK: model-catalog');
   ({ loadFeatureFlags } = require('./src/feature-flags'));
-  ({ createCloudBoundary, loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState } = require('./src/cloud'));
+  ({ createCloudBoundary, loginExtensionCloud, logoutExtensionCloud, openExtensionCloudTarget, resolveExtensionCloudState, switchExtensionCloudWorkspace } = require('./src/cloud'));
   ({ exportQaReportPdf } = require('./qa-report-export'));
   ({ killChrome, killAll: killAllChrome } = require('./chrome-manager'));
   ({ closeAllConnections: closeAllCodexConnections } = require('./src/codex-app-server'));
@@ -443,13 +443,56 @@ function defaultCloudRuntimeState(sessionState) {
     pendingMutationCount: 0,
     lastSyncedAt: null,
     lastError: null,
-    openConflictCount: 0,
-    notificationSummary: null,
+      openConflictCount: 0,
+      objectCounts: { tests: 0, issues: 0, recipes: 0 },
+      recentObjects: [],
+      notificationSummary: null,
     unreadNotificationCount: 0,
     hasUnreadNotifications: false,
     notificationError: null,
     registered: false,
   };
+}
+
+function summarizeCloudRepositoryIdentity(repository) {
+  if (!repository || typeof repository !== 'object') return null;
+  return {
+    kind: repository.kind || null,
+    displayName: repository.displayName || repository.repositorySlug || null,
+    canonicalRemoteUrl: repository.canonicalRemoteUrl || null,
+    repositoryKey: repository.repositoryKey || null,
+    contextKey: repository.contextKey || null,
+    instanceKey: repository.instanceKey || null,
+    contextMode: repository.contextMode || null,
+    contextLabel: repository.contextLabel || null,
+    branchName: repository.branchName || null,
+  };
+}
+
+function resolveHostedRepositoryContextUrl(cloudBoundary, binding) {
+  if (!binding || !binding.repositoryId) return null;
+  const trim = String(cloudBoundary.config.appBaseUrl || '').replace(/\/$/, '');
+  const query = binding.repositoryContextId
+    ? `?contextId=${encodeURIComponent(binding.repositoryContextId)}`
+    : '';
+  return `${trim}/app/repositories/${encodeURIComponent(binding.repositoryId)}${query}`;
+}
+
+async function saveExtensionCloudContext(cloudBoundary, context, updates = {}) {
+  const saved = await cloudBoundary.saveCloudSyncProjectConfig(updates);
+  await stopExtensionCloudSyncRuntime();
+  await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+  return saved;
+}
+
+async function openExtensionCloudRepositoryContext(cloudBoundary, context) {
+  const payload = await buildCloudStatusPayload(cloudBoundary, context);
+  const url = resolveHostedRepositoryContextUrl(cloudBoundary, payload && payload.sync ? payload.sync.binding : null);
+  if (!url) {
+    throw new Error('This checkout is not registered in hosted sync yet. Wait for the next sync heartbeat, then try again.');
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(url));
+  return { url };
 }
 
 async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = null, sessionState = null) {
@@ -459,6 +502,9 @@ async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = n
   }
   const packages = await cloudBoundary.loadPackages();
   const status = runtimeStatus || (_cloudSyncRuntime ? _cloudSyncRuntime.getStatus() : defaultCloudRuntimeState(resolvedSession));
+  const projectConfig = status.repository && status.repository.projectConfig
+    ? status.repository.projectConfig
+    : cloudBoundary.getCloudSyncProjectConfig();
   const notificationSummary = status.notificationSummary || { unreadCount: 0, latest: [] };
   return {
     session: resolvedSession,
@@ -467,11 +513,16 @@ async function buildCloudStatusPayload(cloudBoundary, context, runtimeStatus = n
       registered: Boolean(status.registered),
       badge: packages.clientCloud.createExtensionSyncBadge(status.indicator),
       indicator: status.indicator,
-      contextMode: status.repository && status.repository.projectConfig ? status.repository.projectConfig.contextMode : null,
-      contextLabel: status.repository && status.repository.projectConfig ? status.repository.projectConfig.contextLabel || null : null,
+      contextMode: projectConfig ? projectConfig.contextMode : null,
+      explicitContextKey: projectConfig ? projectConfig.explicitContextKey || null : null,
+      contextLabel: projectConfig ? projectConfig.contextLabel || null : null,
+      repository: summarizeCloudRepositoryIdentity(status.repository),
+      binding: status.binding || null,
       pendingMutationCount: Number(status.pendingMutationCount || 0),
-      openConflictCount: Number(status.openConflictCount || 0),
-      lastSyncedAt: status.lastSyncedAt || null,
+        openConflictCount: Number(status.openConflictCount || 0),
+        objectCounts: status.objectCounts || { tests: 0, issues: 0, recipes: 0 },
+        recentObjects: Array.isArray(status.recentObjects) ? status.recentObjects : [],
+        lastSyncedAt: status.lastSyncedAt || null,
       lastError: status.lastError || null,
       conflicts: Array.isArray(status.conflicts) ? status.conflicts : [],
     },
@@ -497,10 +548,15 @@ function buildFallbackCloudStatusPayload(cloudBoundary, sessionState = null) {
       badge: null,
       indicator: runtime.indicator,
       contextMode: null,
+      explicitContextKey: null,
       contextLabel: null,
+      repository: null,
+      binding: null,
       pendingMutationCount: Number(runtime.pendingMutationCount || 0),
-      openConflictCount: Number(runtime.openConflictCount || 0),
-      lastSyncedAt: runtime.lastSyncedAt || null,
+        openConflictCount: Number(runtime.openConflictCount || 0),
+        objectCounts: runtime.objectCounts || { tests: 0, issues: 0, recipes: 0 },
+        recentObjects: Array.isArray(runtime.recentObjects) ? runtime.recentObjects : [],
+        lastSyncedAt: runtime.lastSyncedAt || null,
       lastError: runtime.lastError || null,
       conflicts: [],
     },
@@ -557,6 +613,39 @@ async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtim
     } catch {}
   }
   return payload;
+}
+
+function resolveNotificationToastHandler(item) {
+  if (item && item.severity === 'danger') return vscode.window.showErrorMessage.bind(vscode.window);
+  if (item && item.severity === 'warning') return vscode.window.showWarningMessage.bind(vscode.window);
+  return vscode.window.showInformationMessage.bind(vscode.window);
+}
+
+async function showExtensionCloudNotificationBatch(cloudBoundary, batch) {
+  const items = Array.isArray(batch && batch.items) ? batch.items : [];
+  if (!items.length) return;
+  const actionable = packages.clientCloud.selectExtensionToastNotifications(items);
+  if (!actionable.length) return;
+  const links = packages.clientCloud.createNotificationWebLinks(cloudBoundary.config.appBaseUrl);
+  for (const item of actionable) {
+    const message = item && item.body
+      ? `${item.title}: ${item.body}`
+      : item && item.title
+        ? item.title
+        : 'QA Panda sent a hosted notification.';
+    const primaryUrl = item && item.actionUrl ? item.actionUrl : links.inboxPath;
+    const actions = [
+      { title: item && item.actionUrl ? 'Open in QA Panda' : 'Open notifications', url: primaryUrl },
+    ];
+    if (primaryUrl !== links.inboxPath) {
+      actions.push({ title: 'Open inbox', url: links.inboxPath });
+    }
+    const showToast = resolveNotificationToastHandler(item);
+    const picked = await showToast(message, ...actions);
+    if (picked && picked.url) {
+      await vscode.env.openExternal(vscode.Uri.parse(picked.url));
+    }
+  }
 }
 
 async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg) {
@@ -638,6 +727,9 @@ async function ensureExtensionCloudSyncRuntime(cloudBoundary, context) {
       },
       onStatus(status) {
         void refreshExtensionCloudStatusSurface(cloudBoundary, context, status);
+      },
+      onNotifications(batch) {
+        void showExtensionCloudNotificationBatch(cloudBoundary, batch);
       },
     });
     const started = await runtime.start();
@@ -900,12 +992,52 @@ function _activateInner(context) {
           await refreshExtensionCloudStatusSurface(cloudBoundary, context);
           return;
         }
+        if (msg.type === 'cloudSessionSwitchWorkspace') {
+          const nextState = await switchExtensionCloudWorkspace(
+            cloudBoundary,
+            msg.workspaceId,
+            createExtensionCloudOptions(context)
+          );
+          await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+          await postSettingsData(panel, session, cloudBoundary, context);
+          await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+          try {
+            panel.webview.postMessage({
+              type: 'cloudSessionNotice',
+              level: 'info',
+              text: `Switched hosted workspace to ${nextState.workspace && nextState.workspace.name ? nextState.workspace.name : 'the selected workspace'}.`,
+            });
+          } catch {}
+          return;
+        }
         if (msg.type === 'cloudSessionOpen') {
           const result = await openExtensionCloudTarget(cloudBoundary, {
             ...createExtensionCloudOptions(context),
             target: msg.target || 'app',
             id: msg.id || null,
           });
+          try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
+          return;
+        }
+        if (msg.type === 'cloudContextSave') {
+          await saveExtensionCloudContext(cloudBoundary, context, {
+            contextMode: msg.contextMode,
+            explicitContextKey: msg.explicitContextKey,
+            contextLabel: msg.contextLabel,
+          });
+          await postSettingsData(panel, session, cloudBoundary, context);
+          await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+          try {
+            panel.webview.postMessage({
+              type: 'cloudSessionNotice',
+              level: 'info',
+              text: 'Saved repository context for this checkout.',
+            });
+          } catch {}
+          return;
+        }
+        if (msg.type === 'cloudContextOpen') {
+          const result = await openExtensionCloudRepositoryContext(cloudBoundary, context);
           try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
           return;
         }
@@ -1223,6 +1355,25 @@ async function _deserializeInner(panel, state, context) {
           }
           if (msg.type === 'cloudSessionRefresh') {
             await postSettingsData(panel, session, cloudBoundary, context);
+            await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+            return;
+          }
+          if (msg.type === 'cloudSessionSwitchWorkspace') {
+            const nextState = await switchExtensionCloudWorkspace(
+              cloudBoundary,
+              msg.workspaceId,
+              createExtensionCloudOptions(context)
+            );
+            await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+            await postSettingsData(panel, session, cloudBoundary, context);
+            await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+            try {
+              panel.webview.postMessage({
+                type: 'cloudSessionNotice',
+                level: 'info',
+                text: `Switched hosted workspace to ${nextState.workspace && nextState.workspace.name ? nextState.workspace.name : 'the selected workspace'}.`,
+              });
+            } catch {}
             return;
           }
           if (msg.type === 'cloudSessionOpen') {
@@ -1231,6 +1382,28 @@ async function _deserializeInner(panel, state, context) {
               target: msg.target || 'app',
               id: msg.id || null,
             });
+            try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
+            return;
+          }
+          if (msg.type === 'cloudContextSave') {
+            await saveExtensionCloudContext(cloudBoundary, context, {
+              contextMode: msg.contextMode,
+              explicitContextKey: msg.explicitContextKey,
+              contextLabel: msg.contextLabel,
+            });
+            await postSettingsData(panel, session, cloudBoundary, context);
+            await refreshExtensionCloudStatusSurface(cloudBoundary, context);
+            try {
+              panel.webview.postMessage({
+                type: 'cloudSessionNotice',
+                level: 'info',
+                text: 'Saved repository context for this checkout.',
+              });
+            } catch {}
+            return;
+          }
+          if (msg.type === 'cloudContextOpen') {
+            const result = await openExtensionCloudRepositoryContext(cloudBoundary, context);
             try { panel.webview.postMessage({ type: 'cloudSessionNotice', level: 'info', text: `Opened ${result.url}` }); } catch {}
             return;
           }

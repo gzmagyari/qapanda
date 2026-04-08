@@ -400,6 +400,12 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
                 <div class="settings-item-desc" id="cloud-account-workspace">No hosted workspace is currently linked.</div>
               </div>
               <div class="cloud-account-links">
+                <select class="mcp-input" id="cloud-account-workspace-select">
+                  <option value="">Select workspace</option>
+                </select>
+                <button class="mcp-btn" id="cloud-account-workspace-switch">Switch Workspace</button>
+              </div>
+              <div class="cloud-account-links">
                 <button class="mcp-btn mcp-btn-primary" id="cloud-account-login">Sign In</button>
                 <button class="mcp-btn" id="cloud-account-refresh">Refresh</button>
                 <button class="mcp-btn" id="cloud-account-open-app">Open App</button>
@@ -416,7 +422,44 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </div>
             <div class="settings-item settings-item-stack">
               <div class="settings-item-info">
-                <div class="settings-item-name">Sync Conflicts</div>
+                <div class="settings-item-name">Repository Identity</div>
+                <div class="settings-item-desc" id="cloud-repository-state">The canonical repository identity for this checkout will appear here after the extension loads cloud status.</div>
+              </div>
+              <div class="cloud-account-meta" id="cloud-repository-meta"></div>
+            </div>
+              <div class="settings-item settings-item-stack">
+                <div class="settings-item-info">
+                  <div class="settings-item-name">Repository Context</div>
+                <div class="settings-item-desc" id="cloud-context-state">This checkout can stay in the shared repository context or use a named override context.</div>
+              </div>
+              <div class="cloud-account-links">
+                <select class="mcp-input" id="cloud-context-mode">
+                  <option value="shared">Shared context</option>
+                  <option value="branch">Branch context</option>
+                  <option value="worktree">Worktree context</option>
+                  <option value="custom">Named override context</option>
+                </select>
+                <input class="mcp-input" id="cloud-context-key" type="text" placeholder="named-context-key" />
+                <input class="mcp-input" id="cloud-context-label" type="text" placeholder="Human label (optional)" />
+              </div>
+              <div class="cloud-account-links">
+                <button class="mcp-btn" id="cloud-context-save">Save Context</button>
+                <button class="mcp-btn" id="cloud-context-create">Create Named Context</button>
+                <button class="mcp-btn" id="cloud-context-open">Open Context in App</button>
+                </div>
+                <div class="cloud-account-meta" id="cloud-context-meta"></div>
+              </div>
+              <div class="settings-item settings-item-stack">
+                <div class="settings-item-info">
+                  <div class="settings-item-name">Synced Objects</div>
+                  <div class="settings-item-desc" id="cloud-objects-state">Synced tests, issues, and recipes will appear here after the extension loads cloud status.</div>
+                </div>
+                <div class="cloud-account-meta" id="cloud-objects-meta"></div>
+              </div>
+              <div class="cloud-conflict-list" id="cloud-objects-list"></div>
+              <div class="settings-item settings-item-stack">
+                <div class="settings-item-info">
+                  <div class="settings-item-name">Sync Conflicts</div>
                 <div class="settings-item-desc" id="cloud-conflict-state">Per-object sync conflicts will appear here when local and cloud changes disagree.</div>
               </div>
               <div class="cloud-conflict-actions">

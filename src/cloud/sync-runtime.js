@@ -41,6 +41,27 @@ function summarizeRuntime(boundary, state) {
   const binding = state.adapters ? state.adapters.store.getBinding() : {};
   const snapshot = state.adapters ? state.adapters.store.snapshot() : null;
   const conflicts = state.adapters ? state.adapters.listConflicts() : [];
+  const objects = snapshot && Array.isArray(snapshot.objects) ? snapshot.objects : [];
+  const objectCounts = { tests: 0, issues: 0, recipes: 0 };
+  const recentObjects = [];
+  for (const object of objects) {
+    if (!object || object.deletedAt) continue;
+    if (object.objectType === 'test') objectCounts.tests += 1;
+    if (object.objectType === 'issue') objectCounts.issues += 1;
+    if (object.objectType === 'recipe') objectCounts.recipes += 1;
+    if (
+      recentObjects.length < 5
+      && (object.objectType === 'test' || object.objectType === 'issue' || object.objectType === 'recipe')
+    ) {
+      recentObjects.push({
+        objectType: object.objectType,
+        objectId: object.objectId,
+        title: object.title || object.objectId,
+        updatedAt: object.updatedAt || null,
+        deletedAt: object.deletedAt || null,
+      });
+    }
+  }
   const indicator = state.adapters
     ? state.adapters.syncClient.getIndicator()
     : {
@@ -68,8 +89,11 @@ function summarizeRuntime(boundary, state) {
     lastError: snapshot ? snapshot.lastError : null,
     lastSyncedAt: snapshot ? snapshot.lastSyncedAt : null,
     pendingMutationCount: snapshot ? snapshot.pendingMutations.length : 0,
+    objectCounts,
+    recentObjects,
     registered: Boolean(binding.repositoryContextId && binding.checkoutId),
     notificationSummary: state.notificationSummary || null,
+    unreadNotifications: Array.isArray(state.notificationUnreadItems) ? state.notificationUnreadItems.slice() : [],
     hasUnreadNotifications: Boolean(state.notificationSummary && state.notificationSummary.unreadCount > 0),
     unreadNotificationCount: state.notificationSummary ? Number(state.notificationSummary.unreadCount || 0) : 0,
     notificationError: state.notificationError || null,
@@ -212,7 +236,9 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
     syncIntervalMs,
     heartbeatIntervalMs,
     notificationSummary: null,
+    notificationUnreadItems: [],
     notificationError: null,
+    seenNotificationIds: new Set(),
   };
 
   function trace(event, detail = null) {
@@ -232,6 +258,19 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
       } catch {}
     }
     return status;
+  }
+
+  function emitNotifications(items, summary) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    if (typeof options.onNotifications === 'function') {
+      try {
+        options.onNotifications({
+          items,
+          summary: summary || state.notificationSummary || null,
+          unreadItems: Array.isArray(state.notificationUnreadItems) ? state.notificationUnreadItems.slice() : [],
+        });
+      } catch {}
+    }
   }
 
   async function ensureAdapters() {
@@ -287,21 +326,41 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
     };
   }
 
-  async function refreshNotifications() {
+  async function refreshNotifications(config = {}) {
+    const notifyNew = config.notifyNew !== false;
     const adapters = await ensureAdapters();
     trace('refresh_notifications.begin');
     if (!adapters) {
       state.notificationSummary = null;
+      state.notificationUnreadItems = [];
       state.notificationError = null;
+      state.seenNotificationIds = new Set();
       trace('refresh_notifications.skipped', { reason: 'not_logged_in' });
       return null;
     }
     try {
       state.notificationSummary = await state.auth.api.sdk.getNotificationSummary();
+      state.notificationUnreadItems = [];
+      let newUnreadItems = [];
+      if (state.notificationSummary && Number(state.notificationSummary.unreadCount || 0) > 0) {
+        const unreadResponse = await state.auth.api.sdk.getNotifications('unread');
+        state.notificationUnreadItems = Array.isArray(unreadResponse && unreadResponse.items)
+          ? unreadResponse.items.filter((item) => item && item.notificationId)
+          : [];
+        if (notifyNew) {
+          newUnreadItems = state.notificationUnreadItems.filter((item) => item.unread !== false && !state.seenNotificationIds.has(item.notificationId));
+        }
+        state.notificationUnreadItems.forEach((item) => {
+          state.seenNotificationIds.add(item.notificationId);
+        });
+      }
       state.notificationError = null;
       trace('refresh_notifications.done', {
         unreadCount: Number(state.notificationSummary && state.notificationSummary.unreadCount || 0),
+        fetchedUnreadItems: state.notificationUnreadItems.length,
+        newUnreadItems: newUnreadItems.length,
       });
+      emitNotifications(newUnreadItems, state.notificationSummary);
       return state.notificationSummary;
     } catch (error) {
       state.notificationError = error && error.message ? error.message : String(error);
@@ -327,7 +386,7 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
     });
     adapters.hydrateAllFromStore({ pruneRemoved: true });
     trace('tick.hydrate.done');
-    await refreshNotifications();
+    await refreshNotifications({ notifyNew: true });
     state.localState = adapters.captureLocalState();
     trace('tick.done', {
       localDomains: Object.keys(state.localState || {}),
@@ -474,7 +533,7 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
       });
       state.adapters.hydrateAllFromStore({ pruneRemoved: true });
       trace('start.hydrate.done');
-      await refreshNotifications();
+      await refreshNotifications({ notifyNew: false });
       state.localState = state.adapters.captureLocalState();
       trace('start.local_state_recaptured');
       startTimers();
@@ -498,7 +557,9 @@ async function createRepositorySyncRuntime(boundary, options = {}) {
     state.adapters = null;
     state.localState = null;
     state.notificationSummary = null;
+    state.notificationUnreadItems = [];
     state.notificationError = null;
+    state.seenNotificationIds = new Set();
     return emitStatus();
   }
 

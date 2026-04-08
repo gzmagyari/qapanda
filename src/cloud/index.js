@@ -10,6 +10,7 @@ const {
   logoutExtensionCloud,
   openExtensionCloudTarget,
   resolveExtensionCloudState,
+  switchExtensionCloudWorkspace,
 } = require('./extension-auth');
 const { listCloudPackageSpecifiers, loadCloudPackages } = require('./loader');
 const {
@@ -60,7 +61,10 @@ function createCloudBoundary(options = {}) {
 
   async function createApiClient() {
     const clientCloud = await getClientCloudModule();
-    return clientCloud.createCloudApiClient(env);
+    return clientCloud.createCloudApiClient({
+      ...env,
+      QAPANDA_CLOUD_AUDIT_SOURCE: target,
+    });
   }
 
   async function preload() {
@@ -184,5 +188,6 @@ module.exports = {
   resolveRepositoryIdentity,
   resolveExtensionCloudState,
   saveCloudSyncProjectConfig,
+  switchExtensionCloudWorkspace,
   summarizeCloudConfig,
 };

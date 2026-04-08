@@ -293,6 +293,36 @@ test('createCloudRunEventBridge redacts hosted workflow secrets in raw worker re
   assert.doesNotMatch(event.message, /super-secret-password/);
 });
 
+test('createCloudRunEventBridge promotes controller guidance and progress into customer-facing raw events', async () => {
+  const rawEvents = [];
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk, encoding, callback) => {
+    rawEvents.push(String(chunk));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+
+  try {
+    const bridge = createCloudRunEventBridge({ title: 'Checkout smoke' });
+    await bridge({ source: 'launch-claude', text: 'delegating' });
+    await bridge({ source: 'controller-message', text: 'Checking authentication before attempting checkout.' });
+    await bridge({ source: 'progress-update', text: 'Reviewing login state and current workspace.' });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  const events = rawEvents.map((line) => parseCliRawEventLine(line)).filter(Boolean);
+  assert.equal(events.length, 3);
+  assert.equal(events[0].type, 'session.progress');
+  assert.equal(events[0].phase, 'execution');
+  assert.equal(events[0].progressPercent, 15);
+  assert.equal(events[1].type, 'session.note');
+  assert.equal(events[1].phase, 'planning');
+  assert.equal(events[2].type, 'session.progress');
+  assert.equal(events[2].phase, 'execution');
+  assert.match(events[2].message, /Reviewing login state/);
+});
+
 test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
   const { tempDir, specPath } = createSpecFile();
   const cliPath = require.resolve('../../src/cli');
