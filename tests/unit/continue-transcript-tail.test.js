@@ -4,7 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildControllerPrompt } = require('../../src/prompts');
+const {
+  buildControllerPrompt,
+} = require('../../src/prompts');
+const {
+  buildMergedRunView,
+  readTranscriptTailEntriesSync,
+} = require('../../src/transcript');
 
 const CONTINUE_NOTICE = 'System: Earlier transcript omitted. Only the latest ~50000 characters of visible chat history are shown.';
 
@@ -20,13 +26,23 @@ function writeChatLog(repoRoot, entries) {
   return chatLog;
 }
 
-function buildManifest(repoRoot, chatLogFile, currentRequest, previousRequests = []) {
+function writeTranscriptLog(repoRoot, entries) {
+  const qpandaDir = path.join(repoRoot, '.qpanda');
+  fs.mkdirSync(qpandaDir, { recursive: true });
+  const transcript = path.join(qpandaDir, 'transcript.jsonl');
+  fs.writeFileSync(transcript, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
+  return transcript;
+}
+
+function buildManifest(repoRoot, chatLogFile, currentRequest, previousRequests = [], options = {}) {
   return {
     repoRoot,
     runId: 'run-tail-1',
     stopReason: null,
     selfTesting: false,
-    controllerSystemPrompt: 'Continue system prompt',
+    controllerSystemPrompt: options.controllerSystemPrompt === undefined
+      ? 'Continue system prompt'
+      : options.controllerSystemPrompt,
     controller: {
       sessionId: null,
       extraInstructions: '',
@@ -40,6 +56,7 @@ function buildManifest(repoRoot, chatLogFile, currentRequest, previousRequests =
     agents: {},
     files: {
       chatLog: chatLogFile,
+      transcript: options.transcriptFile || null,
     },
     requests: [...previousRequests, currentRequest],
   };
@@ -204,6 +221,186 @@ describe('continue transcript tail', () => {
       assert.equal(state.latest_user_message, 'Review the completed feature.');
       assert.deepEqual(state.recent_transcript, expectedLines);
       assert.doesNotMatch(prompt, /Earlier transcript omitted/);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the transcript tail reader for overridden Continue prompts instead of full file reads', () => {
+    const repoRoot = createRepo();
+    const previousRequest = {
+      id: 'req-1',
+      userMessage: 'Keep moving forward.',
+      startedAt: '2026-04-04T09:00:00.000Z',
+      loops: [],
+    };
+    const currentRequest = {
+      id: 'req-2',
+      userMessage: '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.',
+      startedAt: '2026-04-04T09:05:00.000Z',
+      loops: [],
+    };
+
+    try {
+      const transcriptEntries = [];
+      for (let index = 0; index < 160; index += 1) {
+        transcriptEntries.push({
+          v: 2,
+          ts: `2026-04-04T09:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          kind: 'assistant_message',
+          sessionKey: 'worker:default',
+          backend: 'worker:codex',
+          labelHint: 'Developer',
+          text: `TAIL-${index}-START ${'q'.repeat(700)} TAIL-${index}-END`,
+          display: true,
+        });
+      }
+      const transcriptFile = writeTranscriptLog(repoRoot, transcriptEntries);
+      const chatLogFile = path.join(repoRoot, '.qpanda', 'chat.jsonl');
+      const manifest = buildManifest(repoRoot, chatLogFile, currentRequest, [previousRequest], { transcriptFile });
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = function patchedReadFileSync(filePath, ...args) {
+        if (filePath === transcriptFile || filePath === chatLogFile) {
+          throw new Error(`Unexpected full read of transcript/chat file: ${filePath}`);
+        }
+        return originalReadFileSync.call(this, filePath, ...args);
+      };
+
+      try {
+        const prompt = buildControllerPrompt(manifest, currentRequest);
+        const state = parsePromptState(prompt);
+        assert.equal(state.recent_transcript[0], CONTINUE_NOTICE);
+        assert.ok(state.recent_transcript.length > 1);
+        assert.ok(state.recent_transcript.some((line) => line.includes('TAIL-159-START')));
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the transcript tail reader for default Continue prompts instead of full file reads', () => {
+    const repoRoot = createRepo();
+    const currentRequest = {
+      id: 'req-1',
+      userMessage: '[CONTROLLER GUIDANCE] Resume from the latest blocker.',
+      startedAt: '2026-04-04T09:05:00.000Z',
+      loops: [],
+    };
+
+    try {
+      const transcriptEntries = [];
+      for (let index = 0; index < 140; index += 1) {
+        transcriptEntries.push({
+          v: 2,
+          ts: `2026-04-04T10:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          kind: 'assistant_message',
+          sessionKey: 'worker:default',
+          backend: 'worker:codex',
+          labelHint: 'Developer',
+          text: `DEFAULT-${index}-START ${'r'.repeat(700)} DEFAULT-${index}-END`,
+          display: true,
+        });
+      }
+      const transcriptFile = writeTranscriptLog(repoRoot, transcriptEntries);
+      const chatLogFile = path.join(repoRoot, '.qpanda', 'chat.jsonl');
+      const manifest = buildManifest(repoRoot, chatLogFile, currentRequest, [], {
+        transcriptFile,
+        controllerSystemPrompt: null,
+      });
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = function patchedReadFileSync(filePath, ...args) {
+        if (filePath === transcriptFile || filePath === chatLogFile) {
+          throw new Error(`Unexpected full read of transcript/chat file: ${filePath}`);
+        }
+        return originalReadFileSync.call(this, filePath, ...args);
+      };
+
+      try {
+        const prompt = buildControllerPrompt(manifest, currentRequest);
+        const state = parsePromptState(prompt);
+        assert.equal(state.recent_transcript[0], CONTINUE_NOTICE);
+        assert.ok(state.recent_transcript.length > 1);
+        assert.ok(state.recent_transcript.some((line) => line.includes('DEFAULT-139-START')));
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves absolute line numbers in tailed transcripts so compaction does not hide recent messages', () => {
+    const repoRoot = createRepo();
+    const currentRequest = {
+      id: 'req-1',
+      userMessage: '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.',
+      startedAt: '2026-04-04T10:05:00.000Z',
+      loops: [],
+    };
+
+    try {
+      const transcriptEntries = [];
+      for (let index = 0; index < 80; index += 1) {
+        transcriptEntries.push({
+          v: 2,
+          ts: `2026-04-04T11:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          kind: 'assistant_message',
+          sessionKey: 'worker:default',
+          backend: 'worker:codex',
+          labelHint: 'Developer',
+          text: `OLDER-${index}-START ${'s'.repeat(180)} OLDER-${index}-END`,
+          display: true,
+        });
+      }
+      transcriptEntries.push({
+        v: 2,
+        ts: '2026-04-04T11:59:00.000Z',
+        kind: 'context_compaction',
+        sessionKey: 'worker:default',
+        backend: 'worker:codex',
+        labelHint: 'Developer',
+        text: 'Earlier context compacted.',
+        compaction: {
+          compactedThroughLine: 81,
+          preservedLines: [],
+        },
+        display: true,
+      });
+      for (let index = 0; index < 6; index += 1) {
+        transcriptEntries.push({
+          v: 2,
+          ts: `2026-04-04T12:0${index}:00.000Z`,
+          kind: 'assistant_message',
+          sessionKey: 'worker:default',
+          backend: 'worker:codex',
+          labelHint: 'Developer',
+          text: `RECENT-${index}-START ${'t'.repeat(900)} RECENT-${index}-END`,
+          display: true,
+        });
+      }
+
+      const transcriptFile = writeTranscriptLog(repoRoot, transcriptEntries);
+      const chatLogFile = path.join(repoRoot, '.qpanda', 'chat.jsonl');
+      const manifest = buildManifest(repoRoot, chatLogFile, currentRequest, [], {
+        transcriptFile,
+        controllerSystemPrompt: null,
+      });
+
+      const tailState = readTranscriptTailEntriesSync(transcriptFile, { bytes: 12 * 1024 });
+      assert.ok(tailState.startOffset > 0, 'expected a sliced tail read');
+      assert.ok(tailState.entries.some((entry) => entry.kind === 'context_compaction'));
+
+      const compactionEntry = tailState.entries.find((entry) => entry.kind === 'context_compaction');
+      assert.equal(compactionEntry.__lineNumber, 81);
+      const recentEntries = tailState.entries.filter((entry) => /RECENT-\d+-START/.test(entry.text || ''));
+      assert.ok(recentEntries.length >= 1);
+      assert.ok(recentEntries.every((entry) => entry.__lineNumber > 81));
+
+      const view = buildMergedRunView(tailState.entries, manifest);
+      assert.ok(view.some((line) => line.includes('RECENT-5-START')));
+      assert.ok(view.some((line) => line.includes('RECENT-0-START')));
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@ const path = require('node:path');
 const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } = require('./src/orchestrator');
 const { closeInteractiveSessions } = require('./src/claude');
 const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./src/prompts');
+const { appendWizardDebug, summarizeForDebug } = require('./src/debug-log');
 const {
   WAIT_OPTIONS,
   defaultStateRoot,
@@ -161,6 +162,14 @@ class SessionManager {
         } catch {}
       }
     } catch {}
+  }
+
+  _continueDbg(msg, extra = null) {
+    const payload = extra == null ? msg : `${msg} ${summarizeForDebug(extra)}`;
+    appendWizardDebug('session-continue', payload, {
+      repoRoot: this._repoRoot,
+      stateRoot: this._stateRoot,
+    });
   }
 
   _traceBrowser(where, extra = null) {
@@ -1381,6 +1390,10 @@ class SessionManager {
     if (!msg || !msg.type) return;
 
     if (msg.type === 'abort') {
+      this._continueDbg('handleMessage:abort', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        hasAbortController: !!this._abortController,
+      });
       this.abort();
       return;
     }
@@ -1388,6 +1401,13 @@ class SessionManager {
     if (msg.type === 'continueInput') {
       // Continue button: send to controller with optional guidance
       const guidance = (msg.text || '').trim();
+      this._continueDbg('handleMessage:continueInput', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        guidance,
+        chatTarget: this._chatTarget,
+        loopMode: this._loopMode,
+        running: this._running,
+      });
       this._clearLoopContinueTimer();
       this._handleContinue(guidance);
       return;
@@ -1466,6 +1486,11 @@ class SessionManager {
 
   abort() {
     this._clearLoopContinueTimer();
+    this._continueDbg('abort:requested', {
+      runId: this._activeManifest && this._activeManifest.runId || null,
+      hasAbortController: !!this._abortController,
+      running: this._running,
+    });
     if (this._abortController) {
       this._abortController.abort();
     }
@@ -2528,10 +2553,30 @@ class SessionManager {
    * Handle Continue button: run one controller→agent cycle with optional guidance.
    */
   async _handleContinue(guidance) {
-    if (this._running) return;
+    if (this._running) {
+      this._continueDbg('_handleContinue:skipped-already-running', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        guidance,
+      });
+      return;
+    }
+    this._continueDbg('_handleContinue:enter', {
+      runId: this._activeManifest && this._activeManifest.runId || null,
+      guidance,
+      chatTarget: this._chatTarget,
+      loopMode: this._loopMode,
+    });
     try {
       await this._runControllerContinue(guidance);
+      this._continueDbg('_handleContinue:completed', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        status: this._activeManifest && this._activeManifest.status || null,
+      });
     } catch (error) {
+      this._continueDbg('_handleContinue:error', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        error: error && error.stack ? error.stack : formatRunError(error),
+      });
       if (!isAbortError(error)) {
         this._renderer.banner(`Run error: ${formatRunError(error)}`);
       } else {
@@ -2550,6 +2595,18 @@ class SessionManager {
       this._renderer.banner('No active run. Send a message first, then use Continue.');
       return;
     }
+    this._continueDbg('_runControllerContinue:start', {
+      runId: this._activeManifest.runId,
+      guidance,
+      chatTarget: this._chatTarget,
+      loopMode: this._loopMode,
+      controllerCli: this._activeManifest.controller && this._activeManifest.controller.cli || null,
+      codexMode: this._activeManifest.controller && this._activeManifest.controller.codexMode || null,
+      controllerSessionId: this._activeManifest.controller && this._activeManifest.controller.sessionId || null,
+      controllerAppServerThreadId: this._activeManifest.controller && this._activeManifest.controller.appServerThreadId || null,
+      lastSeenTranscriptLine: this._activeManifest.controller && this._activeManifest.controller.lastSeenTranscriptLine || null,
+      lastSeenChatLine: this._activeManifest.controller && this._activeManifest.controller.lastSeenChatLine || null,
+    });
 
     // Determine the current target agent for the directive
     let currentAgentId = null;
@@ -2562,14 +2619,37 @@ class SessionManager {
     const basePrompt = originalPrompt || this._buildCopilotBasePrompt();
     const continueDirective = this._buildContinueDirective(guidance, currentAgentId);
     this._activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + continueDirective;
+    this._continueDbg('_runControllerContinue:directive-applied', {
+      runId: this._activeManifest.runId,
+      currentAgentId,
+      promptChars: (this._activeManifest.controllerSystemPrompt || '').length,
+    });
 
     // Copilot mode: fresh one-shot controller — don't resume any existing session.
-    // Save the direct-mode session ID so it's not lost.
+    // Save the direct-mode controller session/thread state so it's not lost.
     const savedControllerSessionId = this._activeManifest.controller.sessionId;
+    const savedControllerAppServerThreadId = this._activeManifest.controller.appServerThreadId || null;
+    const savedControllerThreadSandbox = this._activeManifest.controller.threadSandbox || null;
+    const savedControllerApprovalPolicy = this._activeManifest.controller.approvalPolicy || null;
     this._activeManifest.controller.sessionId = null;
+    this._activeManifest.controller.appServerThreadId = null;
+    this._activeManifest.controller.threadSandbox = null;
+    this._activeManifest.controller.approvalPolicy = null;
+    this._continueDbg('_runControllerContinue:controller-reset', {
+      runId: this._activeManifest.runId,
+      savedControllerSessionId,
+      savedControllerAppServerThreadId,
+      savedControllerThreadSandbox,
+      savedControllerApprovalPolicy,
+    });
 
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
+    this._continueDbg('_runControllerContinue:mcp-ready', {
+      runId: this._activeManifest.runId,
+      controllerMcpKeys: Object.keys(this._activeManifest.controllerMcpServers || {}),
+      workerMcpKeys: Object.keys(this._activeManifest.workerMcpServers || {}),
+    });
     const endActivity = this._beginActivity('foreground');
     this._abortController = new AbortController();
     let shouldScheduleLoopContinue = false;
@@ -2580,12 +2660,24 @@ class SessionManager {
       const userMessage = guidance
         ? `[CONTROLLER GUIDANCE] ${guidance}`
         : '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.';
+      this._continueDbg('_runControllerContinue:runManagerLoop:before', {
+        runId: this._activeManifest.runId,
+        userMessage,
+        singlePass: true,
+      });
       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
         userMessage,
         abortSignal: this._abortController.signal,
         singlePass: true,
         controllerLabel: 'Continue',
         ...this._workerRunHooks(),
+      });
+      this._continueDbg('_runControllerContinue:runManagerLoop:after', {
+        runId: this._activeManifest && this._activeManifest.runId || null,
+        status: this._activeManifest && this._activeManifest.status || null,
+        stopReason: this._activeManifest && this._activeManifest.stopReason || null,
+        controllerSessionId: this._activeManifest && this._activeManifest.controller && this._activeManifest.controller.sessionId || null,
+        controllerAppServerThreadId: this._activeManifest && this._activeManifest.controller && this._activeManifest.controller.appServerThreadId || null,
       });
       this._syncLoopConfigToManifest();
       shouldScheduleLoopContinue = !!(
@@ -2594,16 +2686,31 @@ class SessionManager {
         this._activeManifest.status === 'running'
       );
     } finally {
-      // Restore original prompt and controller session ID
+      // Restore original prompt and controller session/thread state
       if (this._activeManifest && this._activeManifest.controller) {
         this._activeManifest.controllerSystemPrompt = originalPrompt;
         this._activeManifest.controller.sessionId = savedControllerSessionId;
+        this._activeManifest.controller.appServerThreadId = savedControllerAppServerThreadId;
+        this._activeManifest.controller.threadSandbox = savedControllerThreadSandbox;
+        this._activeManifest.controller.approvalPolicy = savedControllerApprovalPolicy;
+        this._continueDbg('_runControllerContinue:restore-state', {
+          runId: this._activeManifest.runId,
+          restoredControllerSessionId: savedControllerSessionId,
+          restoredControllerAppServerThreadId: savedControllerAppServerThreadId,
+          restoredControllerThreadSandbox: savedControllerThreadSandbox,
+          restoredControllerApprovalPolicy: savedControllerApprovalPolicy,
+        });
       }
       this._abortController = null;
       endActivity();
     }
 
     await saveManifest(this._activeManifest);
+    this._continueDbg('_runControllerContinue:saved', {
+      runId: this._activeManifest && this._activeManifest.runId || null,
+      status: this._activeManifest && this._activeManifest.status || null,
+      shouldScheduleLoopContinue,
+    });
     if (shouldScheduleLoopContinue) {
       this._scheduleLoopContinue();
     }

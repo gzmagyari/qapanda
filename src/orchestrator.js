@@ -12,6 +12,7 @@ const { closeConnection } = require('./codex-app-server');
 const { TurnEntityTracker } = require('./turn-entity-tracker');
 const { buildFinalQaReportState, loadQaState } = require('./qa-report');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const { appendManifestDebug, summarizeForDebug } = require('./debug-log');
 const {
   buildDirectWorkerPrompt,
   syncDirectWorkerChatCursor,
@@ -325,6 +326,14 @@ function getRunnableRequest(manifest) {
 }
 
 async function runManagerLoop(manifest, renderer, options = {}) {
+  appendManifestDebug('orchestrator', manifest, 'runManagerLoop:start', {
+    userMessage: options.userMessage || null,
+    singlePass: !!options.singlePass,
+    hasAbortSignal: !!options.abortSignal,
+    status: manifest && manifest.status || null,
+    controllerCli: manifest && manifest.controller && manifest.controller.cli || null,
+    codexMode: manifest && manifest.controller && manifest.controller.codexMode || null,
+  });
   if (options.controllerLabel) {
     renderer.controllerLabel = options.controllerLabel;
   } else {
@@ -336,6 +345,10 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
   if (userMessage) {
     request = await startUserRequest(manifest, renderer, userMessage);
+    appendManifestDebug('orchestrator', manifest, 'runManagerLoop:request-started', {
+      requestId: request && request.id || null,
+      userMessage,
+    });
   } else {
     request = getRunnableRequest(manifest);
     if (!request) {
@@ -345,10 +358,20 @@ async function runManagerLoop(manifest, renderer, options = {}) {
     manifest.phase = 'controller';
     manifest.error = null;
     await saveManifest(manifest);
+    appendManifestDebug('orchestrator', manifest, 'runManagerLoop:resuming-existing-request', {
+      requestId: request && request.id || null,
+      status: request && request.status || null,
+    });
   }
 
   const signalController = new AbortController();
   const onSignal = (signal) => {
+    appendManifestDebug('orchestrator', manifest, 'runManagerLoop:abort-signal', {
+      requestId: request && request.id || null,
+      signal,
+      status: manifest && manifest.status || null,
+      phase: manifest && manifest.phase || null,
+    });
     markInterrupted(manifest, request, `Received ${signal}.`);
     signalController.abort();
   };
@@ -372,9 +395,21 @@ async function runManagerLoop(manifest, renderer, options = {}) {
     while (true) {
       const loop = await createLoopRecord(manifest, request);
       await saveManifest(manifest);
+      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:loop-created', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+      });
 
       const runControllerTurn = getControllerRunner(manifest);
       const controllerBackend = transcriptBackend('controller', manifest.controller.cli || 'codex');
+      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:controller-turn:start', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        controllerCli: manifest.controller.cli || 'codex',
+        codexMode: manifest.controller.codexMode || null,
+        controllerSessionId: manifest.controller.sessionId || null,
+        controllerAppServerThreadId: manifest.controller.appServerThreadId || null,
+      });
       const controllerResult = await runControllerTurn({
         manifest,
         request,
@@ -401,6 +436,14 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
       loop.controller.decision = controllerResult.decision;
       request.latestControllerDecision = controllerResult.decision;
+      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:controller-turn:done', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        action: controllerResult && controllerResult.decision && controllerResult.decision.action || null,
+        agentId: controllerResult && controllerResult.decision && controllerResult.decision.agent_id || null,
+        stopReason: controllerResult && controllerResult.decision && controllerResult.decision.stop_reason || null,
+        controllerSessionId: controllerResult && controllerResult.sessionId || manifest.controller.sessionId || null,
+      });
 
       for (const message of controllerResult.decision.controller_messages) {
         renderer.controller(message);
@@ -465,6 +508,11 @@ async function runManagerLoop(manifest, renderer, options = {}) {
           options.onEvent,
         );
         await saveManifest(manifest);
+        appendManifestDebug('orchestrator', manifest, 'runManagerLoop:stop', {
+          requestId: request && request.id || null,
+          loopIndex: loop && loop.index != null ? loop.index : null,
+          stopReason: request.stopReason || null,
+        });
         return manifest;
       }
 
@@ -521,6 +569,12 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       );
 
       const runWorker = getWorkerRunner(manifest, delegateAgentConfig);
+      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:worker-turn:start', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        agentId: delegateAgentId,
+        workerCli: delegateCli,
+      });
       const activityLog = createActivityLog();
       workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
       let workerResult;
@@ -594,10 +648,22 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       manifest.phase = 'controller';
       manifest.transcriptSummary = truncate(workerResult.resultText || request.userMessage, 120);
       await saveManifest(manifest);
+      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:worker-turn:done', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        exitCode: workerResult && workerResult.exitCode,
+        resultPreview: summarizeForDebug(workerResult && workerResult.resultText || '', 300),
+      });
 
       // In singlePass mode, return after one controller→worker cycle
       // Caller checks manifest.status === 'running' to know more work is pending
       if (options.singlePass) {
+        appendManifestDebug('orchestrator', manifest, 'runManagerLoop:return-single-pass', {
+          requestId: request && request.id || null,
+          loopIndex: loop && loop.index != null ? loop.index : null,
+          status: manifest.status,
+          phase: manifest.phase,
+        });
         return manifest;
       }
     }
@@ -611,8 +677,19 @@ async function runManagerLoop(manifest, renderer, options = {}) {
       options.onEvent,
     );
     await saveManifest(manifest);
+    appendManifestDebug('orchestrator', manifest, 'runManagerLoop:error', {
+      requestId: request && request.id || null,
+      error: error && error.stack ? error.stack : message,
+    });
     throw error;
   } finally {
+    appendManifestDebug('orchestrator', manifest, 'runManagerLoop:finally', {
+      requestId: request && request.id || null,
+      status: manifest && manifest.status || null,
+      phase: manifest && manifest.phase || null,
+      controllerCli: manifest && manifest.controller && manifest.controller.cli || null,
+      codexMode: manifest && manifest.controller && manifest.controller.codexMode || null,
+    });
     process.off('SIGINT', onSigInt);
     process.off('SIGTERM', onSigTerm);
     // Clean up app-server connections when the run ends

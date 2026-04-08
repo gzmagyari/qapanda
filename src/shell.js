@@ -513,16 +513,25 @@ async function runInteractiveShell(options = {}) {
             const basePrompt = originalPrompt || buildCopilotBasePrompt({ selfTesting: activeManifest.selfTesting, repoRoot: activeManifest.repoRoot });
             const directive = buildContinueDirective(guidance, directAgent);
             activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + directive;
-            // Copilot mode: fresh one-shot controller — don't resume any existing session
+            // Copilot mode: fresh one-shot controller — don't resume any existing session/thread
             const savedControllerSessionId = activeManifest.controller.sessionId;
+            const savedControllerAppServerThreadId = activeManifest.controller.appServerThreadId || null;
+            const savedControllerThreadSandbox = activeManifest.controller.threadSandbox || null;
+            const savedControllerApprovalPolicy = activeManifest.controller.approvalPolicy || null;
             activeManifest.controller.sessionId = null;
+            activeManifest.controller.appServerThreadId = null;
+            activeManifest.controller.threadSandbox = null;
+            activeManifest.controller.approvalPolicy = null;
             const userMessage = guidance
               ? `[CONTROLLER GUIDANCE] ${guidance}`
               : '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.';
             activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage });
-            // Restore original prompt and direct-mode controller session
+            // Restore original prompt and direct-mode controller session/thread
             activeManifest.controllerSystemPrompt = originalPrompt;
             activeManifest.controller.sessionId = savedControllerSessionId;
+            activeManifest.controller.appServerThreadId = savedControllerAppServerThreadId;
+            activeManifest.controller.threadSandbox = savedControllerThreadSandbox;
+            activeManifest.controller.approvalPolicy = savedControllerApprovalPolicy;
             await saveManifest(activeManifest);
             if (loopMode && activeManifest.status === 'running') {
               scheduleNextPass();

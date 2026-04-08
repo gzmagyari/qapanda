@@ -149,6 +149,55 @@ test('_runControllerContinue saves the restored controller state, not the tempor
   }
 });
 
+test('_runControllerContinue restores app-server controller thread state after the temporary continue turn', async () => {
+  const { session, captured, cleanup } = buildSession({
+    manifest: {
+      runId: 'continue-appserver-run',
+      status: 'running',
+      controllerSystemPrompt: 'persistent prompt',
+      controller: {
+        model: null,
+        config: [],
+        sessionId: 'controller-session-42',
+        appServerThreadId: 'controller-thread-99',
+        threadSandbox: 'danger-full-access',
+        approvalPolicy: 'never',
+      },
+      worker: { model: null },
+      files: { progress: '/tmp/fake-progress.md' },
+    },
+    runManagerLoopImpl: async (manifestValue) => {
+      assert.equal(manifestValue.controller.sessionId, null);
+      assert.equal(manifestValue.controller.appServerThreadId, null);
+      assert.equal(manifestValue.controller.threadSandbox, null);
+      assert.equal(manifestValue.controller.approvalPolicy, null);
+      return {
+        ...manifestValue,
+        status: 'running',
+        controller: {
+          ...manifestValue.controller,
+          appServerThreadId: 'temporary-continue-thread',
+          threadSandbox: 'danger-full-access',
+          approvalPolicy: 'never',
+        },
+      };
+    },
+  });
+
+  try {
+    await session._runControllerContinue('');
+
+    assert.equal(captured.saveManifestCalls.length, 1);
+    const saved = captured.saveManifestCalls[0];
+    assert.equal(saved.controller.sessionId, 'controller-session-42');
+    assert.equal(saved.controller.appServerThreadId, 'controller-thread-99');
+    assert.equal(saved.controller.threadSandbox, 'danger-full-access');
+    assert.equal(saved.controller.approvalPolicy, 'never');
+  } finally {
+    cleanup();
+  }
+});
+
 test('_handleOrchestrate keeps multi-pass mode even when wait delay is enabled', async () => {
   const { session, captured, cleanup } = buildSession({
     manifest: {

@@ -6,8 +6,9 @@ const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 const { getOrCreateConnection } = require('./codex-app-server');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
-const { countTranscriptLinesSync } = require('./transcript');
+const { countJsonlLinesSync, countTranscriptLinesSync } = require('./transcript');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const { appendManifestDebug, summarizeForDebug } = require('./debug-log');
 
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
@@ -33,6 +34,12 @@ function controllerThreadNeedsForkOnReconnect(conn, controllerState) {
 }
 
 async function ensureControllerAppServerThread(conn, manifest, renderer) {
+  appendManifestDebug('controller-appserver', manifest, 'ensure-thread:start', {
+    existingThreadId: manifest.controller.appServerThreadId || null,
+    connectionThreadId: conn && conn.threadId || null,
+    approvalPolicy: manifest.controller.approvalPolicy || null,
+    threadSandbox: manifest.controller.threadSandbox || null,
+  });
   if (!manifest.controller.appServerThreadId) {
     await conn.startThread({
       cwd: manifest.repoRoot,
@@ -43,6 +50,9 @@ async function ensureControllerAppServerThread(conn, manifest, renderer) {
     manifest.controller.appServerThreadId = conn.threadId;
     manifest.controller.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
     manifest.controller.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    appendManifestDebug('controller-appserver', manifest, 'ensure-thread:started', {
+      threadId: conn.threadId || null,
+    });
     return 'started';
   }
 
@@ -60,10 +70,17 @@ async function ensureControllerAppServerThread(conn, manifest, renderer) {
     if (renderer && typeof renderer.banner === 'function') {
       renderer.banner('Recovered controller session into a writable Codex thread.');
     }
+    appendManifestDebug('controller-appserver', manifest, 'ensure-thread:forked', {
+      threadId: recoveredThreadId || null,
+      previousThreadId: conn && conn.threadId || null,
+    });
     return 'forked';
   }
 
   await conn.resumeThread(manifest.controller.appServerThreadId);
+  appendManifestDebug('controller-appserver', manifest, 'ensure-thread:resumed', {
+    threadId: manifest.controller.appServerThreadId || null,
+  });
   return 'resumed';
 }
 
@@ -229,7 +246,7 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   try {
     const chatLogFile = manifest.files && manifest.files.chatLog;
     if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {
-      const lineCount = require('node:fs').readFileSync(chatLogFile, 'utf8').trim().split('\n').length;
+      const lineCount = countJsonlLinesSync(chatLogFile);
       manifest.controller.lastSeenChatLine = lineCount;
     }
   } catch {}
@@ -261,8 +278,28 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
  * app-server connection with thread/turn APIs.
  */
 async function runControllerTurnAppServer({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
+  const promptStart = Date.now();
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:build-prompt:start', {
+    requestId: request && request.id || null,
+    loopIndex: loop && loop.index != null ? loop.index : null,
+  });
   const prompt = buildControllerPrompt(manifest, request);
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:build-prompt:done', {
+    requestId: request && request.id || null,
+    loopIndex: loop && loop.index != null ? loop.index : null,
+    durationMs: Date.now() - promptStart,
+    promptChars: prompt.length,
+  });
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:start', {
+    requestId: request && request.id || null,
+    loopIndex: loop && loop.index != null ? loop.index : null,
+    promptChars: prompt.length,
+    controllerSessionId: manifest.controller.sessionId || null,
+    controllerAppServerThreadId: manifest.controller.appServerThreadId || null,
+    controllerCli: manifest.controller.cli || null,
+    codexMode: manifest.controller.codexMode || null,
+  });
 
   const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-controller: runId=${manifest.runId} controllerMcpKeys=${JSON.stringify(Object.keys(manifest.controllerMcpServers || {}))} codexMode=${manifest.controller.codexMode}\n`); } catch {}
@@ -271,6 +308,10 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
     renderer.controller('Waiting for Codex app-server to initialize\u2026');
   }
   await conn.ensureConnected();
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:connected', {
+    connectionThreadId: conn.threadId || null,
+    isConnected: conn.isConnected,
+  });
 
   // Set up turn completion tracking
   let turnResolve;
@@ -278,11 +319,34 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   const turnCompletePromise = new Promise((res, rej) => { turnResolve = res; turnReject = rej; });
   let agentMessageText = '';
   let turnCompleted = false;
+  let notificationCount = 0;
 
   // Route notifications to renderer and event log
   conn.onNotification((notification) => {
     const mapped = mapAppServerNotification(notification);
     if (!mapped) return;
+    notificationCount += 1;
+    if (
+      notificationCount <= 20 ||
+      mapped.type === 'thread.started' ||
+      mapped.type === 'turn.completed' ||
+      mapped.type === 'turn.failed' ||
+      mapped.type === 'error'
+    ) {
+      appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:notification', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        notificationCount,
+        type: mapped.type || null,
+      });
+    } else if (notificationCount === 21) {
+      appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:notification', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        notificationCount,
+        type: 'suppressed-following-notifications',
+      });
+    }
 
     // Emit raw event for event log
     Promise.resolve(emitEvent({
@@ -309,11 +373,20 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
     // Capture thread ID
     if (mapped.type === 'thread.started' && mapped.thread_id) {
       manifest.controller.appServerThreadId = mapped.thread_id;
+      appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:thread-started', {
+        threadId: mapped.thread_id,
+      });
     }
 
     // Resolve on turn completion
     if (mapped.type === 'turn.completed') {
       turnCompleted = true;
+      appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:turn-completed', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        notificationCount,
+        agentMessageChars: agentMessageText.length,
+      });
       turnResolve(mapped);
       return;
     }
@@ -329,6 +402,11 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   let abortHandler;
   if (abortSignal) {
     abortHandler = () => {
+      appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:abort-signal', {
+        requestId: request && request.id || null,
+        loopIndex: loop && loop.index != null ? loop.index : null,
+        notificationCount,
+      });
       conn.interruptTurn().catch(() => {});
       if (!turnCompleted) {
         turnReject(new Error('Codex controller process was interrupted.'));
@@ -342,11 +420,19 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
 
   try {
     await ensureControllerAppServerThread(conn, manifest, renderer);
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:thread-ready', {
+      threadId: manifest.controller.appServerThreadId || null,
+      connectionThreadId: conn.threadId || null,
+    });
 
     // Start the turn with the controller prompt
     await conn.startTurn(prompt, controllerDecisionSchema, {
       approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
       sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:turn-started', {
+      threadId: manifest.controller.appServerThreadId || null,
+      promptChars: prompt.length,
     });
 
     // Wait for turn to complete
@@ -359,10 +445,23 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   }
 
   // Parse the decision from the accumulated agent message
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:parsing-decision', {
+    agentMessageChars: agentMessageText.length,
+    agentMessagePreview: summarizeForDebug(agentMessageText, 400),
+  });
   const decision = validateControllerDecision(parsePossiblyFencedJson(agentMessageText));
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:decision-validated', {
+    action: decision && decision.action || null,
+    agentId: decision && decision.agent_id || null,
+    stopReason: decision && decision.stop_reason || null,
+  });
   loop.controller.decision = decision;
   request.latestControllerDecision = decision;
   await writeText(loop.controller.finalFile, String(redactHostedWorkflowValue(manifest, agentMessageText)));
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:final-written', {
+    finalFile: loop.controller.finalFile || null,
+    finalChars: agentMessageText.length,
+  });
 
   // Track session for transcript
   const sessionId = manifest.controller.appServerThreadId;
@@ -370,15 +469,48 @@ async function runControllerTurnAppServer({ manifest, request, loop, renderer, e
   manifest.controller.sessionId = sessionId;
 
   try {
+    const transcriptCursorStart = Date.now();
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:transcript-cursor:start', {
+      transcriptFile: manifest.files && manifest.files.transcript || null,
+    });
     manifest.controller.lastSeenTranscriptLine = countTranscriptLinesSync(manifest.files && manifest.files.transcript);
-  } catch {}
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:transcript-cursor:done', {
+      durationMs: Date.now() - transcriptCursorStart,
+      lastSeenTranscriptLine: manifest.controller.lastSeenTranscriptLine || 0,
+    });
+  } catch (error) {
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:transcript-cursor:error', {
+      message: error && error.message || String(error),
+    });
+  }
   try {
+    const chatCursorStart = Date.now();
     const chatLogFile = manifest.files && manifest.files.chatLog;
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:chat-cursor:start', {
+      chatLogFile: chatLogFile || null,
+    });
     if (chatLogFile && require('node:fs').existsSync(chatLogFile)) {
-      const lineCount = require('node:fs').readFileSync(chatLogFile, 'utf8').trim().split('\n').length;
+      const lineCount = countJsonlLinesSync(chatLogFile);
       manifest.controller.lastSeenChatLine = lineCount;
     }
-  } catch {}
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:chat-cursor:done', {
+      durationMs: Date.now() - chatCursorStart,
+      lastSeenChatLine: manifest.controller.lastSeenChatLine || 0,
+    });
+  } catch (error) {
+    appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:chat-cursor:error', {
+      message: error && error.message || String(error),
+    });
+  }
+  appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:done', {
+    sessionId,
+    action: decision && decision.action || null,
+    agentId: decision && decision.agent_id || null,
+    stopReason: decision && decision.stop_reason || null,
+    lastSeenTranscriptLine: manifest.controller.lastSeenTranscriptLine || null,
+    lastSeenChatLine: manifest.controller.lastSeenChatLine || null,
+    notificationCount,
+  });
 
   return {
     prompt,

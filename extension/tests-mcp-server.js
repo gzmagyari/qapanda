@@ -14,49 +14,37 @@ const fs = require('node:fs');
 const readline = require('node:readline');
 const path = require('node:path');
 const { rankSearchResults } = require('./mcp-search');
+const {
+  VALID_ENVIRONMENTS,
+  VALID_STEP_STATUSES,
+  VALID_TEST_STATUSES,
+  computeOverallStatus,
+  loadTasksData: loadStoredTasksData,
+  loadTestsData: loadStoredTestsData,
+  nowIso,
+  saveTasksData: saveStoredTasksData,
+  saveTestsData: saveStoredTestsData,
+} = require('./src/tests-store');
 
 const TESTS_FILE = process.env.TESTS_FILE || '';
 const TASKS_FILE = process.env.TASKS_FILE || '';
 
-const VALID_TEST_STATUSES = ['untested', 'passing', 'failing', 'partial'];
-const VALID_STEP_STATUSES = ['untested', 'pass', 'fail', 'skip'];
-const VALID_ENVIRONMENTS = ['browser', 'computer'];
-
 // ─── Data helpers ────────────────────────────────────────────────
 
 function loadData() {
-  try { return JSON.parse(fs.readFileSync(TESTS_FILE, 'utf8')); }
-  catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
+  return loadStoredTestsData(TESTS_FILE);
 }
 
 function saveData(data) {
-  const dir = path.dirname(TESTS_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(TESTS_FILE, JSON.stringify(data, null, 2), 'utf8');
+  saveStoredTestsData(TESTS_FILE, data);
 }
 
 function loadTasksData() {
-  try { return JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8')); }
-  catch { return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] }; }
+  return loadStoredTasksData(TASKS_FILE);
 }
 
 function saveTasksData(data) {
-  const dir = path.dirname(TASKS_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(TASKS_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function nowIso() { return new Date().toISOString(); }
-
-function computeOverallStatus(steps) {
-  if (!steps || steps.length === 0) return 'untested';
-  const statuses = steps.map(s => s.status);
-  if (statuses.every(s => s === 'untested')) return 'untested';
-  if (statuses.every(s => s === 'pass' || s === 'skip')) return 'passing';
-  if (statuses.every(s => s === 'fail')) return 'failing';
-  if (statuses.some(s => s === 'fail')) return 'partial';
-  if (statuses.some(s => s === 'pass')) return 'partial';
-  return 'untested';
+  saveStoredTasksData(TASKS_FILE, data);
 }
 
 // ─── Tool definitions ────────────────────────────────────────────

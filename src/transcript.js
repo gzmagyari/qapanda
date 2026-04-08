@@ -100,27 +100,114 @@ function readTranscriptEntriesSync(filePath) {
   }
 }
 
-function parseTranscriptRaw(raw) {
+function parseTranscriptRaw(raw, options = {}) {
+  const baseLineNumber = Number.isFinite(options.baseLineNumber)
+    ? Math.max(0, Number(options.baseLineNumber))
+    : 0;
   const lines = String(raw || '').split(/\r?\n/);
   const entries = [];
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i]) continue;
     const parsed = safeJsonParse(lines[i]);
     if (!parsed) continue;
-    parsed.__lineNumber = i + 1;
+    parsed.__lineNumber = baseLineNumber + i + 1;
     entries.push(parsed);
   }
   return entries;
 }
 
 function countTranscriptLinesSync(filePath) {
+  return countJsonlLinesSync(filePath);
+}
+
+function countJsonlLinesSync(filePath) {
+  let fd = null;
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    if (!raw) return 0;
-    return raw.split(/\r?\n/).filter(Boolean).length;
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = Number(stat && stat.size) || 0;
+    if (fileSize <= 0) return 0;
+
+    const chunkSize = 1024 * 1024;
+    const buffer = Buffer.allocUnsafe(chunkSize);
+    let offset = 0;
+    let lineCount = 0;
+    let lastByte = null;
+
+    while (offset < fileSize) {
+      const bytesRead = fs.readSync(fd, buffer, 0, Math.min(chunkSize, fileSize - offset), offset);
+      if (bytesRead <= 0) break;
+      for (let index = 0; index < bytesRead; index += 1) {
+        if (buffer[index] === 0x0A) {
+          lineCount += 1;
+        }
+      }
+      lastByte = buffer[bytesRead - 1];
+      offset += bytesRead;
+    }
+
+    if (lastByte !== 0x0A) {
+      lineCount += 1;
+    }
+    return lineCount;
   } catch {
     return 0;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
   }
+}
+
+async function countNewlinesBeforeOffset(handle, endOffsetExclusive) {
+  const fileLimit = Number.isFinite(endOffsetExclusive)
+    ? Math.max(0, Number(endOffsetExclusive))
+    : 0;
+  if (fileLimit <= 0) return 0;
+
+  const chunkSize = 1024 * 1024;
+  const buffer = Buffer.allocUnsafe(chunkSize);
+  let offset = 0;
+  let lineCount = 0;
+
+  while (offset < fileLimit) {
+    const bytesRead = Math.min(chunkSize, fileLimit - offset);
+    const { bytesRead: actualBytesRead } = await handle.read(buffer, 0, bytesRead, offset);
+    if (actualBytesRead <= 0) break;
+    for (let index = 0; index < actualBytesRead; index += 1) {
+      if (buffer[index] === 0x0A) {
+        lineCount += 1;
+      }
+    }
+    offset += actualBytesRead;
+  }
+
+  return lineCount;
+}
+
+function countNewlinesBeforeOffsetSync(fd, endOffsetExclusive) {
+  const fileLimit = Number.isFinite(endOffsetExclusive)
+    ? Math.max(0, Number(endOffsetExclusive))
+    : 0;
+  if (fileLimit <= 0) return 0;
+
+  const chunkSize = 1024 * 1024;
+  const buffer = Buffer.allocUnsafe(chunkSize);
+  let offset = 0;
+  let lineCount = 0;
+
+  while (offset < fileLimit) {
+    const bytesRead = fs.readSync(fd, buffer, 0, Math.min(chunkSize, fileLimit - offset), offset);
+    if (bytesRead <= 0) break;
+    for (let index = 0; index < bytesRead; index += 1) {
+      if (buffer[index] === 0x0A) {
+        lineCount += 1;
+      }
+    }
+    offset += bytesRead;
+  }
+
+  return lineCount;
 }
 
 function hasTranscriptV2(entries) {
@@ -211,14 +298,22 @@ async function readTranscriptTailEntries(filePath, options = {}) {
     const buffer = Buffer.alloc(bytesRead);
     await handle.read(buffer, 0, bytesRead, startOffset);
 
-    let raw = buffer.toString('utf8');
+    let sliceStart = 0;
     if (startOffset > 0) {
-      const newlineIndex = raw.indexOf('\n');
-      raw = newlineIndex >= 0 ? raw.slice(newlineIndex + 1) : '';
+      const newlineByteIndex = buffer.indexOf(0x0A);
+      sliceStart = newlineByteIndex >= 0 ? newlineByteIndex + 1 : bytesRead;
+    }
+    const raw = buffer.subarray(sliceStart).toString('utf8');
+    const entries = parseTranscriptRaw(raw);
+    if (startOffset > 0 && entries.some((entry) => entry && entry.kind === 'context_compaction')) {
+      const baseLineNumber = await countNewlinesBeforeOffset(handle, startOffset + sliceStart);
+      for (const entry of entries) {
+        entry.__lineNumber += baseLineNumber;
+      }
     }
 
     return {
-      entries: parseTranscriptRaw(raw),
+      entries,
       fileSize,
       bytesRead,
       startOffset,
@@ -226,6 +321,56 @@ async function readTranscriptTailEntries(filePath, options = {}) {
   } finally {
     if (handle) {
       await handle.close().catch(() => {});
+    }
+  }
+}
+
+function readTranscriptTailEntriesSync(filePath, options = {}) {
+  const requestedBytes = Number.isFinite(options.bytes)
+    ? Math.max(1, Number(options.bytes))
+    : DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES;
+
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = Number(stat && stat.size) || 0;
+    if (fileSize <= 0) {
+      return { entries: [], fileSize: 0, bytesRead: 0, startOffset: 0 };
+    }
+
+    const bytesRead = Math.min(fileSize, requestedBytes);
+    const startOffset = Math.max(0, fileSize - bytesRead);
+    const buffer = Buffer.alloc(bytesRead);
+    fs.readSync(fd, buffer, 0, bytesRead, startOffset);
+
+    let sliceStart = 0;
+    if (startOffset > 0) {
+      const newlineByteIndex = buffer.indexOf(0x0A);
+      sliceStart = newlineByteIndex >= 0 ? newlineByteIndex + 1 : bytesRead;
+    }
+    const raw = buffer.subarray(sliceStart).toString('utf8');
+    const entries = parseTranscriptRaw(raw);
+    if (startOffset > 0 && entries.some((entry) => entry && entry.kind === 'context_compaction')) {
+      const baseLineNumber = countNewlinesBeforeOffsetSync(fd, startOffset + sliceStart);
+      for (const entry of entries) {
+        entry.__lineNumber += baseLineNumber;
+      }
+    }
+
+    return {
+      entries,
+      fileSize,
+      bytesRead,
+      startOffset,
+    };
+  } catch {
+    return { entries: [], fileSize: 0, bytesRead: 0, startOffset: 0 };
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
     }
   }
 }
@@ -1017,6 +1162,7 @@ module.exports = {
   buildStartCardMessages,
   buildTranscriptDisplayMessages,
   countDisplayMessageChars,
+  countJsonlLinesSync,
   controllerSessionKey,
   countTranscriptLinesSync,
   createTranscriptRecord,
@@ -1026,6 +1172,7 @@ module.exports = {
   readTranscriptEntries,
   readTranscriptTailEntries,
   readTranscriptEntriesSync,
+  readTranscriptTailEntriesSync,
   summarizeToolResult,
   latestSessionCompaction,
   entryIsCompactedAway,

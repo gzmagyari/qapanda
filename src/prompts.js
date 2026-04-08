@@ -13,7 +13,10 @@ const {
 const {
   buildTranscriptTail,
   buildMergedRunView,
+  DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES,
+  DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES,
   hasTranscriptV2,
+  readTranscriptTailEntriesSync,
   readTranscriptEntriesSync,
   transcriptLineSlice,
 } = require('./transcript');
@@ -82,6 +85,58 @@ function buildTranscriptExcerpt(manifest, sinceLine) {
     }
   }
   return requestLines;
+}
+
+function countTranscriptChars(lines) {
+  return (Array.isArray(lines) ? lines : [])
+    .reduce((total, line) => total + String(line || '').length, 0);
+}
+
+function buildTranscriptTailExcerpt(manifest, options = {}) {
+  const transcriptFile = manifest && manifest.files && manifest.files.transcript;
+  if (!transcriptFile) return null;
+
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(1, Number(options.maxChars))
+    : CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS;
+  const initialBytes = Number.isFinite(options.initialBytes)
+    ? Math.max(1, Number(options.initialBytes))
+    : DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES;
+  const maxBytes = Number.isFinite(options.maxBytes)
+    ? Math.max(initialBytes, Number(options.maxBytes))
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES;
+
+  let bytes = initialBytes;
+  let latest = { entries: [], fileSize: 0, bytesRead: 0, startOffset: 0 };
+  let lines = [];
+
+  for (;;) {
+    latest = readTranscriptTailEntriesSync(transcriptFile, { bytes });
+    lines = buildMergedRunView(latest.entries, manifest);
+
+    const visibleChars = countTranscriptChars(lines);
+    const reachedFileStart = latest.startOffset === 0;
+    const hitReadCap = latest.bytesRead >= maxBytes;
+    if (visibleChars >= maxChars || reachedFileStart || hitReadCap) {
+      break;
+    }
+
+    const nextBytes = Math.min(
+      maxBytes,
+      latest.fileSize || maxBytes,
+      Math.max(bytes + 1, bytes * 2),
+    );
+    if (nextBytes <= bytes) {
+      break;
+    }
+    bytes = nextBytes;
+  }
+
+  const tail = buildTranscriptTail(lines, { maxChars });
+  return {
+    lines: tail.lines,
+    truncated: tail.truncated || latest.startOffset > 0,
+  };
 }
 
 function buildTranscriptExcerptLegacy(manifest, sinceLine) {
@@ -339,9 +394,15 @@ function buildOverriddenControllerPrompt(manifest, request) {
     }
   }
 
-  const transcriptLines = buildTranscriptExcerpt(manifest);
-  const tailState = isContinueStyleRequest(request.userMessage)
-    ? buildTranscriptTail(transcriptLines, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS })
+  const continueStyleRequest = isContinueStyleRequest(request.userMessage);
+  const transcriptTailState = continueStyleRequest
+    ? buildTranscriptTailExcerpt(manifest, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS })
+    : null;
+  const transcriptLines = transcriptTailState
+    ? transcriptTailState.lines
+    : buildTranscriptExcerpt(manifest);
+  const tailState = continueStyleRequest
+    ? (transcriptTailState || buildTranscriptTail(transcriptLines, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS }))
     : { lines: transcriptLines, truncated: false };
   const recentTranscript = tailState.truncated
     ? [
@@ -412,14 +473,25 @@ function buildControllerPrompt(manifest, request) {
 
   const lastLoop = request.loops[request.loops.length - 1] || null;
   const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
+  const continueStyleRequest = isContinueStyleRequest(request.userMessage);
 
   // Incremental transcript: on resume, only send NEW chat lines since the controller's last turn
   const isResume = !!manifest.controller.sessionId;
   const lastSeen = manifest.controller.lastSeenTranscriptLine || manifest.controller.lastSeenChatLine || 0;
   const isIncremental = isResume && lastSeen > 0;
-  const transcriptLines = isIncremental
-    ? buildTranscriptExcerpt(manifest, lastSeen)
-    : buildTranscriptExcerpt(manifest);
+  const transcriptTailState = continueStyleRequest
+    ? buildTranscriptTailExcerpt(manifest, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS })
+    : null;
+  const continueTailState = continueStyleRequest
+    ? (transcriptTailState || buildTranscriptTail(buildTranscriptExcerpt(manifest), {
+        maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS,
+      }))
+    : null;
+  const transcriptLines = continueStyleRequest
+    ? continueTailState.lines
+    : (isIncremental
+      ? buildTranscriptExcerpt(manifest, lastSeen)
+      : buildTranscriptExcerpt(manifest));
 
   const workerCli = manifest.worker.cli || manifest.worker.bin || 'codex';
 
@@ -441,7 +513,14 @@ function buildControllerPrompt(manifest, request) {
   };
 
   // Use different key to signal incremental vs full transcript
-  if (isIncremental) {
+  if (continueStyleRequest) {
+    state.recent_transcript = continueTailState && continueTailState.truncated
+      ? [
+          `System: Earlier transcript omitted. Only the latest ~${CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS} characters of visible chat history are shown.`,
+          ...transcriptLines,
+        ]
+      : transcriptLines;
+  } else if (isIncremental) {
     state.new_messages_since_your_last_turn = transcriptLines;
   } else {
     state.recent_transcript = transcriptLines;

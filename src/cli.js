@@ -60,6 +60,9 @@ Commands:
   qapanda                         Start the interactive shell
   qapanda shell                   Start the interactive shell
   qapanda run <message...>        Start a new run, process until STOP, then exit
+  qapanda test list               List tracked Panda prompt tests
+  qapanda test run [path-or-glob ...]
+                                  Run tracked Panda prompt tests
   qapanda run --print --agent dev <message>   One-shot: agent runs once, exits
   qapanda resume <run-id-or-alias> [message...]  Resume or continue an existing run
   qapanda status <run-id>         Show run status
@@ -95,6 +98,14 @@ Common options:
   --no-mcp-inject                    Disable system MCP auto-injection
   --raw-events                       Show raw streaming events
   --quiet                            Minimal output
+
+Panda test options:
+  --id <id>                          Select Panda tests by source id (repeatable)
+  --tag <tag>                        Select Panda tests by tag (repeatable; OR semantics)
+  --reporter <human|json|junit|ndjson>
+  --output <path>                    Write JSON/JUnit/NDJSON output to a file
+  --fail-fast                        Stop after the first failed/error Panda test
+  --agent <id>                       Override the Panda test agent (defaults to QA-Browser)
 
 Cloud commands:
 ${CLOUD_COMMAND_USAGE}
@@ -159,6 +170,17 @@ const LOGS_SPEC = {
   'workspace': { key: 'workspace', kind: 'value' },
   'state-dir': { key: 'stateRoot', kind: 'value' },
   'tail': { key: 'tail', kind: 'value' },
+};
+const TEST_SPEC = {
+  'repo': { key: 'repoRoot', kind: 'value' },
+  'workspace': { key: 'workspace', kind: 'value' },
+  'state-dir': { key: 'stateRoot', kind: 'value' },
+  'id': { key: 'ids', kind: 'list' },
+  'tag': { key: 'tags', kind: 'list' },
+  'reporter': { key: 'reporter', kind: 'value' },
+  'output': { key: 'outputPath', kind: 'value' },
+  'fail-fast': { key: 'failFast', kind: 'boolean' },
+  'agent': { key: 'agent', kind: 'value' },
 };
 const DOCTOR_SPEC = { 'codex-bin': { key: 'codexBin', kind: 'value' }, 'claude-bin': { key: 'claudeBin', kind: 'value' } };
 
@@ -237,6 +259,14 @@ async function bindResumeAliasIfRequested(manifest, options) {
     chatTarget: manifest.chatTarget || null,
   });
   manifest.resumeToken = alias;
+}
+
+async function closeCliRunConnections(runId) {
+  if (!runId) return;
+  try {
+    const { closeConnectionsWhere } = require('./codex-app-server');
+    await closeConnectionsWhere((key) => key === runId || String(key).startsWith(`${runId}-worker-`));
+  } catch {}
 }
 
 function chatTargetForSelection(agent) {
@@ -376,7 +406,13 @@ async function ensureChromeIfNeeded(directAgent, allAgents, options) {
   if (agent.cli && agent.cli.startsWith('qa-remote')) return null;
 
   // Use explicit --chrome-port if provided
-  if (options.chromePort) return parseInt(options.chromePort, 10);
+  if (options.chromePort) {
+    return {
+      port: parseInt(options.chromePort, 10),
+      panelId: null,
+      autoStarted: false,
+    };
+  }
 
   // Auto-start headless Chrome
   try {
@@ -387,7 +423,11 @@ async function ensureChromeIfNeeded(directAgent, allAgents, options) {
       // Register cleanup on exit
       process.on('exit', () => { try { chromeManager.killChrome(panelId); } catch {} });
       process.on('SIGINT', () => { try { chromeManager.killChrome(panelId); } catch {} process.exit(130); });
-      return result.port;
+      return {
+        port: result.port,
+        panelId,
+        autoStarted: true,
+      };
     }
   } catch (e) {
     console.error(`Warning: Could not start Chrome: ${e.message}`);
@@ -577,9 +617,10 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
   }
 
   // Auto-start Chrome if needed (for agents with chrome-devtools MCP)
+  let chromeSession = null;
   if (!enriched.noChrome) {
-    const chromePort = await ensureChromeIfNeeded(directAgent, config.allAgents, enriched);
-    if (chromePort) enriched.chromeDebugPort = chromePort;
+    chromeSession = await ensureChromeIfNeeded(directAgent, config.allAgents, enriched);
+    if (chromeSession && chromeSession.port) enriched.chromeDebugPort = chromeSession.port;
   }
 
   let manifest;
@@ -621,6 +662,10 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
     }
   } finally {
     renderer.close();
+    await closeCliRunConnections(manifest.runId);
+    if (chromeSession && chromeSession.autoStarted && chromeSession.panelId) {
+      try { require('../extension/chrome-manager').killChrome(chromeSession.panelId); } catch {}
+    }
     await bindResumeAliasIfRequested(manifest, { saveResumeAs: normalizedOptions.saveResumeAs || pendingResumeAlias });
     await saveManifest(manifest);
   }
@@ -801,6 +846,86 @@ async function showList(argv) {
 
 // ── MCP management ───────────────────────────────────────────────
 
+function createExitError(message, exitCode) {
+  const error = new Error(message);
+  error.exitCode = exitCode;
+  error.stack = error.message;
+  return error;
+}
+
+function normalizePandaReporter(value) {
+  const reporter = String(value || 'human').trim().toLowerCase();
+  if (reporter === 'human' || reporter === 'json' || reporter === 'junit' || reporter === 'ndjson') {
+    return reporter;
+  }
+  throw createExitError(`Unsupported Panda test reporter "${value}".`, 2);
+}
+
+function printPandaTestList(entries) {
+  if (!entries || entries.length === 0) {
+    process.stdout.write('No Panda tests matched the requested selection.\n');
+    return;
+  }
+  process.stdout.write('Panda tests:\n\n');
+  for (const entry of entries) {
+    const tags = entry.tags.length > 0 ? entry.tags.join(', ') : '(none)';
+    const runtime = entry.runtimeTestId || '(unbound)';
+    process.stdout.write(`  ${entry.id}\n`);
+    process.stdout.write(`    Title: ${entry.title}\n`);
+    process.stdout.write(`    Path: ${entry.path}\n`);
+    process.stdout.write(`    Tags: ${tags}\n`);
+    process.stdout.write(`    Agent: ${entry.agent}\n`);
+    process.stdout.write(`    Managed: ${entry.managed ? 'yes' : 'no'}\n`);
+    process.stdout.write(`    Runtime test: ${runtime}\n\n`);
+  }
+}
+
+async function pandaTestCommand(argv) {
+  const [subcommand, ...rest] = argv;
+  if (!subcommand || (subcommand !== 'list' && subcommand !== 'run')) {
+    throw createExitError('Usage: qapanda test <list|run> [options] [path-or-glob ...]', 2);
+  }
+
+  const parsed = parseArgs(rest, TEST_SPEC);
+  const explicitStateRoot = Boolean(parsed.options.stateRoot);
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const pandaOptions = {
+    repoRoot: options.repoRoot,
+    stateRoot: options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd()),
+    stateRootExplicit: explicitStateRoot,
+    workspaceName: options.workspaceName || null,
+    patterns: parsed.positionals,
+    ids: parsed.options.ids || [],
+    tags: parsed.options.tags || [],
+    agent: parsed.options.agent || null,
+    reporter: subcommand === 'run' ? normalizePandaReporter(parsed.options.reporter) : 'human',
+    outputPath: parsed.options.outputPath ? path.resolve(parsed.options.outputPath) : null,
+    failFast: Boolean(parsed.options.failFast),
+  };
+
+  const { listPandaTests, runPandaTestSuite } = require('./panda-test-runner');
+
+  try {
+    if (subcommand === 'list') {
+      printPandaTestList(listPandaTests(pandaOptions));
+      return;
+    }
+
+    const suiteResult = await runPandaTestSuite(pandaOptions);
+    if (suiteResult.suite.errors > 0) {
+      process.exitCode = 2;
+    } else if (suiteResult.suite.failed > 0) {
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    if (error && !error.exitCode) {
+      error.exitCode = 2;
+      error.stack = error.message;
+    }
+    throw error;
+  }
+}
+
 async function mcpCmd(argv) {
   const repoRoot = process.cwd();
   const mcpData = loadMergedMcpServers(repoRoot);
@@ -884,6 +1009,7 @@ async function main(argv) {
   if (command === 'setup') { await runSetup(); return; }
   if (command === 'agents') { await listAgentsCmd(rest); return; }
   if (command === 'modes') { await listModesCmd(rest); return; }
+  if (command === 'test') { await pandaTestCommand(rest); return; }
   if (command === 'cloud') { await runCloudCommand(rest); return; }
   if (command === 'cloud-run') { await runCloudRunCommand(rest); return; }
   if (command === 'mcp') { await mcpCmd(rest); return; }

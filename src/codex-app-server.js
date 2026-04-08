@@ -13,6 +13,7 @@ const os = require('node:os');
 const readline = require('node:readline');
 const { spawnArgs, killProcessTree } = require('./process-utils');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
+const { appendWizardDebug, summarizeForDebug } = require('./debug-log');
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
@@ -41,6 +42,9 @@ class CodexAppServerConnection {
   async connect() {
     if (this._proc && !this._proc.killed) return;
     _dbg(`CodexAppServerConnection.connect cwd=${this._cwd} bin=${this._bin} configArgs=${JSON.stringify(this._configArgs)}`);
+    _wizardDbg('codex-appserver', `connect:start cwd=${this._cwd} bin=${this._bin} configArgs=${summarizeForDebug(this._configArgs)}`, {
+      repoRoot: this._cwd,
+    });
 
     // Build a clean env: strip ELECTRON_RUN_AS_NODE, use isolated CODEX_HOME
     const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = { ...process.env, ...this._env };
@@ -77,11 +81,17 @@ class CodexAppServerConnection {
     stderrRl.on('line', () => { /* silently consume stderr */ });
 
     this._proc.on('error', (err) => {
+      _wizardDbg('codex-appserver', `process:error cwd=${this._cwd} message=${err && err.message ? err.message : err}`, {
+        repoRoot: this._cwd,
+      });
       this._handleCrash(`Process error: ${err.message}`);
     });
 
     this._proc.on('close', (code) => {
       if (!this._intentionalKill) {
+        _wizardDbg('codex-appserver', `process:close cwd=${this._cwd} code=${code}`, {
+          repoRoot: this._cwd,
+        });
         this._handleCrash(`Process exited unexpectedly (code=${code})`);
       }
     });
@@ -97,6 +107,9 @@ class CodexAppServerConnection {
     this.sendNotification('initialized', {});
     this._initialized = true;
     _dbg(`CodexAppServerConnection.connect initialized cwd=${this._cwd} bin=${this._bin}`);
+    _wizardDbg('codex-appserver', `connect:initialized cwd=${this._cwd} bin=${this._bin}`, {
+      repoRoot: this._cwd,
+    });
   }
 
   /**
@@ -105,6 +118,9 @@ class CodexAppServerConnection {
   _dispatch(msg) {
     // Response to a request (has id)
     if (msg.id != null && this._pendingRequests.has(msg.id)) {
+      _wizardDbg('codex-appserver', `dispatch:response id=${msg.id} hasError=${!!msg.error}`, {
+        repoRoot: this._cwd,
+      });
       const pending = this._pendingRequests.get(msg.id);
       this._pendingRequests.delete(msg.id);
       if (pending.timer) clearTimeout(pending.timer);
@@ -118,6 +134,17 @@ class CodexAppServerConnection {
 
     // Notification (has method, no id)
     if (msg.method && msg.id == null) {
+      if (
+        msg.method === 'thread.started' ||
+        msg.method === 'turn.completed' ||
+        msg.method === 'turn.failed' ||
+        msg.method === 'item.completed' ||
+        msg.method === 'error'
+      ) {
+        _wizardDbg('codex-appserver', `dispatch:notification method=${msg.method}`, {
+          repoRoot: this._cwd,
+        });
+      }
       if (this._onNotification) {
         this._onNotification(msg);
       }
@@ -134,8 +161,14 @@ class CodexAppServerConnection {
         return reject(new Error('App-server not connected'));
       }
       const id = this._nextId++;
+      _wizardDbg('codex-appserver', `sendRequest:start method=${method} id=${id} threadId=${this._threadId || 'null'} turnId=${this._turnId || 'null'}`, {
+        repoRoot: this._cwd,
+      });
       const timer = setTimeout(() => {
         this._pendingRequests.delete(id);
+        _wizardDbg('codex-appserver', `sendRequest:timeout method=${method} id=${id} threadId=${this._threadId || 'null'} turnId=${this._turnId || 'null'}`, {
+          repoRoot: this._cwd,
+        });
         reject(new Error(`Request ${method} (id=${id}) timed out after ${REQUEST_TIMEOUT_MS}ms`));
       }, REQUEST_TIMEOUT_MS);
 
@@ -166,6 +199,9 @@ class CodexAppServerConnection {
     if (sandbox) params.sandbox = sandbox;
     const result = await this.sendRequest('thread/start', params);
     this._threadId = result.thread.id;
+    _wizardDbg('codex-appserver', `thread:start threadId=${this._threadId}`, {
+      repoRoot: this._cwd,
+    });
     return this._threadId;
   }
 
@@ -176,6 +212,9 @@ class CodexAppServerConnection {
     if (this._threadId === threadId) return threadId;
     const result = await this.sendRequest('thread/resume', { threadId });
     this._threadId = result.thread.id;
+    _wizardDbg('codex-appserver', `thread:resume requested=${threadId} active=${this._threadId}`, {
+      repoRoot: this._cwd,
+    });
     return this._threadId;
   }
 
@@ -189,6 +228,9 @@ class CodexAppServerConnection {
     if (sandbox) params.sandbox = sandbox;
     const result = await this.sendRequest('thread/fork', params);
     this._threadId = result.thread.id;
+    _wizardDbg('codex-appserver', `thread:fork from=${threadId} to=${this._threadId}`, {
+      repoRoot: this._cwd,
+    });
     return this._threadId;
   }
 
@@ -207,6 +249,9 @@ class CodexAppServerConnection {
     if (outputSchema) params.outputSchema = outputSchema;
     const result = await this.sendRequest('turn/start', params);
     this._turnId = result.turn.id;
+    _wizardDbg('codex-appserver', `turn:start turnId=${this._turnId} threadId=${this._threadId} inputChars=${String(inputText || '').length}`, {
+      repoRoot: this._cwd,
+    });
     return this._turnId;
   }
 
@@ -216,6 +261,9 @@ class CodexAppServerConnection {
   async interruptTurn() {
     if (!this._threadId || !this._turnId) return;
     try {
+      _wizardDbg('codex-appserver', `turn:interrupt turnId=${this._turnId} threadId=${this._threadId}`, {
+        repoRoot: this._cwd,
+      });
       await this.sendRequest('turn/interrupt', {
         threadId: this._threadId,
         turnId: this._turnId,
@@ -237,6 +285,9 @@ class CodexAppServerConnection {
    */
   async disconnect() {
     this._intentionalKill = true;
+    _wizardDbg('codex-appserver', `disconnect threadId=${this._threadId || 'null'} turnId=${this._turnId || 'null'}`, {
+      repoRoot: this._cwd,
+    });
     this._initialized = false;
     this._threadId = null;
     this._turnId = null;
@@ -270,6 +321,9 @@ class CodexAppServerConnection {
    * Handle unexpected process death.
    */
   _handleCrash(reason) {
+    _wizardDbg('codex-appserver', `crash reason=${reason}`, {
+      repoRoot: this._cwd,
+    });
     this._proc = null;
     this._initialized = false;
     for (const [id, pending] of this._pendingRequests) {
@@ -401,6 +455,10 @@ function _dbg(msg) {
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
 }
 
+function _wizardDbg(tag, msg, options = {}) {
+  appendWizardDebug(tag, msg, options);
+}
+
 function _manifestBrowserContext(manifest) {
   return JSON.stringify({
     runId: manifest && manifest.runId || null,
@@ -421,6 +479,9 @@ function getOrCreateConnection(manifest) {
   _dbg(`getOrCreateConnection key=${key} fingerprint=${mcpFingerprint}`);
   _dbg(`  manifestCtx=${_manifestBrowserContext(manifest)}`);
   _dbg(`  _connections keys: [${Array.from(_connections.keys()).join(', ')}]`);
+  _wizardDbg('codex-appserver', `getOrCreateConnection key=${key} panelId=${manifest && manifest.panelId || 'null'} chromeDebugPort=${manifest && manifest.chromeDebugPort != null ? manifest.chromeDebugPort : 'null'}`, {
+    repoRoot: manifest && manifest.repoRoot ? manifest.repoRoot : null,
+  });
 
   if (_connections.has(key)) {
     const existing = _connections.get(key);
@@ -484,6 +545,9 @@ async function prestartConnection({ key, bin, cwd, mcpServers, manifest }) {
   const fp = _buildFingerprint(mcpServers || {}, manifest || {});
   _dbg(`prestartConnection key=${storeKey} fingerprint=${fp} mcpKeys=${JSON.stringify(Object.keys(mcpServers || {}))}`);
   _dbg(`  manifestCtx=${_manifestBrowserContext(manifest || {})}`);
+  _wizardDbg('codex-appserver', `prestartConnection key=${storeKey} panelId=${manifest && manifest.panelId || 'null'}`, {
+    repoRoot: manifest && manifest.repoRoot ? manifest.repoRoot : cwd,
+  });
   const configArgs = buildMcpConfigArgs(mcpServers || {}, manifest || {});
   const conn = new CodexAppServerConnection({ bin: bin || 'codex', cwd, configArgs });
   conn._mcpFingerprint = fp;
@@ -501,6 +565,7 @@ async function prestartConnection({ key, bin, cwd, mcpServers, manifest }) {
  */
 async function closeConnection(runId) {
   const key = runId || 'default';
+  _wizardDbg('codex-appserver', `closeConnection key=${key}`);
   const conn = _connections.get(key);
   if (conn) {
     await conn.disconnect();

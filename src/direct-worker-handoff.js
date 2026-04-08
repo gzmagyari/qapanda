@@ -2,7 +2,7 @@ const fs = require('node:fs');
 
 const { workerLabelFor } = require('./render');
 const { ensureWorkerSessionState } = require('./state');
-const { buildTranscriptTail } = require('./transcript');
+const { buildTranscriptTail, countJsonlLinesSync } = require('./transcript');
 const { readText, safeJsonParse } = require('./utils');
 
 const DIRECT_WORKER_HANDOFF_MAX_CHARS = 50_000;
@@ -39,13 +39,7 @@ function parseChatRaw(raw) {
 }
 
 function countChatLinesSync(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    if (!raw) return 0;
-    return raw.split(/\r?\n/).filter(Boolean).length;
-  } catch {
-    return 0;
-  }
+  return countJsonlLinesSync(filePath);
 }
 
 function chatLineSlice(entries, sinceLine) {
