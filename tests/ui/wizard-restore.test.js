@@ -40,4 +40,43 @@ describe('Wizard restore behavior', () => {
     wv.postMessage(sampleInitConfig({ panelId: 'run-panel-123', onboarding: { complete: true, data: null } }));
     assert.equal(wv.getState().panelId, 'run-panel-123', 'should replace stale panel state with the host-provided panelId');
   });
+
+  it('ignores saved run state when the launch resume alias differs', async () => {
+    wv = createWebviewDom({
+      url: 'https://webview.test/w/company?agent=memory&resume=test',
+      savedState: {
+        runId: 'run-main',
+        panelId: 'panel-main',
+        resume: 'main',
+        workspace: 'company',
+        rootIdentity: 'workspace:company',
+        config: { chatTarget: 'agent-memory' },
+      },
+    });
+    await wv.flush();
+    const ready = wv.messages.find((msg) => msg.type === 'ready');
+    assert.ok(ready, 'should send ready');
+    assert.equal(ready.runId, null, 'should not reuse saved runId for a different resume alias');
+    assert.equal(ready.panelId, null, 'should not reuse saved panelId for a different resume alias');
+    assert.equal(ready.resume, 'test', 'should keep the explicit launch resume alias');
+  });
+
+  it('ignores legacy saved run state when the launch resume alias is explicit but savedState has no resume', async () => {
+    wv = createWebviewDom({
+      url: 'https://webview.test/w/company?agent=memory&resume=test',
+      savedState: {
+        runId: 'run-legacy',
+        panelId: 'panel-legacy',
+        workspace: 'company',
+        rootIdentity: 'workspace:company',
+        config: { chatTarget: 'agent-memory' },
+      },
+    });
+    await wv.flush();
+    const ready = wv.messages.find((msg) => msg.type === 'ready');
+    assert.ok(ready, 'should send ready');
+    assert.equal(ready.runId, null, 'should not reuse legacy saved runId when resume is explicit');
+    assert.equal(ready.panelId, null, 'should not reuse legacy saved panelId when resume is explicit');
+    assert.equal(ready.resume, 'test', 'should keep the explicit launch resume alias');
+  });
 });

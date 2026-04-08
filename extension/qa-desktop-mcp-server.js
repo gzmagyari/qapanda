@@ -58,10 +58,8 @@ const TOOLS = [
   },
 ];
 
-let _workspace = '';
-
-async function handleToolCall(name, args) {
-  const wsFlag = _workspace ? ` --workspace "${_workspace}"` : '';
+async function handleToolCall(name, args, workspace) {
+  const wsFlag = workspace ? ` --workspace "${workspace}"` : '';
   switch (name) {
     case 'snapshot_container': {
       const result = await run(`qa-desktop snapshot "${args.name}"${wsFlag} --json`);
@@ -98,27 +96,40 @@ async function handleToolCall(name, args) {
 
 // --- Server lifecycle ---
 
-let _server = null;
+const _servers = new Map();
 
 async function startQaDesktopMcpServer(workspace) {
-  if (_server) return { port: _server.port, close: _server.close };
-  _workspace = workspace || '';
+  const resolvedWorkspace = workspace ? require('node:path').resolve(workspace) : '';
+  if (_servers.has(resolvedWorkspace)) {
+    const existing = _servers.get(resolvedWorkspace);
+    return { port: existing.port, close: existing.close };
+  }
 
   const result = await createMcpHttpServer({
     tools: TOOLS,
-    handleToolCall,
+    handleToolCall: (name, args) => handleToolCall(name, args, resolvedWorkspace),
     serverName: 'qa-desktop',
   });
 
-  _server = result;
+  _servers.set(resolvedWorkspace, result);
   console.log(`[qa-desktop-mcp] Started on port ${result.port}`);
   return { port: result.port, close: result.close };
 }
 
-async function stopQaDesktopMcpServer() {
-  if (!_server) return;
-  await _server.close();
-  _server = null;
+async function stopQaDesktopMcpServer(workspace = null) {
+  if (workspace != null) {
+    const resolvedWorkspace = require('node:path').resolve(workspace);
+    const existing = _servers.get(resolvedWorkspace);
+    if (!existing) return;
+    await existing.close();
+    _servers.delete(resolvedWorkspace);
+    return;
+  }
+  const servers = Array.from(_servers.values());
+  _servers.clear();
+  for (const server of servers) {
+    await server.close();
+  }
 }
 
 module.exports = { startQaDesktopMcpServer, stopQaDesktopMcpServer };

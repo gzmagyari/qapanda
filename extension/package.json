@@ -19,6 +19,7 @@
   ],
   "activationEvents": [
     "onCommand:qapanda.open",
+    "onCommand:qapanda.openWorkspace",
     "onStartupFinished",
     "onWebviewPanel:qapandaPanel"
   ],
@@ -32,6 +33,11 @@
           "light": "./resources/icon.svg",
           "dark": "./resources/icon.svg"
         }
+      },
+      {
+        "command": "qapanda.openWorkspace",
+        "title": "QA Panda: Open Workspace...",
+        "enablement": "qapanda.namedWorkspacesEnabled"
       }
     ],
     "menus": {
@@ -39,6 +45,12 @@
         {
           "command": "qapanda.open",
           "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "qapanda.openWorkspace",
+          "when": "qapanda.namedWorkspacesEnabled"
         }
       ]
     }

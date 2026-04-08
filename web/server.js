@@ -47,6 +47,11 @@ const {
   writeQaReportPdf,
 } = require(path.join(EXTENSION_DIR, 'qa-report-export'));
 const { SessionRegistry } = require(path.join(__dirname, 'session-registry'));
+const { ensureRootMcpPorts } = require(path.join(EXTENSION_DIR, 'root-mcp-ports'));
+const {
+  resolveWorkspaceRoot,
+  resolveResumeToken,
+} = require(path.join(__dirname, '..', 'src', 'named-workspaces'));
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const repoRoot = process.argv[2] || process.cwd();
@@ -72,29 +77,58 @@ let _testsMcpPort = null;
 let _memoryMcpPort = null;
 let _qaDesktopMcpPort = null;
 
+function appendWebDebugLog(root, text) {
+  const candidates = [];
+  if (root) candidates.push(path.join(root, '.qpanda', 'wizard-debug.log'));
+  candidates.push(path.join(os.homedir(), '.qpanda', 'wizard-debug.log'));
+  for (const logPath of candidates) {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, `[${new Date().toISOString()}] [web-server] ${text}\n`);
+    } catch {}
+  }
+}
+
+function personalWorkspacesEnabled(root = repoRoot) {
+  const flags = loadFeatureFlags(path.join(__dirname, '..'), root);
+  return !!flags.enablePersonalWorkspaces;
+}
+
+function remoteDesktopEnabled(root = repoRoot) {
+  const flags = loadFeatureFlags(path.join(__dirname, '..'), root);
+  return !!flags.enableRemoteDesktop;
+}
+
+async function resolveRequestedRoot(msg = {}) {
+  const requestedWorkspace = typeof msg.workspace === 'string' && msg.workspace.trim()
+    ? msg.workspace.trim()
+    : null;
+  return await resolveWorkspaceRoot(repoRoot, requestedWorkspace, {
+    enableNamedWorkspaces: personalWorkspacesEnabled(repoRoot),
+  });
+}
+
 async function startMcpServers() {
-  const tasksFile = path.join(repoRoot, '.qpanda', 'tasks.json');
-  const testsFile = path.join(repoRoot, '.qpanda', 'tests.json');
   try {
-    const r = await startTasksMcpServer(tasksFile);
-    _tasksMcpPort = r.port;
-    console.log(`  Tasks MCP on port ${r.port}`);
-  } catch (e) { console.error('Failed to start tasks MCP:', e.message); }
-  try {
-    const r = await startTestsMcpServer(testsFile, tasksFile);
-    _testsMcpPort = r.port;
-    console.log(`  Tests MCP on port ${r.port}`);
-  } catch (e) { console.error('Failed to start tests MCP:', e.message); }
-  try {
-    const r = await startMemoryMcpServer(path.join(repoRoot, '.qpanda', 'MEMORY.md'));
-    _memoryMcpPort = r.port;
-    console.log(`  Memory MCP on port ${r.port}`);
-  } catch (e) { console.error('Failed to start memory MCP:', e.message); }
-  try {
-    const r = await startQaDesktopMcpServer(repoRoot);
-    _qaDesktopMcpPort = r.port;
-    console.log(`  QA Desktop MCP on port ${r.port}`);
-  } catch (e) { console.error('Failed to start qa-desktop MCP:', e.message); }
+    const ports = await ensureRootMcpPorts(repoRoot, {
+      startTasksMcpServer,
+      startTestsMcpServer,
+      startMemoryMcpServer,
+      startQaDesktopMcpServer,
+      enableQaDesktop: remoteDesktopEnabled(repoRoot),
+      onQaDesktopError: (error) => console.error('[web] Failed to start QA Desktop MCP server:', error && error.message ? error.message : error),
+    });
+    _tasksMcpPort = ports.tasksPort;
+    _testsMcpPort = ports.testsPort;
+    _memoryMcpPort = ports.memoryPort;
+    _qaDesktopMcpPort = ports.qaDesktopPort;
+    if (_tasksMcpPort) console.log(`  Tasks MCP on port ${_tasksMcpPort}`);
+    if (_testsMcpPort) console.log(`  Tests MCP on port ${_testsMcpPort}`);
+    if (_memoryMcpPort) console.log(`  Memory MCP on port ${_memoryMcpPort}`);
+    if (_qaDesktopMcpPort) console.log(`  QA Desktop MCP on port ${_qaDesktopMcpPort}`);
+  } catch (e) {
+    console.error('Failed to start default MCP servers:', e.message);
+  }
 }
 
 function safeExportName(fileName) {
@@ -140,7 +174,7 @@ async function exportQaReportPdfForWeb(msg) {
 const server = http.createServer((req, res) => {
   const url = String(req.url || '').split('?')[0];
 
-  if (url === '/' || url === '/index.html') {
+  if (url === '/' || url === '/index.html' || /^\/w\/[^/]+\/?$/.test(url)) {
     delete require.cache[require.resolve('../extension/webview-html')];
     const { getWebviewHtml: freshHtml } = require('../extension/webview-html');
     res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -253,6 +287,16 @@ wss.on('connection', (ws) => {
       }
 
       if (msg.type === 'ready') {
+        const requestedRoot = await resolveRequestedRoot(msg);
+        appendWebDebugLog(requestedRoot.repoRoot, `ready:start panelId=${msg.panelId || ''} runId=${msg.runId || ''} workspace=${msg.workspace || ''} resume=${msg.resume || ''} agent=${msg.agent || ''} rootIdentity=${requestedRoot.rootIdentity || ''}`);
+        const requestedPorts = await ensureRootMcpPorts(requestedRoot.repoRoot, {
+          startTasksMcpServer,
+          startTestsMcpServer,
+          startMemoryMcpServer,
+          startQaDesktopMcpServer,
+          enableQaDesktop: remoteDesktopEnabled(requestedRoot.repoRoot),
+          onQaDesktopError: (error) => console.error('[web] Failed to start QA Desktop MCP server:', error && error.message ? error.message : error),
+        });
         const restoredPanelId = typeof msg.panelId === 'string' && msg.panelId.trim()
           ? msg.panelId.trim()
           : crypto.randomUUID();
@@ -269,8 +313,15 @@ wss.on('connection', (ws) => {
             };
             const renderer = new WebviewRenderer(fakePanel);
             const panelConfig = { ...pendingConfig };
+            const entryCloudBoundary = createCloudBoundary({ target: 'web', repoRoot: requestedRoot.repoRoot });
             const session = new SessionManager(renderer, {
-              repoRoot,
+              repoRoot: requestedRoot.repoRoot,
+              stateRoot: requestedRoot.stateRoot,
+              workspaceName: requestedRoot.workspaceName || null,
+              rootKind: requestedRoot.kind,
+              rootIdentity: requestedRoot.rootIdentity,
+              preserveResumeAliasOnClear: requestedRoot.kind === 'named-workspace',
+              resumeToken: msg.resume || null,
               panelId,
               postMessage(outbound) {
                 if (outbound && outbound.type === 'syncConfig' && outbound.config) {
@@ -281,11 +332,22 @@ wss.on('connection', (ws) => {
               initialConfig: panelConfig,
               extensionPath,
             });
-            session._tasksMcpPort = _tasksMcpPort;
-            session._testsMcpPort = _testsMcpPort;
-            session._memoryMcpPort = _memoryMcpPort;
-            session._qaDesktopMcpPort = _qaDesktopMcpPort;
-            return { session, renderer, panelConfig };
+            session._tasksMcpPort = requestedPorts.tasksPort;
+            session._testsMcpPort = requestedPorts.testsPort;
+            session._memoryMcpPort = requestedPorts.memoryPort;
+            session._qaDesktopMcpPort = requestedPorts.qaDesktopPort;
+            return {
+              session,
+              renderer,
+              panelConfig,
+              repoRoot: requestedRoot.repoRoot,
+              stateRoot: requestedRoot.stateRoot,
+              workspaceName: requestedRoot.workspaceName || null,
+              rootKind: requestedRoot.kind,
+              rootIdentity: requestedRoot.rootIdentity,
+              cloudBoundary: entryCloudBoundary,
+              cloudBootstrapPromise: entryCloudBoundary.preload().catch((error) => entryCloudBoundary.summarize(error)),
+            };
           },
         });
 
@@ -295,19 +357,69 @@ wss.on('connection', (ws) => {
           attachedEntry.session.applyConfig(pendingConfigFromSocket);
         }
 
-        const cloud = await cloudBootstrapPromise;
-        const mcpData = handlers.loadMergedMcpServers(repoRoot);
-        const agentsData = loadMergedAgents(repoRoot, extensionPath);
-        const modesData = loadMergedModes(repoRoot, extensionPath);
+        const entryRepoRoot = attachedEntry.repoRoot || repoRoot;
+        const cloud = await (attachedEntry.cloudBootstrapPromise || cloudBootstrapPromise);
+        const mcpData = handlers.loadMergedMcpServers(entryRepoRoot);
+        const agentsData = loadMergedAgents(entryRepoRoot, extensionPath);
+        const modesData = loadMergedModes(entryRepoRoot, extensionPath);
         attachedEntry.session.setMcpServers(mcpData);
         attachedEntry.session.setAgents(agentsData);
         attachedEntry.session.setModes(modesData);
+        attachedEntry.session.applyLaunchContext({
+          workspace: attachedEntry.workspaceName || null,
+          rootKind: attachedEntry.rootKind || 'repo',
+          rootIdentity: attachedEntry.rootIdentity || null,
+          resume: msg.resume || attachedEntry.session.getPanelContext().resume || null,
+        });
+
+        const explicitAgentTarget = msg.agent
+          ? (msg.agent === 'controller' || msg.agent === 'claude'
+            ? msg.agent
+            : `agent-${msg.agent}`)
+          : null;
+        if (explicitAgentTarget) {
+          attachedEntry.panelConfig.chatTarget = explicitAgentTarget;
+          attachedEntry.session.applyConfig({ chatTarget: explicitAgentTarget });
+        }
 
         const onboardingData = loadOnboarding();
-        const requestedRunId = msg.runId || attachedEntry.session.getRunId() || null;
+        const requestedResume = msg.resume || null;
+        let requestedRunId = msg.runId || attachedEntry.session.getRunId() || null;
+        if (requestedResume) {
+          const resolvedResume = await resolveResumeToken(requestedResume, entryRepoRoot, attachedEntry.stateRoot || path.join(entryRepoRoot, '.qpanda'), {
+            allowPendingAlias: true,
+            chatTarget: explicitAgentTarget || attachedEntry.panelConfig.chatTarget || null,
+          });
+          appendWebDebugLog(entryRepoRoot, `ready:resolveResume token=${requestedResume} resolved=${JSON.stringify(resolvedResume)} requestedRunIdBefore=${requestedRunId || ''}`);
+          if (resolvedResume.kind === 'alias' || resolvedResume.kind === 'run') {
+            requestedRunId = resolvedResume.runId;
+            attachedEntry.session.applyLaunchContext({
+              resume: resolvedResume.kind === 'alias' ? resolvedResume.alias : resolvedResume.runId,
+              pendingResumeAlias: null,
+              saveResumeAs: null,
+            });
+          } else if (resolvedResume.kind === 'pending-alias' || resolvedResume.kind === 'stale-alias') {
+            attachedEntry.session.applyLaunchContext({
+              resume: resolvedResume.alias,
+              pendingResumeAlias: resolvedResume.alias,
+              saveResumeAs: null,
+            });
+            if (attachedEntry.session.getRunId()) {
+              const previousRunId = attachedEntry.session.getRunId();
+              await attachedEntry.session._resetAttachedRunForLaunch();
+              appendWebDebugLog(entryRepoRoot, `ready:clearedExistingRunForPendingAlias previousRunId=${previousRunId} alias=${resolvedResume.alias}`);
+            }
+            requestedRunId = null;
+          }
+        }
         const reattached = requestedRunId
           ? await attachedEntry.session.reattachRun(requestedRunId, { suppressUi: true })
           : false;
+        appendWebDebugLog(entryRepoRoot, `ready:reattach requestedRunId=${requestedRunId || ''} reattached=${reattached} sessionRunId=${attachedEntry.session.getRunId() || ''} panelResume=${attachedEntry.session.getPanelContext().resume || ''}`);
+        if (explicitAgentTarget) {
+          attachedEntry.panelConfig.chatTarget = explicitAgentTarget;
+          attachedEntry.session.applyConfig({ chatTarget: explicitAgentTarget });
+        }
 
         if (attachedEntry.session.panelId !== restoredPanelId) {
           attachedEntry = sessionRegistry.rekey(restoredPanelId, attachedEntry.session.panelId) || attachedEntry;
@@ -325,14 +437,17 @@ wss.on('connection', (ws) => {
           modes: modesData,
           panelId: attachedEntry.session.panelId,
           runId: reattached ? attachedEntry.session.getRunId() : null,
+          workspace: attachedEntry.workspaceName || null,
+          resume: attachedEntry.session.getPanelContext().resume || null,
+          rootIdentity: attachedEntry.rootIdentity || null,
           onboarding: { complete: isOnboardingComplete(), data: onboardingData },
-          featureFlags: loadFeatureFlags(path.join(__dirname, '..'), repoRoot),
+          featureFlags: loadFeatureFlags(path.join(__dirname, '..'), entryRepoRoot),
           apiCatalog: buildApiCatalogPayload(),
           cloud,
         });
 
         if (msg.panelId || reattached) {
-          findExistingDesktop(repoRoot, attachedEntry.session.panelId).then((desktop) => {
+          findExistingDesktop(entryRepoRoot, attachedEntry.session.panelId).then((desktop) => {
             if (desktop) {
               entryPostMessage({ type: 'desktopReady', novncPort: desktop.novncPort });
             }
@@ -356,6 +471,7 @@ wss.on('connection', (ws) => {
       }
 
       if (!attachedEntry) return;
+      const entryRepoRoot = attachedEntry.repoRoot || repoRoot;
 
       if (msg.type === 'onboardingDetect') {
         runFullDetection().then((detected) => {
@@ -379,7 +495,7 @@ wss.on('connection', (ws) => {
         const bundledPath = path.join(extensionPath, 'resources', 'system-agents.json');
         const bundledAgents = loadAgentsFile(bundledPath);
         const result = completeOnboarding({ preference: msg.preference, detected: msg.detected, bundledAgents });
-        const agentsData = loadMergedAgents(repoRoot, extensionPath);
+        const agentsData = loadMergedAgents(entryRepoRoot, extensionPath);
         attachedEntry.session.setAgents(agentsData);
         entryPostMessage({ type: 'onboardingComplete', onboarding: { complete: true, data: result } });
         entryPostMessage({ type: 'agentsData', agents: agentsData });
@@ -388,13 +504,13 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'mcpServersChanged') {
         const scope = msg.scope;
-        const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(repoRoot);
+        const filePath = scope === 'global' ? handlers.globalMcpPath() : handlers.projectMcpPath(entryRepoRoot);
         const previousServers = scope === 'project' ? handlers.loadMcpFile(filePath) : null;
         handlers.saveMcpFile(filePath, msg.servers);
         if (scope === 'project') {
-          void handlers.queueProjectMcpSyncChanges(repoRoot, previousServers, msg.servers);
+          void handlers.queueProjectMcpSyncChanges(entryRepoRoot, previousServers, msg.servers);
         }
-        attachedEntry.session.setMcpServers(handlers.loadMergedMcpServers(repoRoot));
+        attachedEntry.session.setMcpServers(handlers.loadMergedMcpServers(entryRepoRoot));
         return;
       }
 
@@ -410,7 +526,7 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      const projectContextReply = handlers.handleProjectContextMessage(msg, repoRoot);
+      const projectContextReply = handlers.handleProjectContextMessage(msg, entryRepoRoot);
       if (projectContextReply) {
         entryPostMessage(projectContextReply);
         return;
@@ -424,35 +540,35 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      const taskReply = await handlers.handleTaskMessage(msg, repoRoot);
+      const taskReply = await handlers.handleTaskMessage(msg, entryRepoRoot);
       if (taskReply) {
         entryPostMessage(taskReply);
         return;
       }
 
-      const testReply = await handlers.handleTestMessage(msg, repoRoot);
+      const testReply = await handlers.handleTestMessage(msg, entryRepoRoot);
       if (testReply) {
         entryPostMessage(testReply);
         return;
       }
 
-      const agentReply = handlers.handleAgentMessage(msg, repoRoot, extensionPath);
+      const agentReply = handlers.handleAgentMessage(msg, entryRepoRoot, extensionPath);
       if (agentReply) {
         entryPostMessage(agentReply);
-        attachedEntry.session.setAgents(loadMergedAgents(repoRoot, extensionPath));
+        attachedEntry.session.setAgents(loadMergedAgents(entryRepoRoot, extensionPath));
         return;
       }
 
-      const modeReply = handlers.handleModeMessage(msg, repoRoot, extensionPath);
+      const modeReply = handlers.handleModeMessage(msg, entryRepoRoot, extensionPath);
       if (modeReply) {
         entryPostMessage(modeReply);
-        attachedEntry.session.setModes(loadMergedModes(repoRoot, extensionPath));
+        attachedEntry.session.setModes(loadMergedModes(entryRepoRoot, extensionPath));
         return;
       }
 
       const instanceReply = await handlers.handleInstanceMessage(
         msg,
-        repoRoot,
+        entryRepoRoot,
         attachedEntry.session.panelId,
         entryPostMessage,
         extensionPath,

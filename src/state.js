@@ -176,6 +176,10 @@ function normalizeRunOptions(options = {}) {
     workerMcpServers: options.workerMcpServers || null,
     agents: options.agents || {},
     panelId: options.panelId || null,
+    rootKind: options.rootKind || 'repo',
+    rootIdentity: options.rootIdentity || null,
+    workspaceName: options.workspaceName || null,
+    resumeToken: options.resumeToken || null,
     chromeDebugPort: Number.isFinite(options.chromeDebugPort)
       ? Math.max(0, Number(options.chromeDebugPort))
       : null,
@@ -279,6 +283,10 @@ async function prepareNewRun(initialMessage, options = {}) {
     workerMcpServers: normalized.workerMcpServers || null,
     agents: normalized.agents || {},
     panelId: normalized.panelId || null,
+    rootKind: normalized.rootKind || 'repo',
+    rootIdentity: normalized.rootIdentity || null,
+    workspaceName: normalized.workspaceName || null,
+    resumeToken: normalized.resumeToken || null,
     chromeDebugPort: normalized.chromeDebugPort || null,
     controllerPrestartKey: normalized.controllerPrestartKey || null,
     workerPrestartKey: normalized.workerPrestartKey || null,

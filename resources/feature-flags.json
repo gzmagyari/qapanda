@@ -1,4 +1,5 @@
 {
   "enableRemoteDesktop": false,
-  "enableClaudeCli": false
+  "enableClaudeCli": false,
+  "enablePersonalWorkspaces": false
 }

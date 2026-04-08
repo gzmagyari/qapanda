@@ -4,6 +4,10 @@ const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom')
 
 let wv;
 
+function multiline(count, prefix = 'line') {
+  return Array.from({ length: count }, (_, index) => `${prefix}-${index + 1}`).join('\n');
+}
+
 beforeEach(() => {
   wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
   wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
@@ -16,6 +20,56 @@ describe('Chat messages', () => {
     const msgs = wv.document.getElementById('messages');
     assert.ok(msgs.innerHTML.includes('Hello world'), 'should contain user message text');
     assert.ok(msgs.innerHTML.includes('USER') || msgs.innerHTML.includes('User'), 'should have user label');
+  });
+
+  it('long user message renders collapsed with an expand toggle', () => {
+    wv.postMessage({ type: 'user', text: multiline(60) });
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('line-50'));
+    assert.ok(!msgs.textContent.includes('line-51'));
+
+    const toggle = wv.document.querySelector('.user-message-toggle');
+    assert.ok(toggle, 'should render expand toggle for long user messages');
+    assert.equal(toggle.textContent.trim(), 'Expand');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  });
+
+  it('long user message expands and collapses in place', async () => {
+    wv.postMessage({ type: 'user', text: multiline(60) });
+
+    let toggle = wv.document.querySelector('.user-message-toggle');
+    assert.ok(toggle, 'should render expand toggle');
+    toggle.click();
+    await wv.flush();
+
+    let msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('line-60'));
+    toggle = wv.document.querySelector('.user-message-toggle');
+    assert.equal(toggle.textContent.trim(), 'Collapse');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+
+    toggle.click();
+    await wv.flush();
+
+    msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('line-50'));
+    assert.ok(!msgs.textContent.includes('line-51'));
+    toggle = wv.document.querySelector('.user-message-toggle');
+    assert.equal(toggle.textContent.trim(), 'Expand');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  });
+
+  it('copy uses the full raw text for collapsed long user messages', async () => {
+    wv.postMessage({ type: 'user', text: multiline(60) });
+
+    const copyBtn = wv.document.querySelector('.entry.role-user .entry-copy');
+    assert.ok(copyBtn, 'should render user copy button');
+    copyBtn.click();
+    await wv.flush();
+
+    assert.equal(wv.clipboardWrites.length, 1);
+    assert.ok(wv.clipboardWrites[0].includes('line-60'));
   });
 
   it('claude message renders with label', () => {
@@ -66,6 +120,30 @@ describe('Chat messages', () => {
     assert.ok(msgs.innerHTML.includes('Thanks'));
   });
 
+  it('transcriptHistory collapses long replayed user messages', () => {
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [
+        { type: 'user', text: multiline(60) },
+        { type: 'claude', text: 'Acknowledged', label: 'Developer' },
+      ],
+    });
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('line-50'));
+    assert.ok(!msgs.textContent.includes('line-51'));
+    assert.ok(msgs.textContent.includes('Acknowledged'));
+    assert.ok(wv.document.querySelector('.user-message-toggle'));
+  });
+
+  it('does not collapse long non-user messages', () => {
+    wv.postMessage({ type: 'claude', text: multiline(60), label: 'Developer' });
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('line-60'));
+    assert.equal(wv.document.querySelector('.user-message-toggle'), null);
+  });
+
   it('transcriptHistory keeps screenshots in order within the active section', () => {
     wv.postMessage({
       type: 'transcriptHistory',
@@ -111,5 +189,19 @@ describe('Chat messages', () => {
     assert.ok(msgs.textContent.includes('Showing only the latest chat tail for this run.'));
     assert.ok(msgs.textContent.includes('entry-79'));
     assert.ok(!msgs.textContent.includes('entry-0 '));
+  });
+
+  it('live visible history trimming sizes long user messages from the collapsed preview', async () => {
+    const longUserText = Array.from({ length: 60 }, (_, index) => `block-${index + 1} ` + 'y'.repeat(340)).join('\n');
+    wv.postMessage({ type: 'user', text: longUserText });
+
+    for (let index = 0; index < 32; index += 1) {
+      wv.postMessage({ type: 'user', text: `entry-${index} ` + 'x'.repeat(940) });
+    }
+    await wv.flush();
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(!msgs.textContent.includes('Showing only the latest chat tail for this run.'));
+    assert.ok(msgs.textContent.includes('entry-0'));
   });
 });

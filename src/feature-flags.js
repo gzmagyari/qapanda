@@ -10,6 +10,7 @@ const path = require('node:path');
 const DEFAULTS = {
   enableRemoteDesktop: false,
   enableClaudeCli: false,
+  enablePersonalWorkspaces: false,
 };
 
 let _cached = new Map();

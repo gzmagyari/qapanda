@@ -17,6 +17,13 @@ const {
 const { readText, summarizeError } = require('./src/utils');
 const { controllerLabelFor, workerLabelFor } = require('./src/render');
 const {
+  bindResumeAlias,
+  listResumeAliases,
+  removeResumeAlias,
+  removeResumeAliasTarget,
+  resolveResumeToken,
+} = require('./src/named-workspaces');
+const {
   appendTranscriptRecord,
   buildTranscriptDisplayTail,
   createTranscriptRecord,
@@ -70,8 +77,18 @@ class SessionManager {
     this._renderer = renderer;
     this._repoRoot = options.repoRoot || process.cwd();
     this._stateRoot = options.stateRoot || defaultStateRoot(this._repoRoot);
+    this._workspaceName = options.workspaceName || null;
+    this._rootKind = options.rootKind || (this._workspaceName ? 'named-workspace' : 'repo');
+    this._rootIdentity = options.rootIdentity
+      || (this._rootKind === 'named-workspace' && this._workspaceName
+        ? `workspace:${this._workspaceName}`
+        : `repo:${path.resolve(this._repoRoot)}`);
     this._panelId = options.panelId || require('node:crypto').randomUUID();
     this._runOptions = options.runOptions || {};
+    this._resumeToken = options.resumeToken || null;
+    this._pendingResumeAlias = options.pendingResumeAlias || null;
+    this._saveResumeAs = options.saveResumeAs || null;
+    this._preserveResumeAliasOnClear = options.preserveResumeAliasOnClear === true;
     this._activeManifest = null;
     this._abortController = null;
     this._running = false;
@@ -127,6 +144,22 @@ class SessionManager {
       const fs = require('node:fs');
       const p = require('node:path').join(require('node:os').tmpdir(), 'cc-chrome-debug.log');
       fs.appendFileSync(p, `[${new Date().toISOString()}] [session] ${msg}\n`);
+    } catch {}
+  }
+
+  _resumeDbg(msg) {
+    try {
+      const fs = require('node:fs');
+      const os = require('node:os');
+      const files = [];
+      if (this._repoRoot) files.push(path.join(this._repoRoot, '.qpanda', 'wizard-debug.log'));
+      files.push(path.join(os.homedir(), '.qpanda', 'wizard-debug.log'));
+      for (const logPath of files) {
+        try {
+          fs.mkdirSync(path.dirname(logPath), { recursive: true });
+          fs.appendFileSync(logPath, `[${new Date().toISOString()}] [session-resume] ${msg}\n`);
+        } catch {}
+      }
     } catch {}
   }
 
@@ -586,9 +619,7 @@ class SessionManager {
     }
     if (!this._activeManifest) {
       if (options.allowCreateRun) {
-        this._activeManifest = await prepareNewRun(String(message || '').trim() || '[delegation]', this._buildNewRunOpts());
-        this._syncChatLogPath();
-        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+        await this._createRun(String(message || '').trim() || '[delegation]');
       } else {
         throw new Error('No active run. Cannot delegate.');
       }
@@ -708,9 +739,7 @@ class SessionManager {
 
     const visibleMessage = this._buildVisibleReviewRequest(normalizedScope, guidance);
     if (!this._activeManifest) {
-      this._activeManifest = await prepareNewRun(visibleMessage, this._buildNewRunOpts());
-      this._syncChatLogPath();
-      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      await this._createRun(visibleMessage);
       this._renderer.requestStarted(this._activeManifest.runId);
     }
 
@@ -757,6 +786,7 @@ class SessionManager {
         saveManifest(this._activeManifest).catch(() => {});
         if (this._chatTarget !== previousTarget) {
           this._bannerChatTargetState(this._chatTarget, 'switch');
+          this._backfillResumeAliasForCurrentTarget().catch(() => {});
         }
       }
     }
@@ -871,6 +901,14 @@ class SessionManager {
     return this._repoRoot;
   }
 
+  get workspaceName() {
+    return this._workspaceName;
+  }
+
+  get rootIdentity() {
+    return this._rootIdentity;
+  }
+
   /** Return the currently attached run ID, or null. */
   getRunId() {
     return this._activeManifest ? this._activeManifest.runId : null;
@@ -880,9 +918,33 @@ class SessionManager {
     return this._getConfig();
   }
 
+  getPanelContext() {
+    return {
+      workspace: this._workspaceName || null,
+      rootKind: this._rootKind || 'repo',
+      rootIdentity: this._rootIdentity || null,
+      resume: this._resumeToken || null,
+      saveResumeAs: this._saveResumeAs || null,
+    };
+  }
+
+  applyLaunchContext(context = {}) {
+    if (context.workspace !== undefined) this._workspaceName = context.workspace || null;
+    if (context.rootKind !== undefined) this._rootKind = context.rootKind || (this._workspaceName ? 'named-workspace' : 'repo');
+    if (context.rootIdentity !== undefined) this._rootIdentity = context.rootIdentity || this._rootIdentity;
+    if (context.resume !== undefined) this._resumeToken = context.resume || null;
+    if (context.pendingResumeAlias !== undefined) this._pendingResumeAlias = context.pendingResumeAlias || null;
+    if (context.saveResumeAs !== undefined) this._saveResumeAs = context.saveResumeAs || null;
+  }
+
+  _syncPanelContext() {
+    this._postMessage({ type: 'panelContext', context: this.getPanelContext() });
+  }
+
   syncAttachedRunState() {
     if (!this._activeManifest) return;
     this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+    this._syncPanelContext();
     this._syncConfig();
     if (this._activeManifest.chatTarget !== undefined && this._activeManifest.chatTarget !== null) {
       this._bannerChatTargetState(this._chatTarget, 'reattach');
@@ -919,6 +981,113 @@ class SessionManager {
     return payload;
   }
 
+  async _resolveResumeSpecifier(token, options = {}) {
+    return await resolveResumeToken(token, this._repoRoot, this._stateRoot, {
+      chatTarget: options.chatTarget || this._chatTarget || null,
+      ...options,
+    });
+  }
+
+  async _bindConfiguredResumeAliases() {
+    if (!this._activeManifest) return [];
+    const aliases = [];
+    if (this._pendingResumeAlias) aliases.push(this._pendingResumeAlias);
+    if (this._saveResumeAs) aliases.push(this._saveResumeAs);
+    const uniqueAliases = Array.from(new Set(aliases.filter(Boolean)));
+    if (!uniqueAliases.length) {
+      if (!this._resumeToken) {
+        this._resumeToken = this._activeManifest.runId;
+        this._syncPanelContext();
+      }
+      return [];
+    }
+
+    const results = [];
+    for (const alias of uniqueAliases) {
+      const result = await bindResumeAlias(this._repoRoot, alias, this._activeManifest.runId, {
+        chatTarget: this._chatTarget || this._activeManifest.chatTarget || null,
+      });
+      results.push(result);
+      if (result.overwritten) {
+        this._renderer.banner(`Resume alias "${result.alias}" now points to ${this._activeManifest.runId}.`);
+      } else {
+        this._renderer.banner(`Saved resume alias "${result.alias}" for ${this._activeManifest.runId}.`);
+      }
+    }
+
+    const preferredAlias = uniqueAliases[uniqueAliases.length - 1];
+    this._resumeToken = preferredAlias || this._resumeToken || this._activeManifest.runId;
+    this._pendingResumeAlias = null;
+    this._saveResumeAs = null;
+    if (this._activeManifest) {
+      this._activeManifest.resumeToken = this._resumeToken;
+      await saveManifest(this._activeManifest);
+    }
+    this._syncPanelContext();
+    return results;
+  }
+
+  async _backfillResumeAliasForCurrentTarget() {
+    if (!this._activeManifest || !this._activeManifest.runId) return null;
+
+    const runId = String(this._activeManifest.runId || '').trim();
+    if (!runId) return null;
+
+    const explicitAlias = this._pendingResumeAlias || this._saveResumeAs || null;
+    const resumeToken = String(this._resumeToken || this._activeManifest.resumeToken || '').trim();
+    const alias = explicitAlias || (resumeToken && resumeToken !== runId ? resumeToken : '');
+    if (!alias) return null;
+
+    const result = await bindResumeAlias(this._repoRoot, alias, runId, {
+      chatTarget: this._chatTarget || this._activeManifest.chatTarget || null,
+    });
+
+    this._resumeToken = result.alias;
+    this._activeManifest.resumeToken = result.alias;
+    this._pendingResumeAlias = null;
+    this._saveResumeAs = null;
+    await saveManifest(this._activeManifest);
+    this._syncPanelContext();
+    return result;
+  }
+
+  _resumeAliasForFreshStart() {
+    const runId = this._activeManifest && this._activeManifest.runId
+      ? String(this._activeManifest.runId).trim()
+      : '';
+    const candidate = String(
+      this._pendingResumeAlias
+      || this._saveResumeAs
+      || this._resumeToken
+      || (this._activeManifest && this._activeManifest.resumeToken)
+      || ''
+    ).trim();
+    if (!candidate) return null;
+    if (runId && candidate === runId) return null;
+    return candidate;
+  }
+
+  async _resetAttachedRunForLaunch() {
+    this._clearWaitTimer();
+    await this._closePanelScopedAppServerConnections();
+    this._prestartDone = false;
+    this._activeManifest = null;
+  }
+
+  async _createRun(initialMessage) {
+    this._activeManifest = await prepareNewRun(initialMessage, this._buildNewRunOpts());
+    this._syncChatLogPath();
+    this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+    await this._bindConfiguredResumeAliases();
+    if (!this._resumeToken) {
+      this._resumeToken = this._activeManifest.runId;
+      this._activeManifest.resumeToken = this._resumeToken;
+      await saveManifest(this._activeManifest);
+      this._syncPanelContext();
+    }
+    return this._activeManifest;
+  }
+
   /**
    * Try to reattach to a previously saved run by ID.
    * Returns true if successful, false if the run no longer exists.
@@ -931,6 +1100,15 @@ class SessionManager {
       this._activeManifest = await loadManifestFromDir(runDir);
       this._syncChatLogPath();
       let manifestChanged = false;
+      if (this._activeManifest.workspaceName !== undefined && this._activeManifest.workspaceName !== null) {
+        this._workspaceName = this._activeManifest.workspaceName || null;
+      }
+      if (this._activeManifest.rootKind) {
+        this._rootKind = this._activeManifest.rootKind;
+      }
+      if (this._activeManifest.rootIdentity) {
+        this._rootIdentity = this._activeManifest.rootIdentity;
+      }
       if (this._activeManifest.panelId) {
         this._panelId = this._activeManifest.panelId;
       } else if (this._panelId) {
@@ -939,6 +1117,13 @@ class SessionManager {
       }
       if (Number.isFinite(Number(this._activeManifest.chromeDebugPort)) && Number(this._activeManifest.chromeDebugPort) > 0) {
         this._chromePortReservation = Number(this._activeManifest.chromeDebugPort);
+      }
+      if (this._activeManifest.resumeToken) {
+        this._resumeToken = this._activeManifest.resumeToken;
+      } else if (!this._resumeToken) {
+        this._resumeToken = this._activeManifest.runId;
+        this._activeManifest.resumeToken = this._resumeToken;
+        manifestChanged = true;
       }
       const restoredTarget = this._normalizeChatTarget(
         this._activeManifest.chatTarget,
@@ -973,6 +1158,7 @@ class SessionManager {
       if (manifestChanged) {
         await saveManifest(this._activeManifest);
       }
+      await this._backfillResumeAliasForCurrentTarget().catch(() => {});
       if (!suppressUi) this.syncAttachedRunState();
       return true;
     } catch {
@@ -1378,9 +1564,7 @@ class SessionManager {
     try {
 
       if (!this._activeManifest) {
-        this._activeManifest = await prepareNewRun(text, this._buildNewRunOpts());
-        this._syncChatLogPath();
-        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+        await this._createRun(text);
       }
       this._applyWorkerThinking();
 
@@ -1429,7 +1613,10 @@ class SessionManager {
         'Commands:\n' +
         '  /help                          Show this help\n' +
         '  /new <message>                 Start a new run\n' +
-        '  /resume <run-id>               Attach to an existing run\n' +
+        '  /resume [run-id-or-alias]      Attach to an existing run or alias\n' +
+        '  /alias <name>                  Save the current run under an alias\n' +
+        '  /unalias <name>                Remove a saved resume alias\n' +
+        '  /aliases                       List saved resume aliases\n' +
         '  /run                           Continue an interrupted request\n' +
         '  /status                        Show status for the attached run\n' +
         '  /list                          List saved runs\n' +
@@ -1451,13 +1638,48 @@ class SessionManager {
 
     if (command === '/clear') {
       this._clearWaitTimer();
+      const preservedAlias = this._preserveResumeAliasOnClear ? this._resumeAliasForFreshStart() : null;
+      const preservedTargetLabel = this._labelForChatTarget(this._chatTarget || 'controller');
+      this._resumeDbg(`clear:start preserve=${this._preserveResumeAliasOnClear} alias=${preservedAlias || ''} runId=${this._activeManifest && this._activeManifest.runId || ''} chatTarget=${this._chatTarget || ''} resumeToken=${this._resumeToken || ''}`);
+      if (preservedAlias) {
+        if (this._activeManifest) {
+          try { closeInteractiveSessions(this._activeManifest); } catch {}
+        }
+        try {
+          const removed = await removeResumeAliasTarget(this._repoRoot, preservedAlias, this._chatTarget || this._activeManifest?.chatTarget || null);
+          this._resumeDbg(`clear:removeResumeAliasTarget alias=${preservedAlias} chatTarget=${this._chatTarget || this._activeManifest?.chatTarget || ''} removed=${removed ? 'yes' : 'no'}`);
+        } catch (error) {
+          this._resumeDbg(`clear:removeResumeAliasTarget error=${error && error.message ? error.message : String(error)}`);
+        }
+      }
       await this._closePanelScopedAppServerConnections();
       this._prestartDone = false;
       this._activeManifest = null;
+      if (preservedAlias) {
+        this._pendingResumeAlias = preservedAlias;
+        this._saveResumeAs = null;
+        this._resumeToken = preservedAlias;
+      } else {
+        this._pendingResumeAlias = null;
+        this._saveResumeAs = null;
+        this._resumeToken = null;
+      }
+      try {
+        const aliases = await listResumeAliases(this._repoRoot);
+        this._resumeDbg(`clear:after alias=${preservedAlias || ''} runId=<cleared> aliases=${JSON.stringify(aliases)}`);
+      } catch (error) {
+        this._resumeDbg(`clear:after alias-list-error=${error && error.message ? error.message : String(error)}`);
+      }
       this._postMessage({ type: 'clear' });
       this._postMessage({ type: 'clearRunId' });
       this._postMessage({ type: 'progressFull', text: '' });
-      this._renderer.banner('Session cleared.');
+      if (preservedAlias) {
+        this._syncPanelContext();
+        this._renderer.banner(`Session cleared. The next message will start a fresh ${preservedTargetLabel} session and rebind alias "${preservedAlias}".`);
+      } else {
+        this._syncPanelContext();
+        this._renderer.banner('Session cleared. The next message will start a fresh session.');
+      }
       // Re-prestart app-server so next message is fast
       this.prestart();
       await this.sendReviewState(true);
@@ -1512,7 +1734,23 @@ class SessionManager {
         return;
       }
       this._clearWaitTimer();
-      const ok = await this.reattachRun(rest);
+      const resolved = await this._resolveResumeSpecifier(rest, { allowPendingAlias: true });
+      this._resumeDbg(`resume:requested token=${rest} resolved=${JSON.stringify(resolved)}`);
+      if (resolved.kind === 'pending-alias' || resolved.kind === 'stale-alias') {
+        this._pendingResumeAlias = resolved.alias;
+        this._resumeToken = resolved.alias;
+        this._syncPanelContext();
+        this._renderer.banner(`Resume alias "${resolved.alias}" will be bound to the next new run in this workspace.`);
+        return;
+      }
+      if (resolved.kind === 'missing' || resolved.kind === 'none') {
+        this._renderer.banner(`Previous run or alias ${rest} no longer exists.`);
+        return;
+      }
+      this._resumeToken = resolved.kind === 'alias' ? resolved.alias : resolved.runId;
+      this._syncPanelContext();
+      const ok = await this.reattachRun(resolved.runId);
+      this._resumeDbg(`resume:reattach token=${rest} runId=${resolved.runId} ok=${ok}`);
       if (!ok) {
         this._renderer.banner(`Previous run ${rest} no longer exists.`);
         return;
@@ -1521,6 +1759,62 @@ class SessionManager {
       this._renderer.requestStarted(this._activeManifest.runId);
       await this.sendProgress();
       this._restoreWaitTimer();
+      return;
+    }
+
+    if (command === '/aliases') {
+      const aliases = await listResumeAliases(this._repoRoot);
+      if (!aliases.length) {
+        this._renderer.banner('No resume aliases saved for this workspace.');
+        return;
+      }
+      this._renderer.banner(
+        ['Resume aliases:', ...aliases.map((alias) => `  ${alias.name} -> ${alias.runId}${alias.chatTarget ? ` (${alias.chatTarget})` : ''}`)].join('\n')
+      );
+      return;
+    }
+
+    if (command === '/alias') {
+      if (!rest) {
+        this._renderer.banner('Usage: /alias <name>');
+        return;
+      }
+      if (!this._activeManifest) {
+        this._renderer.banner('No run is attached.');
+        return;
+      }
+      const result = await bindResumeAlias(this._repoRoot, rest, this._activeManifest.runId, {
+        chatTarget: this._chatTarget || this._activeManifest.chatTarget || null,
+      });
+      this._resumeToken = result.alias;
+      this._pendingResumeAlias = null;
+      this._saveResumeAs = null;
+      this._activeManifest.resumeToken = this._resumeToken;
+      await saveManifest(this._activeManifest);
+      this._syncPanelContext();
+      this._renderer.banner(
+        result.overwritten
+          ? `Resume alias "${result.alias}" now points to ${this._activeManifest.runId}.`
+          : `Saved resume alias "${result.alias}" for ${this._activeManifest.runId}.`
+      );
+      return;
+    }
+
+    if (command === '/unalias') {
+      if (!rest) {
+        this._renderer.banner('Usage: /unalias <name>');
+        return;
+      }
+      const removed = await removeResumeAlias(this._repoRoot, rest);
+      if (!removed) {
+        this._renderer.banner(`Resume alias "${rest}" was not found.`);
+        return;
+      }
+      if (this._resumeToken && String(this._resumeToken).toLowerCase() === String(rest).trim().toLowerCase()) {
+        this._resumeToken = this._activeManifest ? this._activeManifest.runId : null;
+        this._syncPanelContext();
+      }
+      this._renderer.banner(`Removed resume alias "${rest}".`);
       return;
     }
 
@@ -1579,9 +1873,7 @@ class SessionManager {
       }
       this._clearWaitTimer();
 
-      this._activeManifest = await prepareNewRun(rest, this._buildNewRunOpts());
-      this._syncChatLogPath();
-      this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+      await this._createRun(rest);
       this._renderer.requestStarted(this._activeManifest.runId);
       this._applyWorkerThinking();
       try {
@@ -1741,9 +2033,7 @@ class SessionManager {
       try {
   
         if (!this._activeManifest) {
-          this._activeManifest = await prepareNewRun(message, this._buildNewRunOpts());
-          this._syncChatLogPath();
-          this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+          await this._createRun(message);
         }
         this._applyWorkerThinking();
         await this._runLoop({ userMessage: message });
@@ -1772,6 +2062,10 @@ class SessionManager {
       stateRoot: this._stateRoot,
       panelId: this._panelId,
       extensionDir: this._extensionPath,
+      rootKind: this._rootKind || 'repo',
+      rootIdentity: this._rootIdentity || null,
+      workspaceName: this._workspaceName || null,
+      resumeToken: this._resumeToken || this._pendingResumeAlias || this._saveResumeAs || null,
     };
     const reservedChromePort = this._currentReservedChromePort();
     if (reservedChromePort) {
@@ -2351,9 +2645,7 @@ class SessionManager {
     this._clearWaitTimer();
     try {
       if (!this._activeManifest) {
-        this._activeManifest = await prepareNewRun(text || '[ORCHESTRATE]', this._buildNewRunOpts());
-        this._syncChatLogPath();
-        this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+        await this._createRun(text || '[ORCHESTRATE]');
       }
       this._applyWorkerThinking();
 

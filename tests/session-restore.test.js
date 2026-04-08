@@ -14,6 +14,7 @@ const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
 const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
 const appServerPath = path.join(extDir, 'src', 'codex-app-server.js');
+const namedWorkspacesPath = path.join(extDir, 'src', 'named-workspaces.js');
 const chromePath = path.join(extDir, 'chrome-manager.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ const origCompaction = require(compactionPath);
 const origAppServer = require(appServerPath);
 const origChrome = require(chromePath);
 
-function buildSession({ config = {}, runExists = true, manifest = null, chrome = {}, appServer = {} } = {}) {
+function buildSession({ config = {}, runExists = true, manifest = null, chrome = {}, appServer = {}, sessionOptions = {} } = {}) {
   const posted = [];
   const captured = {
     saveManifestCalls: [],
@@ -57,6 +58,7 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
   };
 
   delete require.cache[smPath];
+  delete require.cache[namedWorkspacesPath];
 
   require.cache[statePath] = {
     id: statePath, filename: statePath, loaded: true,
@@ -152,11 +154,13 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     stateRoot: '/tmp/fake-state',
     initialConfig: config,
     postMessage: (msg) => posted.push(msg),
+    ...sessionOptions,
   });
 
   const cleanup = () => {
     session.dispose();
     delete require.cache[smPath];
+    delete require.cache[namedWorkspacesPath];
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
@@ -231,6 +235,76 @@ test('/clear posts clearRunId to webview', async () => {
     assert.ok(clearMsg, '/clear should post clearRunId');
     const clearUI = posted.find(m => m.type === 'clear');
     assert.ok(clearUI, '/clear should post clear');
+  } finally {
+    cleanup();
+  }
+});
+
+test('/clear preserves a resume alias for the next fresh run', async () => {
+  const { session, posted, renderer, cleanup } = buildSession({
+    sessionOptions: { preserveResumeAliasOnClear: true },
+    runExists: true,
+    manifest: {
+      runId: 'existing-run-42',
+      resumeToken: 'main',
+      chatTarget: 'agent-memory',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: { memory: { hasStarted: true } } },
+      agents: { memory: { name: 'Memory', cli: 'codex', enabled: true } },
+    },
+  });
+  try {
+    session.setAgents({ system: { memory: { name: 'Memory', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    await session.reattachRun('existing-run-42');
+    posted.length = 0;
+
+    await session.handleMessage({ type: 'userInput', text: '/clear' });
+
+    assert.equal(session.getRunId(), null);
+    assert.equal(session.getPanelContext().resume, 'main');
+    assert.equal(session._pendingResumeAlias, 'main');
+    const panelContextMsg = posted.find((msg) => msg.type === 'panelContext');
+    assert.ok(panelContextMsg, 'should sync panel context after clear');
+    assert.equal(panelContextMsg.context.resume, 'main');
+    const bannerCall = renderer.__calls.find((call) =>
+      call.method === 'banner' && /rebind alias "main"/i.test(call.args[0])
+    );
+    assert.ok(bannerCall, 'should explain that the alias will be rebound on the next message');
+  } finally {
+    cleanup();
+  }
+});
+
+test('/clear clears the persisted resume target by default', async () => {
+  const { session, posted, renderer, cleanup } = buildSession({
+    runExists: true,
+    manifest: {
+      runId: 'existing-run-42',
+      resumeToken: 'main',
+      chatTarget: 'agent-memory',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: { memory: { hasStarted: true } } },
+      agents: { memory: { name: 'Memory', cli: 'codex', enabled: true } },
+    },
+  });
+  try {
+    session.setAgents({ system: { memory: { name: 'Memory', cli: 'codex', enabled: true } }, global: {}, project: {} });
+    await session.reattachRun('existing-run-42');
+    posted.length = 0;
+
+    await session.handleMessage({ type: 'userInput', text: '/clear' });
+
+    assert.equal(session.getRunId(), null);
+    assert.equal(session.getPanelContext().resume, null);
+    assert.equal(session._pendingResumeAlias, null);
+    const panelContextMsg = posted.find((msg) => msg.type === 'panelContext');
+    assert.ok(panelContextMsg, 'default clear should sync panel context');
+    assert.equal(panelContextMsg.context.resume, null);
+    const bannerCall = renderer.__calls.find((call) =>
+      call.method === 'banner' && /Session cleared\./i.test(call.args[0])
+    );
+    assert.ok(bannerCall, 'should show the default clear banner');
+    assert.ok(!/rebind alias/i.test(bannerCall.args[0]), 'default clear should not mention alias rebinding');
   } finally {
     cleanup();
   }

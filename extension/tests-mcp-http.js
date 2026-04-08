@@ -29,30 +29,28 @@ function computeOverallStatus(steps) {
 
 // We define the tools inline here because requiring the stdio server would auto-start it.
 
-let _testsFile = '';
-let _tasksFile = '';
-let _server = null;
+const _servers = new Map();
 
-function loadData() {
-  try { return JSON.parse(fs.readFileSync(_testsFile, 'utf8')); }
+function loadData(testsFile) {
+  try { return JSON.parse(fs.readFileSync(testsFile, 'utf8')); }
   catch { return { nextId: 1, nextStepId: 1, nextRunId: 1, tests: [] }; }
 }
 
-function saveData(data) {
-  const dir = path.dirname(_testsFile);
+function saveData(testsFile, data) {
+  const dir = path.dirname(testsFile);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(_testsFile, JSON.stringify(data, null, 2), 'utf8');
+  fs.writeFileSync(testsFile, JSON.stringify(data, null, 2), 'utf8');
 }
 
-function loadTasksData() {
-  try { return JSON.parse(fs.readFileSync(_tasksFile, 'utf8')); }
+function loadTasksData(tasksFile) {
+  try { return JSON.parse(fs.readFileSync(tasksFile, 'utf8')); }
   catch { return { nextId: 1, nextCommentId: 1, nextProgressId: 1, tasks: [] }; }
 }
 
-function saveTasksData(data) {
-  const dir = path.dirname(_tasksFile);
+function saveTasksData(tasksFile, data) {
+  const dir = path.dirname(tasksFile);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(_tasksFile, JSON.stringify(data, null, 2), 'utf8');
+  fs.writeFileSync(tasksFile, JSON.stringify(data, null, 2), 'utf8');
 }
 
 // Same tools as tests-mcp-server.js
@@ -80,8 +78,10 @@ const HTTP_TOOLS = [
 ];
 
 // Handler — mirrors tests-mcp-server.js handleToolCall
-function handleToolCall(name, args) {
-  const data = loadData();
+function handleToolCall(name, args, files) {
+  const testsFile = files.testsFile;
+  const tasksFile = files.tasksFile;
+  const data = loadData(testsFile);
   switch (name) {
     case 'list_tests': { let tests = data.tests; if (args.status) tests = tests.filter(t => t.status === args.status); if (args.environment) tests = tests.filter(t => t.environment === args.environment); if (args.tag) tests = tests.filter(t => t.tags && t.tags.includes(args.tag)); return JSON.stringify(tests.map(t => ({ id: t.id, title: t.title, description: t.description, environment: t.environment, status: t.status, steps_count: (t.steps||[]).length, steps_passing: (t.steps||[]).filter(s=>s.status==='pass').length, tags: t.tags||[], linkedTaskIds: t.linkedTaskIds||[], lastTestedAt: t.lastTestedAt, created_at: t.created_at })), null, 2); }
     case 'get_test': { const t = data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t,null,2) : JSON.stringify({error:'Not found'}); }
@@ -113,19 +113,19 @@ function handleToolCall(name, args) {
         match_reason: matchReason,
       })), null, 2);
     }
-    case 'create_test': { const id='test-'+data.nextId++; const t={id,title:args.title,description:args.description||'',environment:VALID_ENVIRONMENTS.includes(args.environment)?args.environment:'browser',status:'untested',steps:[],linkedTaskIds:[],tags:args.tags||[],lastTestedAt:null,lastTestedBy:null,created_at:nowIso(),updated_at:nowIso(),runs:[]}; data.tests.push(t); saveData(data); return JSON.stringify(t,null,2); }
-    case 'update_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t) return JSON.stringify({error:'Not found'}); if(args.title!==undefined)t.title=args.title; if(args.description!==undefined)t.description=args.description; if(args.environment!==undefined&&VALID_ENVIRONMENTS.includes(args.environment))t.environment=args.environment; if(args.tags!==undefined)t.tags=args.tags; t.updated_at=nowIso(); saveData(data); return JSON.stringify(t,null,2); }
-    case 'delete_test': { data.tests=data.tests.filter(t=>t.id!==args.test_id); saveData(data); return JSON.stringify({deleted:args.test_id}); }
-    case 'add_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s={id:data.nextStepId++,description:args.description,expectedResult:args.expectedResult,status:'untested',actualResult:null}; t.steps.push(s); t.updated_at=nowIso(); saveData(data); return JSON.stringify(s,null,2); }
-    case 'update_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s=t.steps.find(s=>s.id===args.step_id); if(!s)return JSON.stringify({error:'Step not found'}); if(args.description!==undefined)s.description=args.description; if(args.expectedResult!==undefined)s.expectedResult=args.expectedResult; t.updated_at=nowIso(); saveData(data); return JSON.stringify(s,null,2); }
-    case 'delete_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.steps=t.steps.filter(s=>s.id!==args.step_id); t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({deleted:args.step_id}); }
-    case 'run_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r={id:data.nextRunId++,date:nowIso(),agent:args.agent||'agent',status:'running',stepResults:t.steps.map(s=>({stepId:s.id,status:'untested',actualResult:null})),notes:null}; t.runs.push(r); t.lastTestedAt=r.date; t.lastTestedBy=r.agent; t.updated_at=nowIso(); saveData(data); return JSON.stringify({run_id:r.id,test_id:t.id,steps_to_test:t.steps.length},null,2); }
-    case 'reset_test_steps': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const clearActualResults=args.clear_actual_results!==false; for (const s of (t.steps||[])) { s.status='untested'; if (clearActualResults) s.actualResult=null; } t.status='untested'; t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,reset_steps:(t.steps||[]).length,clear_actual_results:clearActualResults,status:t.status},null,2); }
-    case 'update_step_result': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); const sr=r.stepResults.find(sr=>sr.stepId===args.step_id); if(!sr)return JSON.stringify({error:'Step not in run'}); if(VALID_STEP_STATUSES.includes(args.status))sr.status=args.status; if(args.actualResult!==undefined)sr.actualResult=args.actualResult; const step=t.steps.find(s=>s.id===args.step_id); if(step){step.status=sr.status; if(args.actualResult!==undefined)step.actualResult=args.actualResult;} t.updated_at=nowIso(); saveData(data); return JSON.stringify({step_id:args.step_id,status:sr.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
-    case 'complete_test_run': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); if(args.notes)r.notes=args.notes; const sts=r.stepResults.map(sr=>sr.status); if(sts.every(s=>s==='pass'||s==='skip'))r.status='passing'; else if(sts.every(s=>s==='fail'))r.status='failing'; else if(sts.some(s=>s==='fail'))r.status='partial'; else r.status='untested'; t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,run_id:r.id,status:r.status,test_status:t.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
-    case 'link_test_to_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); if(!t.linkedTaskIds)t.linkedTaskIds=[]; if(!t.linkedTaskIds.includes(args.task_id))t.linkedTaskIds.push(args.task_id); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
-    case 'unlink_test_from_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.linkedTaskIds=(t.linkedTaskIds||[]).filter(id=>id!==args.task_id); t.updated_at=nowIso(); saveData(data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
-    case 'create_bug_from_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const td=loadTasksData(); const taskId='task-'+td.nextId++; const failingSteps=t.steps.filter(s=>s.status==='fail'); const desc=args.description||`Bug from test: ${t.title}\n\nFailing steps:\n${failingSteps.map(s=>`- ${s.description}: expected "${s.expectedResult}", got "${s.actualResult||'N/A'}"`).join('\n')}`; td.tasks.push({id:taskId,title:args.title,description:desc,detail_text:'',status:'todo',created_at:nowIso(),updated_at:nowIso(),comments:[],progress_updates:[],linkedTestIds:[t.id]}); saveTasksData(td); if(!t.linkedTaskIds)t.linkedTaskIds=[]; t.linkedTaskIds.push(taskId); t.updated_at=nowIso(); saveData(data); return JSON.stringify({task_id:taskId,test_id:t.id,title:args.title},null,2); }
+    case 'create_test': { const id='test-'+data.nextId++; const t={id,title:args.title,description:args.description||'',environment:VALID_ENVIRONMENTS.includes(args.environment)?args.environment:'browser',status:'untested',steps:[],linkedTaskIds:[],tags:args.tags||[],lastTestedAt:null,lastTestedBy:null,created_at:nowIso(),updated_at:nowIso(),runs:[]}; data.tests.push(t); saveData(testsFile, data); return JSON.stringify(t,null,2); }
+    case 'update_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t) return JSON.stringify({error:'Not found'}); if(args.title!==undefined)t.title=args.title; if(args.description!==undefined)t.description=args.description; if(args.environment!==undefined&&VALID_ENVIRONMENTS.includes(args.environment))t.environment=args.environment; if(args.tags!==undefined)t.tags=args.tags; t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify(t,null,2); }
+    case 'delete_test': { data.tests=data.tests.filter(t=>t.id!==args.test_id); saveData(testsFile, data); return JSON.stringify({deleted:args.test_id}); }
+    case 'add_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s={id:data.nextStepId++,description:args.description,expectedResult:args.expectedResult,status:'untested',actualResult:null}; t.steps.push(s); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify(s,null,2); }
+    case 'update_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const s=t.steps.find(s=>s.id===args.step_id); if(!s)return JSON.stringify({error:'Step not found'}); if(args.description!==undefined)s.description=args.description; if(args.expectedResult!==undefined)s.expectedResult=args.expectedResult; t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify(s,null,2); }
+    case 'delete_test_step': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.steps=t.steps.filter(s=>s.id!==args.step_id); t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({deleted:args.step_id}); }
+    case 'run_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r={id:data.nextRunId++,date:nowIso(),agent:args.agent||'agent',status:'running',stepResults:t.steps.map(s=>({stepId:s.id,status:'untested',actualResult:null})),notes:null}; t.runs.push(r); t.lastTestedAt=r.date; t.lastTestedBy=r.agent; t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({run_id:r.id,test_id:t.id,steps_to_test:t.steps.length},null,2); }
+    case 'reset_test_steps': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const clearActualResults=args.clear_actual_results!==false; for (const s of (t.steps||[])) { s.status='untested'; if (clearActualResults) s.actualResult=null; } t.status='untested'; t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({test_id:t.id,reset_steps:(t.steps||[]).length,clear_actual_results:clearActualResults,status:t.status},null,2); }
+    case 'update_step_result': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); const sr=r.stepResults.find(sr=>sr.stepId===args.step_id); if(!sr)return JSON.stringify({error:'Step not in run'}); if(VALID_STEP_STATUSES.includes(args.status))sr.status=args.status; if(args.actualResult!==undefined)sr.actualResult=args.actualResult; const step=t.steps.find(s=>s.id===args.step_id); if(step){step.status=sr.status; if(args.actualResult!==undefined)step.actualResult=args.actualResult;} t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({step_id:args.step_id,status:sr.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
+    case 'complete_test_run': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const r=t.runs.find(r=>r.id===args.run_id); if(!r)return JSON.stringify({error:'Run not found'}); if(args.notes)r.notes=args.notes; const sts=r.stepResults.map(sr=>sr.status); if(sts.every(s=>s==='pass'||s==='skip'))r.status='passing'; else if(sts.every(s=>s==='fail'))r.status='failing'; else if(sts.some(s=>s==='fail'))r.status='partial'; else r.status='untested'; t.status=computeOverallStatus(t.steps); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({test_id:t.id,run_id:r.id,status:r.status,test_status:t.status,_testCard:{title:t.title,test_id:t.id,passed:t.steps.filter(s=>s.status==='pass').length,failed:t.steps.filter(s=>s.status==='fail').length,skipped:t.steps.filter(s=>!s.status||s.status==='skip'||s.status==='untested').length,steps:t.steps.map(s=>({name:s.description,status:s.status==='untested'?'skip':(s.status||'skip')}))}}); }
+    case 'link_test_to_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); if(!t.linkedTaskIds)t.linkedTaskIds=[]; if(!t.linkedTaskIds.includes(args.task_id))t.linkedTaskIds.push(args.task_id); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
+    case 'unlink_test_from_task': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); t.linkedTaskIds=(t.linkedTaskIds||[]).filter(id=>id!==args.task_id); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({test_id:t.id,linkedTaskIds:t.linkedTaskIds}); }
+    case 'create_bug_from_test': { const t=data.tests.find(t=>t.id===args.test_id); if(!t)return JSON.stringify({error:'Not found'}); const td=loadTasksData(tasksFile); const taskId='task-'+td.nextId++; const failingSteps=t.steps.filter(s=>s.status==='fail'); const desc=args.description||`Bug from test: ${t.title}\n\nFailing steps:\n${failingSteps.map(s=>`- ${s.description}: expected "${s.expectedResult}", got "${s.actualResult||'N/A'}"`).join('\n')}`; td.tasks.push({id:taskId,title:args.title,description:desc,detail_text:'',status:'todo',created_at:nowIso(),updated_at:nowIso(),comments:[],progress_updates:[],linkedTestIds:[t.id]}); saveTasksData(tasksFile, td); if(!t.linkedTaskIds)t.linkedTaskIds=[]; t.linkedTaskIds.push(taskId); t.updated_at=nowIso(); saveData(testsFile, data); return JSON.stringify({task_id:taskId,test_id:t.id,title:args.title},null,2); }
     case 'get_test_history': { const t=data.tests.find(t=>t.id===args.test_id); return t ? JSON.stringify(t.runs||[],null,2) : JSON.stringify({error:'Not found'}); }
     case 'get_test_summary': { const total=data.tests.length; return JSON.stringify({total,passing:data.tests.filter(t=>t.status==='passing').length,failing:data.tests.filter(t=>t.status==='failing').length,partial:data.tests.filter(t=>t.status==='partial').length,untested:data.tests.filter(t=>t.status==='untested').length},null,2); }
     case 'display_test_summary': return 'Displayed test summary card.';
@@ -135,21 +135,37 @@ function handleToolCall(name, args) {
 }
 
 async function startTestsMcpServer(testsFile, tasksFile) {
-  if (_server) return _server;
-  _testsFile = testsFile;
-  _tasksFile = tasksFile || testsFile.replace('tests.json', 'tasks.json');
+  const resolvedTestsFile = path.resolve(testsFile);
+  const resolvedTasksFile = path.resolve(tasksFile || testsFile.replace('tests.json', 'tasks.json'));
+  const key = `${resolvedTestsFile}::${resolvedTasksFile}`;
+  if (_servers.has(key)) return _servers.get(key);
   const result = await createMcpHttpServer({
     tools: HTTP_TOOLS,
-    handleToolCall,
+    handleToolCall: (name, args) => handleToolCall(name, args, {
+      testsFile: resolvedTestsFile,
+      tasksFile: resolvedTasksFile,
+    }),
     serverName: 'cc-tests',
   });
-  _server = result;
-  console.error(`[cc-tests-http] Started on port ${result.port}, tests file: ${_testsFile}`);
+  _servers.set(key, result);
+  console.error(`[cc-tests-http] Started on port ${result.port}, tests file: ${resolvedTestsFile}`);
   return result;
 }
 
-function stopTestsMcpServer() {
-  if (_server) { _server.close(); _server = null; }
+async function stopTestsMcpServer(testsFile = null, tasksFile = null) {
+  if (testsFile) {
+    const key = `${path.resolve(testsFile)}::${path.resolve(tasksFile || testsFile.replace('tests.json', 'tasks.json'))}`;
+    const existing = _servers.get(key);
+    if (!existing) return;
+    await existing.close();
+    _servers.delete(key);
+    return;
+  }
+  const servers = Array.from(_servers.values());
+  _servers.clear();
+  for (const server of servers) {
+    await server.close();
+  }
 }
 
 module.exports = { startTestsMcpServer, stopTestsMcpServer };

@@ -33,6 +33,15 @@ const {
   writeJsonFile,
 } = require('./config-loader');
 const { mcpServersForRole } = require('./mcp-injector');
+const {
+  bindResumeAlias,
+  createRepoRootDescriptor,
+  ensureNamedWorkspace,
+  listNamedWorkspaces,
+  listResumeAliases,
+  removeResumeAlias,
+  resolveResumeToken,
+} = require('./named-workspaces');
 const { PROVIDERS } = require('./llm-client');
 const { compactApiSessionHistory, currentApiSessionTarget, describeCompactionResult } = require('./api-compaction');
 
@@ -61,8 +70,12 @@ function printHelp(renderer) {
 Commands:
   /help                Show this help
   /new <message>       Start a new run and send the first user message
-  /resume <run-id>     Attach to an existing run
-  /use <run-id>        Alias for /resume
+  /resume [run-id-or-alias] Attach to an existing run or alias
+  /use [run-id-or-alias] Alias for /resume
+  /alias <name>        Save the current run as a resume alias
+  /unalias <name>      Remove a saved resume alias
+  /aliases             List saved resume aliases
+  /workspace [name]    List or switch named workspaces
   /run                 Continue an interrupted request in the attached run
   /status              Show status for the attached run
   /list                List saved runs
@@ -117,8 +130,8 @@ function latestRequestMeta(manifest) {
 }
 
 async function runInteractiveShell(options = {}) {
-  const cwd = path.resolve(options.repoRoot || process.cwd());
-  const stateRoot = path.resolve(options.stateRoot || defaultStateRoot(cwd));
+  let cwd = path.resolve(options.repoRoot || process.cwd());
+  let stateRoot = path.resolve(options.stateRoot || defaultStateRoot(cwd));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const renderer = new Renderer({ rawEvents: Boolean(options.rawEvents), quiet: false });
 
@@ -144,12 +157,25 @@ async function runInteractiveShell(options = {}) {
   let currentTestEnv = options.testEnv || null;
   let directAgent = resolveInitialDirectAgent(options);
   let loopMode = false;
+  let currentWorkspace = options.workspaceName || null;
+  let pendingResumeAlias = null;
+  let saveResumeAs = options.saveResumeAs || null;
 
   let activeManifest = null;
   let waitDelay = options.wait || '';
   let waitTimer = null;
   let chromePort = null;
   let chromePanelId = null;
+
+  function workspaceLabel() {
+    return currentWorkspace ? `workspace:${currentWorkspace}` : cwd;
+  }
+
+  function currentChatTarget() {
+    if (!directAgent) return 'controller';
+    if (directAgent === 'claude') return 'claude';
+    return `agent-${directAgent}`;
+  }
 
   function anyAgentUsesApi() {
     return Object.values(allAgents || {}).some((agent) => agent && agent.cli === 'api');
@@ -177,12 +203,24 @@ async function runInteractiveShell(options = {}) {
     await saveManifest(activeManifest);
   }
 
+  function reloadWorkspaceConfig() {
+    agentsData = loadMergedAgents(cwd, resourcesDir);
+    modesData = loadMergedModes(cwd, resourcesDir);
+    mcpData = loadMergedMcpServers(cwd);
+    allAgents = enabledAgents(agentsData);
+    allModes = enabledModes(modesData);
+  }
+
   // ── Build run options from current config ──────────────────────
   function buildRunOptions() {
     const runOpts = {
       ...options,
       repoRoot: cwd,
       stateRoot,
+      workspaceName: currentWorkspace,
+      rootKind: currentWorkspace ? 'named-workspace' : 'repo',
+      rootIdentity: currentWorkspace ? `workspace:${currentWorkspace}` : `repo:${cwd}`,
+      resumeToken: saveResumeAs || pendingResumeAlias || null,
       controllerCli,
       workerCli,
       controllerModel,
@@ -316,6 +354,26 @@ async function runInteractiveShell(options = {}) {
     return await runManagerLoop(manifest, renderer, { ...loopOptions, singlePass: true });
   }
 
+  async function bindCurrentRunAliases() {
+    if (!activeManifest) return;
+    const aliases = [];
+    if (pendingResumeAlias) aliases.push(pendingResumeAlias);
+    if (saveResumeAs) aliases.push(saveResumeAs);
+    if (!aliases.length) return;
+    const seen = new Set();
+    for (const alias of aliases) {
+      const normalized = String(alias || '').trim();
+      if (!normalized || seen.has(normalized.toLowerCase())) continue;
+      seen.add(normalized.toLowerCase());
+      await bindResumeAlias(cwd, normalized, activeManifest.runId, {
+        chatTarget: directAgent || activeManifest.chatTarget || null,
+      });
+      activeManifest.resumeToken = normalized;
+    }
+    pendingResumeAlias = null;
+    saveResumeAs = null;
+  }
+
   // ── Execute a user message (new run or continue) ───────────────
   async function executeMessage(message) {
     clearWaitTimer();
@@ -343,6 +401,7 @@ async function runInteractiveShell(options = {}) {
         if (chromePort) runOpts.chromeDebugPort = chromePort;
 
         activeManifest = await prepareNewRun(message, runOpts);
+        await bindCurrentRunAliases();
         if (chromePort) activeManifest.chromeDebugPort = chromePort;
         renderer.requestStarted(activeManifest.runId);
       }
@@ -374,8 +433,27 @@ async function runInteractiveShell(options = {}) {
 
   // ── Main loop ──────────────────────────────────────────────────
   renderer.banner('\uD83D\uDC3C QA Panda interactive session');
-  renderer.banner(`Repo root: ${cwd}`);
+  renderer.banner(currentWorkspace ? `Workspace: ${currentWorkspace}` : `Repo root: ${cwd}`);
   renderer.banner('Type /help for commands, or type a message to start.');
+
+  if (options.resume) {
+    const resolved = await resolveResumeToken(options.resume, cwd, stateRoot, {
+      allowPendingAlias: true,
+      chatTarget: currentChatTarget(),
+    });
+    if (resolved.kind === 'alias' || resolved.kind === 'run') {
+      const runDir = await resolveRunDir(resolved.runId, stateRoot);
+      activeManifest = await loadManifestFromDir(runDir);
+      activeManifest.resumeToken = resolved.kind === 'alias' ? resolved.alias : resolved.runId;
+      renderer.requestStarted(activeManifest.runId);
+      renderer.banner(`Reattached to ${resolved.kind === 'alias' ? `alias ${resolved.alias}` : `run ${resolved.runId}`}.`);
+    } else if (resolved.kind === 'pending-alias' || resolved.kind === 'stale-alias') {
+      pendingResumeAlias = resolved.alias;
+      renderer.banner(`Resume alias "${resolved.alias}" will be bound to the next new run in this workspace.`);
+    } else {
+      renderer.banner(`Run or alias not found: ${options.resume}`);
+    }
+  }
 
   try {
     while (true) {
@@ -405,6 +483,7 @@ async function runInteractiveShell(options = {}) {
           try {
             if (!activeManifest) {
               activeManifest = await prepareNewRun(text || '[ORCHESTRATE]', buildRunOptions());
+              await bindCurrentRunAliases();
               renderer.requestStarted(activeManifest.runId);
             }
             // Direct controller with persistent session — loops until controller says STOP
@@ -426,6 +505,7 @@ async function runInteractiveShell(options = {}) {
           try {
             if (!activeManifest) {
               activeManifest = await prepareNewRun(guidance || '[AUTO-CONTINUE]', buildRunOptions());
+              await bindCurrentRunAliases();
               renderer.requestStarted(activeManifest.runId);
             }
             // Set copilot prompt + continue directive so controller knows what to do
@@ -516,12 +596,95 @@ async function runInteractiveShell(options = {}) {
         }
 
         if (command === '/resume' || command === '/use') {
-          if (!rest) { renderer.banner('Usage: /resume <run-id>'); continue; }
+          if (!rest) {
+            const manifests = await listRunManifests(stateRoot);
+            if (manifests.length === 0) renderer.banner('No runs found.');
+            else for (const m of manifests) renderer.banner(`${m.runId} | ${m.status} | ${m.transcriptSummary || ''}`);
+            continue;
+          }
           clearWaitTimer();
-          const runDir = await resolveRunDir(rest, stateRoot);
+          const resolved = await resolveResumeToken(rest, cwd, stateRoot, {
+            allowPendingAlias: true,
+            chatTarget: currentChatTarget(),
+          });
+          if (resolved.kind === 'pending-alias' || resolved.kind === 'stale-alias') {
+            pendingResumeAlias = resolved.alias;
+            saveResumeAs = null;
+            renderer.banner(`Resume alias "${resolved.alias}" will be bound to the next new run in this workspace.`);
+            continue;
+          }
+          if (resolved.kind !== 'alias' && resolved.kind !== 'run') {
+            renderer.banner(`Run or alias not found: ${rest}`);
+            continue;
+          }
+          const runDir = await resolveRunDir(resolved.runId, stateRoot);
           activeManifest = await loadManifestFromDir(runDir);
+          activeManifest.resumeToken = resolved.kind === 'alias' ? resolved.alias : resolved.runId;
           if (activeManifest.waitDelay) { waitDelay = activeManifest.waitDelay; renderer.banner(`Wait delay restored: ${formatWaitDelay(parseWaitDelay(waitDelay))}`); }
           renderer.requestStarted(activeManifest.runId);
+          continue;
+        }
+
+        if (command === '/aliases') {
+          const aliases = await listResumeAliases(cwd);
+          if (!aliases.length) {
+            renderer.banner('No resume aliases saved for this workspace.');
+            continue;
+          }
+          renderer.banner(['Resume aliases:', ...aliases.map((alias) => `  ${alias.name} -> ${alias.runId}${alias.chatTarget ? ` (${alias.chatTarget})` : ''}`)].join('\n'));
+          continue;
+        }
+
+        if (command === '/alias') {
+          if (!rest) { renderer.banner('Usage: /alias <name>'); continue; }
+          if (!activeManifest) { renderer.banner('No run is attached.'); continue; }
+          const result = await bindResumeAlias(cwd, rest, activeManifest.runId, {
+            chatTarget: directAgent || activeManifest.chatTarget || null,
+          });
+          activeManifest.resumeToken = result.alias;
+          pendingResumeAlias = null;
+          saveResumeAs = null;
+          await saveManifest(activeManifest);
+          renderer.banner(
+            result.overwritten
+              ? `Resume alias "${result.alias}" now points to ${activeManifest.runId}.`
+              : `Saved resume alias "${result.alias}" for ${activeManifest.runId}.`
+          );
+          continue;
+        }
+
+        if (command === '/unalias') {
+          if (!rest) { renderer.banner('Usage: /unalias <name>'); continue; }
+          const removed = await removeResumeAlias(cwd, rest);
+          if (!removed) { renderer.banner(`Resume alias "${rest}" was not found.`); continue; }
+          renderer.banner(`Removed resume alias "${rest}".`);
+          continue;
+        }
+
+        if (command === '/workspace') {
+          if (!_flags.enablePersonalWorkspaces) {
+            renderer.banner('Named workspaces are disabled.');
+            continue;
+          }
+          if (!rest) {
+            const workspaces = await listNamedWorkspaces();
+            if (!workspaces.length) {
+              renderer.banner('No named workspaces found.');
+              continue;
+            }
+            renderer.banner(['Named workspaces:', ...workspaces.map((workspace) => `  ${workspace.workspaceName}`)].join('\n'));
+            continue;
+          }
+          clearWaitTimer();
+          const descriptor = await ensureNamedWorkspace(rest);
+          cwd = descriptor.repoRoot;
+          stateRoot = descriptor.stateRoot;
+          currentWorkspace = descriptor.workspaceName;
+          activeManifest = null;
+          pendingResumeAlias = null;
+          saveResumeAs = null;
+          reloadWorkspaceConfig();
+          renderer.banner(`Switched to workspace ${descriptor.workspaceName}.`);
           continue;
         }
 

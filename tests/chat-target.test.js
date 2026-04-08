@@ -10,6 +10,7 @@ const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
+const namedWorkspacesPath = path.join(extDir, 'src', 'named-workspaces.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ function stubRenderer() {
 const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
+const origNamedWorkspaces = require(namedWorkspacesPath);
 
 function buildSession(config = {}, { loopOverride, manifestOverride } = {}) {
   const captured = {
@@ -37,6 +39,7 @@ function buildSession(config = {}, { loopOverride, manifestOverride } = {}) {
     runManagerLoopCalls: [],
     runDirectWorkerTurnCalls: [],
     saveManifestCalls: [],
+    bindResumeAliasCalls: [],
   };
   const posted = [];
 
@@ -90,6 +93,25 @@ function buildSession(config = {}, { loopOverride, manifestOverride } = {}) {
     exports: { ...origPrompts, loadWorkflows: () => [] },
   };
 
+  require.cache[namedWorkspacesPath] = {
+    id: namedWorkspacesPath, filename: namedWorkspacesPath, loaded: true,
+    exports: {
+      ...origNamedWorkspaces,
+      bindResumeAlias: async (repoRoot, alias, runId, metadata = {}) => {
+        captured.bindResumeAliasCalls.push({ repoRoot, alias, runId, metadata: { ...metadata } });
+        return {
+          alias: String(alias || '').trim().toLowerCase(),
+          previous: null,
+          current: {
+            runId,
+            chatTarget: metadata.chatTarget || null,
+          },
+          overwritten: false,
+        };
+      },
+    },
+  };
+
   const { SessionManager } = require(smPath);
 
   const renderer = stubRenderer();
@@ -106,6 +128,7 @@ function buildSession(config = {}, { loopOverride, manifestOverride } = {}) {
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
+    require.cache[namedWorkspacesPath] = { id: namedWorkspacesPath, filename: namedWorkspacesPath, loaded: true, exports: origNamedWorkspaces };
   };
 
   return { session, captured, posted, renderer, cleanup };
@@ -227,6 +250,61 @@ test('switching to a brand-new agent session shows new-session banner without cl
     const bannerCall = renderer.__calls.find((call) => call.method === 'banner');
     assert.ok(bannerCall, 'should show a target-switch banner');
     assert.match(bannerCall.args[0], /next message will start a new session/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test('switching targets on an aliased run backfills the alias for the new target', async () => {
+  const { session, captured, cleanup } = buildSession(
+    { chatTarget: 'agent-dev' },
+    {
+      manifestOverride: {
+        runId: 'test-run',
+        resumeToken: 'main',
+        chatTarget: 'agent-dev',
+        worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+        agents: {
+          dev: { name: 'Developer', cli: 'codex', enabled: true },
+          memory: { name: 'Memory', cli: 'codex', enabled: true },
+        },
+        status: 'idle',
+      },
+    },
+  );
+  try {
+    session.setAgents({
+      system: {
+        dev: { name: 'Developer', cli: 'codex', enabled: true },
+        memory: { name: 'Memory', cli: 'codex', enabled: true },
+      },
+      global: {},
+      project: {},
+    });
+    session._activeManifest = {
+      runId: 'test-run',
+      resumeToken: 'main',
+      chatTarget: 'agent-dev',
+      controller: { model: null, config: [] },
+      worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+      agents: {
+        dev: { name: 'Developer', cli: 'codex', enabled: true },
+        memory: { name: 'Memory', cli: 'codex', enabled: true },
+      },
+      status: 'idle',
+    };
+    session._resumeToken = 'main';
+
+    session.applyConfig({ chatTarget: 'agent-memory' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(captured.bindResumeAliasCalls.length, 1);
+    assert.deepEqual(captured.bindResumeAliasCalls[0], {
+      repoRoot: '/tmp/fake-repo',
+      alias: 'main',
+      runId: 'test-run',
+      metadata: { chatTarget: 'agent-memory' },
+    });
   } finally {
     cleanup();
   }

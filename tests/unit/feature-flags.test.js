@@ -46,7 +46,7 @@ describe('feature flag secret overrides', () => {
     const flags = srcFlags.loadFeatureFlags(null, repoRoot);
     assert.equal(flags.enableRemoteDesktop, true);
     assert.equal(flags.enableClaudeCli, true);
-    assert.deepEqual(Object.keys(flags).sort(), ['enableClaudeCli', 'enableRemoteDesktop']);
+    assert.deepEqual(Object.keys(flags).sort(), ['enableClaudeCli', 'enablePersonalWorkspaces', 'enableRemoteDesktop']);
   });
 
   it('project secret-features.json overrides global secret-features.json', () => {

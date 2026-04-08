@@ -62,7 +62,7 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
   let savedState = options.savedState || null;
 
   const dom = new JSDOM(html, {
-    url: 'https://webview.test/',
+    url: options.url || 'https://webview.test/',
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {

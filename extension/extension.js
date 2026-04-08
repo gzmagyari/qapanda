@@ -30,6 +30,8 @@ let killChrome, killAllChrome;
 let closeAllCodexConnections;
 let cleanupPanelSession, shutdownExtensionResources;
 let createReadyGate;
+let ensureRootMcpPorts;
+let ensureNamedWorkspace, listNamedWorkspaces, createRepoRootDescriptor, normalizeWorkspaceName;
 let _cloudSyncRuntime = null;
 let _cloudSyncStartPromise = null;
 let _cloudStatusBarItem = null;
@@ -46,6 +48,14 @@ function appendPanelDebugLog(repoRoot, text) {
       fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${text}\n`);
       return;
     } catch {}
+  }
+}
+
+function remoteDesktopEnabled(context, repoRoot) {
+  try {
+    return !!loadFeatureFlags(context.extensionUri.fsPath, repoRoot).enableRemoteDesktop;
+  } catch {
+    return false;
   }
 }
 
@@ -85,6 +95,8 @@ try {
   ({ closeAllConnections: closeAllCodexConnections } = require('./src/codex-app-server'));
   ({ cleanupPanelSession, shutdownExtensionResources } = require('./lifecycle-utils'));
   ({ createReadyGate } = require('./ready-gate'));
+  ({ ensureRootMcpPorts } = require('./root-mcp-ports'));
+  ({ ensureNamedWorkspace, listNamedWorkspaces, createRepoRootDescriptor, normalizeWorkspaceName } = require('./src/named-workspaces'));
   _aDbg('All top-level requires succeeded');
 } catch (e) {
   _aDbg(`TOP-LEVEL REQUIRE FAILED: ${e.message}\n${e.stack}`);
@@ -122,12 +134,19 @@ function createPanelReadyHandler({
   panel,
   renderer,
   repoRoot,
+  stateRoot = null,
+  workspaceName = null,
+  rootKind = 'repo',
+  rootIdentity = null,
   panelConfig,
   cloudBoundary,
   context,
   extensionPath,
   loadCloudBootstrap,
   savedRunId = null,
+  savedResume = null,
+  savedAgent = null,
+  savedSaveResumeAs = null,
   debugLog,
   appendLogPrefix,
 }) {
@@ -153,8 +172,52 @@ function createPanelReadyHandler({
     const agentsData = loadMergedAgents(repoRoot, extensionPath);
     const modesData = loadMergedModes(repoRoot, extensionPath);
     const onboardingData = loadOnboarding();
-    const runId = msg.runId || savedRunId || null;
-    const reattached = runId ? await session.reattachRun(runId, { suppressUi: true }) : false;
+    const requestedResume = msg.resume || savedResume || session.getPanelContext().resume || null;
+    session.applyLaunchContext({
+      workspace: workspaceName,
+      rootKind,
+      rootIdentity,
+      resume: requestedResume,
+      saveResumeAs: savedSaveResumeAs || null,
+    });
+
+    const initialAgent = normalizeStartupAgent(msg.agent || savedAgent || null);
+    if (initialAgent) {
+      panelConfig.chatTarget = initialAgent;
+      session.applyConfig({ chatTarget: initialAgent });
+    }
+
+    let requestedRunId = msg.runId || savedRunId || null;
+    if (requestedResume) {
+      const resolvedResume = await session._resolveResumeSpecifier(requestedResume, {
+        allowPendingAlias: true,
+        chatTarget: initialAgent || null,
+      });
+      if (resolvedResume.kind === 'alias' || resolvedResume.kind === 'run') {
+        requestedRunId = resolvedResume.runId;
+        session.applyLaunchContext({
+          resume: resolvedResume.kind === 'alias' ? resolvedResume.alias : resolvedResume.runId,
+          pendingResumeAlias: null,
+          saveResumeAs: null,
+        });
+      } else if (resolvedResume.kind === 'pending-alias' || resolvedResume.kind === 'stale-alias') {
+        session.applyLaunchContext({
+          resume: resolvedResume.alias,
+          pendingResumeAlias: resolvedResume.alias,
+          saveResumeAs: null,
+        });
+        if (session.getRunId()) {
+          await session._resetAttachedRunForLaunch();
+        }
+        requestedRunId = null;
+      }
+    }
+
+    const reattached = requestedRunId ? await session.reattachRun(requestedRunId, { suppressUi: true }) : false;
+    if (initialAgent) {
+      panelConfig.chatTarget = initialAgent;
+      session.applyConfig({ chatTarget: initialAgent });
+    }
     if (reattached) Object.assign(panelConfig, session.getConfig());
 
     const initConfigMessage = {
@@ -165,6 +228,9 @@ function createPanelReadyHandler({
       modes: modesData,
       panelId: session.panelId,
       runId: reattached ? session.getRunId() : null,
+      workspace: workspaceName || null,
+      resume: session.getPanelContext().resume || null,
+      rootIdentity: rootIdentity || null,
       onboarding: { complete: isOnboardingComplete(), data: onboardingData },
       featureFlags: loadFeatureFlags(context.extensionUri.fsPath, repoRoot),
       apiCatalog: buildApiCatalogPayload(),
@@ -215,8 +281,8 @@ function createPanelReadyHandler({
     if (reattached) {
       renderer.banner(`Reattached to run ${session.getRunId()}`);
       session._restoreWaitTimer();
-    } else if (runId) {
-      renderer.banner(`Previous run ${runId} no longer exists. Starting fresh.`);
+    } else if (requestedRunId) {
+      renderer.banner(`Previous run ${requestedRunId} no longer exists. Starting fresh.`);
     }
 
     debugLog(`ready: calling prestart() with stable panelId=${session._panelId} readySessionId=${readySessionId}`);
@@ -256,6 +322,68 @@ function getRepoRoot(extensionUri) {
   }
   // Fallback: extension lives in <project>/extension, so go up one level
   return path.dirname(extensionUri.fsPath);
+}
+
+function namedWorkspacesEnabled(context, repoRoot = getRepoRoot(context.extensionUri)) {
+  try {
+    return !!loadFeatureFlags(context.extensionUri.fsPath, repoRoot).enablePersonalWorkspaces;
+  } catch {
+    return false;
+  }
+}
+
+function buildPanelTitle(rootDescriptor) {
+  if (rootDescriptor && rootDescriptor.workspaceName) {
+    return `QA Panda: ${rootDescriptor.workspaceName}`;
+  }
+  return activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
+}
+
+function normalizeStartupAgent(agent) {
+  const value = String(agent || '').trim();
+  if (!value) return null;
+  if (value === 'controller' || value === 'claude') return value;
+  return value.startsWith('agent-') ? value : `agent-${value}`;
+}
+
+async function resolvePanelRootDescriptor(context, workspaceName = null) {
+  if (workspaceName) {
+    return await ensureNamedWorkspace(workspaceName);
+  }
+  return createRepoRootDescriptor(getRepoRoot(context.extensionUri));
+}
+
+async function pickWorkspaceName() {
+  const workspaces = await listNamedWorkspaces();
+  const createItem = { label: '$(add) Create new workspace...', workspaceName: '__create__' };
+  const items = [
+    createItem,
+    ...workspaces.map((workspace) => ({
+      label: workspace.meta && workspace.meta.name ? workspace.meta.name : workspace.workspaceName,
+      description: workspace.workspaceName,
+      detail: workspace.meta && workspace.meta.defaultAgent
+        ? `Default agent: ${workspace.meta.defaultAgent}`
+        : 'Named workspace',
+      workspaceName: workspace.workspaceName,
+    })),
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Open a QA Panda named workspace',
+    ignoreFocusOut: true,
+  });
+  if (!picked) return null;
+  if (picked.workspaceName !== '__create__') {
+    return picked.workspaceName;
+  }
+  const input = await vscode.window.showInputBox({
+    prompt: 'Enter a name for the new QA Panda workspace',
+    placeHolder: 'journal',
+    ignoreFocusOut: true,
+    validateInput(value) {
+      return normalizeWorkspaceName(value) ? null : 'Workspace name must contain letters or numbers.';
+    },
+  });
+  return input ? normalizeWorkspaceName(input) : null;
 }
 
 function createVsCodeOpenExternal() {
@@ -566,6 +694,8 @@ function _activateInner(context) {
   // Start HTTP MCP servers (singletons shared across all panels)
   _aDbg('checkpoint: starting MCP servers');
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
+  const workspacesEnabled = namedWorkspacesEnabled(context, defaultRepoRoot);
+  void vscode.commands.executeCommand('setContext', 'qapanda.namedWorkspacesEnabled', workspacesEnabled);
   const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot: defaultRepoRoot });
   const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
   if (!_cloudStatusBarItem) {
@@ -576,21 +706,30 @@ function _activateInner(context) {
   }
   void refreshExtensionCloudStatusSurface(cloudBoundary, context);
   void ensureExtensionCloudSyncRuntime(cloudBoundary, context);
-  const defaultTasksFile = path.join(defaultRepoRoot, '.qpanda', 'tasks.json');
-  startTasksMcpServer(defaultTasksFile).then(r => { _tasksMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tasks MCP:', e));
-  const defaultTestsFile = path.join(defaultRepoRoot, '.qpanda', 'tests.json');
-  startTestsMcpServer(defaultTestsFile, defaultTasksFile).then(r => { _testsMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start tests MCP:', e));
-  const defaultMemoryFile = path.join(defaultRepoRoot, '.qpanda', 'MEMORY.md');
-  startMemoryMcpServer(defaultMemoryFile).then(r => { _memoryMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start memory MCP:', e));
-  _aDbg('checkpoint: calling loadFeatureFlags');
-  if (loadFeatureFlags(context.extensionUri.fsPath, defaultRepoRoot).enableRemoteDesktop) {
-    startQaDesktopMcpServer(defaultRepoRoot).then(r => { _qaDesktopMcpPort = r.port; }).catch(e => console.error('[ext] Failed to start qa-desktop MCP:', e));
-  }
+  ensureRootMcpPorts(defaultRepoRoot, {
+    startTasksMcpServer,
+    startTestsMcpServer,
+    startMemoryMcpServer,
+    startQaDesktopMcpServer,
+    enableQaDesktop: remoteDesktopEnabled(context, defaultRepoRoot),
+    onQaDesktopError: (error) => console.error('[ext] Failed to start QA Desktop MCP server:', error),
+  }).then((ports) => {
+    _tasksMcpPort = ports.tasksPort;
+    _testsMcpPort = ports.testsPort;
+    _memoryMcpPort = ports.memoryPort;
+    _qaDesktopMcpPort = ports.qaDesktopPort;
+  }).catch(e => console.error('[ext] Failed to start root MCP servers:', e));
 
   _aDbg('checkpoint: registering qapanda.open command');
-  const openCommand = vscode.commands.registerCommand('qapanda.open', () => {
+  const openCommand = vscode.commands.registerCommand('qapanda.open', async (args = {}) => {
     _aDbg('qapanda.open invoked');
-    const title = activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
+    const requestedWorkspace = args && args.workspace ? normalizeWorkspaceName(args.workspace) : null;
+    if (requestedWorkspace && !namedWorkspacesEnabled(context)) {
+      await vscode.window.showErrorMessage('Named workspaces are disabled for this QA Panda workspace.');
+      return;
+    }
+    const rootDescriptor = await resolvePanelRootDescriptor(context, requestedWorkspace);
+    const title = buildPanelTitle(rootDescriptor);
     const panel = vscode.window.createWebviewPanel(
       'qapandaPanel',
       title,
@@ -607,7 +746,17 @@ function _activateInner(context) {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.svg');
 
     const renderer = new WebviewRenderer(panel);
-    const repoRoot = getRepoRoot(context.extensionUri);
+    const repoRoot = rootDescriptor.repoRoot;
+    const ports = await ensureRootMcpPorts(repoRoot, {
+      startTasksMcpServer,
+      startTestsMcpServer,
+      startMemoryMcpServer,
+      startQaDesktopMcpServer,
+      enableQaDesktop: remoteDesktopEnabled(context, repoRoot),
+      onQaDesktopError: (error) => console.error('[ext] Failed to start QA Desktop MCP server:', error),
+    });
+    const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot });
+    const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
 
     // Per-panel mutable config (new panels start with defaults)
     const panelConfig = {};
@@ -626,19 +775,26 @@ function _activateInner(context) {
 
     const session = new SessionManager(renderer, {
       repoRoot,
+      stateRoot: rootDescriptor.stateRoot,
+      workspaceName: rootDescriptor.workspaceName || null,
+      rootKind: rootDescriptor.kind,
+      rootIdentity: rootDescriptor.rootIdentity,
+      resumeToken: args && args.resume ? String(args.resume).trim() : null,
+      saveResumeAs: args && args.saveResumeAs ? String(args.saveResumeAs).trim() : null,
       postMessage,
       initialConfig: panelConfig,
       extensionPath: context.extensionUri.fsPath,
     });
     // Pass HTTP MCP server ports so agents can reach them
-    session._tasksMcpPort = _tasksMcpPort;
-    session._testsMcpPort = _testsMcpPort;
-    session._memoryMcpPort = _memoryMcpPort;
-    session._qaDesktopMcpPort = _qaDesktopMcpPort;
+    session._tasksMcpPort = ports.tasksPort;
+    session._testsMcpPort = ports.testsPort;
+    session._memoryMcpPort = ports.memoryPort;
+    session._qaDesktopMcpPort = ports.qaDesktopPort;
     // Initialize MCP servers and agents from disk
     const extensionPath1 = context.extensionUri.fsPath;
     session.setMcpServers(loadMergedMcpServers(repoRoot));
     session.setAgents(loadMergedAgents(repoRoot, extensionPath1));
+    session.setModes(loadMergedModes(repoRoot, extensionPath1));
     // prestart() is called in the 'ready' handler below, after panelId is stabilized
 
     const _extDbg = (msg) => { try { fs.appendFileSync(path.join(os.tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] [ext] ${msg}\n`); } catch {} };
@@ -647,10 +803,17 @@ function _activateInner(context) {
       panel,
       renderer,
       repoRoot,
+      stateRoot: rootDescriptor.stateRoot,
+      workspaceName: rootDescriptor.workspaceName || null,
+      rootKind: rootDescriptor.kind,
+      rootIdentity: rootDescriptor.rootIdentity,
       panelConfig,
       cloudBoundary,
       context,
       extensionPath: extensionPath1,
+      savedResume: args && args.resume ? String(args.resume).trim() : null,
+      savedAgent: args && args.agent ? String(args.agent).trim() : null,
+      savedSaveResumeAs: args && args.saveResumeAs ? String(args.saveResumeAs).trim() : null,
       debugLog: _extDbg,
       appendLogPrefix: 'EXT-HOST',
       loadCloudBootstrap,
@@ -854,12 +1017,32 @@ function _activateInner(context) {
     );
 
     renderer.banner('\uD83D\uDC3C QA Panda interactive session');
-    renderer.banner(`Repo root: ${repoRoot}`);
+    renderer.banner(rootDescriptor.workspaceName ? `Workspace: ${rootDescriptor.workspaceName}` : `Repo root: ${repoRoot}`);
     renderer.banner('Type /help for commands, or type a message to start.');
   });
 
+  const openWorkspaceCommand = vscode.commands.registerCommand('qapanda.openWorkspace', async (args = {}) => {
+    if (!namedWorkspacesEnabled(context)) {
+      await vscode.window.showErrorMessage('Named workspaces are disabled for this QA Panda workspace.');
+      return;
+    }
+    let workspaceName = args && args.workspace ? normalizeWorkspaceName(args.workspace) : '';
+    if (!workspaceName) {
+      workspaceName = await pickWorkspaceName();
+    }
+    if (!workspaceName) {
+      return;
+    }
+    await vscode.commands.executeCommand('qapanda.open', {
+      workspace: workspaceName,
+      agent: args && args.agent ? args.agent : null,
+      resume: args && args.resume ? args.resume : null,
+      saveResumeAs: args && args.saveResumeAs ? args.saveResumeAs : null,
+    });
+  });
+
   _aDbg('checkpoint: command registered, pushing to subscriptions');
-  context.subscriptions.push(openCommand);
+  context.subscriptions.push(openCommand, openWorkspaceCommand);
 
   // Register serializer for panel restoration
   _aDbg('checkpoint: registering deserializer');
@@ -877,12 +1060,33 @@ function _activateInner(context) {
 
 async function _deserializeInner(panel, state, context) {
       const renderer = new WebviewRenderer(panel);
-      const repoRoot = getRepoRoot(context.extensionUri);
+      const savedWorkspace = state && state.workspace ? normalizeWorkspaceName(state.workspace) : null;
+      const rootDescriptor = savedWorkspace
+        ? await resolvePanelRootDescriptor(context, savedWorkspace)
+        : createRepoRootDescriptor(getRepoRoot(context.extensionUri));
+      const ignoreSavedState = Boolean(
+        state &&
+        state.rootIdentity &&
+        rootDescriptor.rootIdentity &&
+        state.rootIdentity !== rootDescriptor.rootIdentity
+      );
+      panel.title = buildPanelTitle(rootDescriptor);
+      const repoRoot = rootDescriptor.repoRoot;
+      const ports = await ensureRootMcpPorts(repoRoot, {
+        startTasksMcpServer,
+        startTestsMcpServer,
+        startMemoryMcpServer,
+        startQaDesktopMcpServer,
+        enableQaDesktop: remoteDesktopEnabled(context, repoRoot),
+        onQaDesktopError: (error) => console.error('[ext] Failed to start QA Desktop MCP server:', error),
+      });
       const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot });
       const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
       // Per-panel config restored from webview state (per-panel, not shared)
-      const panelConfig = (state && state.config) || {};
-      const savedRunId = (state && state.runId) || null;
+      const panelConfig = ignoreSavedState ? {} : ((state && state.config) || {});
+      const savedRunId = ignoreSavedState ? null : ((state && state.runId) || null);
+      const savedResume = ignoreSavedState ? null : ((state && state.resume) || null);
+      const savedAgent = panelConfig && panelConfig.chatTarget ? panelConfig.chatTarget : null;
 
       function postMessage(msg) {
         if (msg && msg.type === 'syncConfig' && msg.config) {
@@ -895,17 +1099,23 @@ async function _deserializeInner(panel, state, context) {
 
       const session = new SessionManager(renderer, {
         repoRoot,
+        stateRoot: rootDescriptor.stateRoot,
+        workspaceName: rootDescriptor.workspaceName || null,
+        rootKind: rootDescriptor.kind,
+        rootIdentity: rootDescriptor.rootIdentity,
+        resumeToken: savedResume,
         postMessage,
         initialConfig: panelConfig,
         extensionPath: context.extensionUri.fsPath,
       });
-      session._tasksMcpPort = _tasksMcpPort;
-      session._testsMcpPort = _testsMcpPort;
-      session._memoryMcpPort = _memoryMcpPort;
-      session._qaDesktopMcpPort = _qaDesktopMcpPort;
+      session._tasksMcpPort = ports.tasksPort;
+      session._testsMcpPort = ports.testsPort;
+      session._memoryMcpPort = ports.memoryPort;
+      session._qaDesktopMcpPort = ports.qaDesktopPort;
       const extensionPath2 = context.extensionUri.fsPath;
       session.setMcpServers(loadMergedMcpServers(repoRoot));
       session.setAgents(loadMergedAgents(repoRoot, extensionPath2));
+      session.setModes(loadMergedModes(repoRoot, extensionPath2));
       // prestart() is called in the 'ready' handler below, after panelId is stabilized
 
       const _extDbg2 = (msg) => { try { fs.appendFileSync(path.join(os.tmpdir(), 'cc-chrome-debug.log'), `[${new Date().toISOString()}] [ext-deser] ${msg}\n`); } catch {} };
@@ -914,11 +1124,17 @@ async function _deserializeInner(panel, state, context) {
         panel,
         renderer,
         repoRoot,
+        stateRoot: rootDescriptor.stateRoot,
+        workspaceName: rootDescriptor.workspaceName || null,
+        rootKind: rootDescriptor.kind,
+        rootIdentity: rootDescriptor.rootIdentity,
         panelConfig,
         cloudBoundary,
         context,
         extensionPath: extensionPath2,
         savedRunId,
+        savedResume,
+        savedAgent,
         debugLog: _extDbg2,
         appendLogPrefix: 'EXT-HOST(deserialized)',
         loadCloudBootstrap,

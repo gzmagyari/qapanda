@@ -29,6 +29,12 @@ const {
   isOnboardingComplete,
 } = require('./config-loader');
 const { mcpServersForRole } = require('./mcp-injector');
+const {
+  bindResumeAlias,
+  createRepoRootDescriptor,
+  ensureNamedWorkspace,
+  resolveResumeToken,
+} = require('./named-workspaces');
 const { createCloudBoundary } = require('./cloud');
 const { runCloudCommand, CLOUD_COMMAND_USAGE } = require('./cloud/cli-auth');
 const {
@@ -55,7 +61,7 @@ Commands:
   qapanda shell                   Start the interactive shell
   qapanda run <message...>        Start a new run, process until STOP, then exit
   qapanda run --print --agent dev <message>   One-shot: agent runs once, exits
-  qapanda resume <run-id> [message...]  Resume or continue an existing run
+  qapanda resume <run-id-or-alias> [message...]  Resume or continue an existing run
   qapanda status <run-id>         Show run status
   qapanda logs <run-id> [--tail n]       Show recent events
   qapanda list                    List saved runs
@@ -69,7 +75,10 @@ Commands:
 
 Common options:
   --repo <path>                      Project root directory
+  --workspace <name>                 Named QA Panda workspace
   --state-dir <path>                 State directory
+  --resume <run-id-or-alias>         Resume an existing run or alias
+  --save-resume-as <alias>           Save this run under a resume alias
   --mode <id>                        Select mode (quick-test, auto-test, quick-dev, auto-dev, auto-dev-test)
   --agent <id>                       Direct to specific agent (bypasses controller)
   --test-env <browser${_flags.enableRemoteDesktop ? '|computer' : ''}>      Test environment for modes
@@ -94,7 +103,10 @@ ${CLOUD_COMMAND_USAGE}
 
 const RUN_SPEC = {
   'repo': { key: 'repoRoot', kind: 'value' },
+  'workspace': { key: 'workspace', kind: 'value' },
   'state-dir': { key: 'stateRoot', kind: 'value' },
+  'resume': { key: 'resume', kind: 'value' },
+  'save-resume-as': { key: 'saveResumeAs', kind: 'value' },
   'codex-bin': { key: 'codexBin', kind: 'value' },
   'claude-bin': { key: 'claudeBin', kind: 'value' },
   // New flags
@@ -137,8 +149,17 @@ const RUN_SPEC = {
   'self-testing': { key: 'selfTesting', kind: 'boolean' },
 };
 
-const STATUS_SPEC = { 'state-dir': { key: 'stateRoot', kind: 'value' } };
-const LOGS_SPEC = { 'state-dir': { key: 'stateRoot', kind: 'value' }, 'tail': { key: 'tail', kind: 'value' } };
+const STATUS_SPEC = {
+  'repo': { key: 'repoRoot', kind: 'value' },
+  'workspace': { key: 'workspace', kind: 'value' },
+  'state-dir': { key: 'stateRoot', kind: 'value' },
+};
+const LOGS_SPEC = {
+  'repo': { key: 'repoRoot', kind: 'value' },
+  'workspace': { key: 'workspace', kind: 'value' },
+  'state-dir': { key: 'stateRoot', kind: 'value' },
+  'tail': { key: 'tail', kind: 'value' },
+};
 const DOCTOR_SPEC = { 'codex-bin': { key: 'codexBin', kind: 'value' }, 'claude-bin': { key: 'claudeBin', kind: 'value' } };
 
 function parseArgs(argv, spec) {
@@ -181,6 +202,48 @@ function normalizeOptions(options) {
     workerMaxTurns: parseInteger(options.workerMaxTurns, '--worker-max-turns'),
     workerMaxBudgetUsd: parseNumber(options.workerMaxBudgetUsd, '--worker-max-budget-usd'),
   };
+}
+
+async function resolveCliRootDescriptor(options) {
+  if (options.workspace) {
+    if (!_flags.enablePersonalWorkspaces) {
+      throw new Error('Named workspaces are disabled. Enable enablePersonalWorkspaces first.');
+    }
+    return await ensureNamedWorkspace(options.workspace);
+  }
+  return createRepoRootDescriptor(options.repoRoot || process.cwd());
+}
+
+async function applyRootDescriptorToOptions(options) {
+  const normalized = normalizeOptions(options || {});
+  const rootDescriptor = await resolveCliRootDescriptor(normalized);
+  return {
+    rootDescriptor,
+    options: {
+      ...normalized,
+      repoRoot: rootDescriptor.repoRoot,
+      stateRoot: normalized.stateRoot ? path.resolve(normalized.stateRoot) : rootDescriptor.stateRoot,
+      workspaceName: rootDescriptor.workspaceName || null,
+      rootKind: rootDescriptor.kind,
+      rootIdentity: rootDescriptor.rootIdentity,
+    },
+  };
+}
+
+async function bindResumeAliasIfRequested(manifest, options) {
+  const alias = options && options.saveResumeAs ? String(options.saveResumeAs).trim() : '';
+  if (!alias || !manifest || !manifest.runId) return;
+  await bindResumeAlias(manifest.repoRoot, alias, manifest.runId, {
+    chatTarget: manifest.chatTarget || null,
+  });
+  manifest.resumeToken = alias;
+}
+
+function chatTargetForSelection(agent) {
+  const value = String(agent || '').trim();
+  if (!value) return null;
+  if (value === 'controller' || value === 'claude') return value;
+  return `agent-${value}`;
 }
 
 async function ensureBinaryAvailable(binary) {
@@ -481,7 +544,7 @@ async function listModesCmd(argv) {
 
 async function runOneShot(argv) {
   const parsed = parseArgs(argv, RUN_SPEC);
-  const options = normalizeOptions(parsed.options);
+  const options = parsed.options;
   let message = parsed.positionals.join(' ').trim();
   if (!message) message = (await readAllStdin()).trim();
   if (!message) throw new Error('Missing initial user message.');
@@ -490,7 +553,7 @@ async function runOneShot(argv) {
 }
 
 async function runPreparedOneShot(message, options, { preloadCloud = true, onEvent = null, afterRun = null, printSummary = true } = {}) {
-  const normalizedOptions = normalizeOptions(options);
+  const { options: normalizedOptions } = await applyRootDescriptorToOptions(options);
 
   // Load config and apply mode/agent/MCP injection
   const config = loadConfig(normalizedOptions.repoRoot);
@@ -519,7 +582,28 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
     if (chromePort) enriched.chromeDebugPort = chromePort;
   }
 
-  const manifest = await prepareNewRun(message, enriched);
+  let manifest;
+  let pendingResumeAlias = null;
+  if (normalizedOptions.resume) {
+    const resolvedResume = await resolveResumeToken(normalizedOptions.resume, normalizedOptions.repoRoot, normalizedOptions.stateRoot, {
+      allowPendingAlias: true,
+      chatTarget: chatTargetForSelection(directAgent),
+    });
+    if (resolvedResume.kind === 'alias' || resolvedResume.kind === 'run') {
+      const runDir = await resolveRunDir(resolvedResume.runId, normalizedOptions.stateRoot);
+      manifest = await loadManifestFromDir(runDir);
+      manifest.resumeToken = resolvedResume.kind === 'alias' ? resolvedResume.alias : resolvedResume.runId;
+    } else if (resolvedResume.kind === 'pending-alias' || resolvedResume.kind === 'stale-alias') {
+      pendingResumeAlias = resolvedResume.alias;
+    } else {
+      throw new Error(`Run or alias not found: ${normalizedOptions.resume}`);
+    }
+  }
+
+  if (!manifest) {
+    manifest = await prepareNewRun(message, enriched);
+    manifest.resumeToken = pendingResumeAlias || normalizedOptions.saveResumeAs || manifest.resumeToken || null;
+  }
 
   // Pass Chrome port to manifest for placeholder replacement in buildClaudeArgs
   if (enriched.chromeDebugPort) manifest.chromeDebugPort = enriched.chromeDebugPort;
@@ -537,6 +621,7 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
     }
   } finally {
     renderer.close();
+    await bindResumeAliasIfRequested(manifest, { saveResumeAs: normalizedOptions.saveResumeAs || pendingResumeAlias });
     await saveManifest(manifest);
   }
   if (typeof afterRun === 'function') {
@@ -549,7 +634,7 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
 }
 
 async function runPreparedHostedWorkflowCloudRun(spec, options) {
-  const normalizedOptions = normalizeOptions(options);
+  const { options: normalizedOptions } = await applyRootDescriptorToOptions(options);
   const config = loadConfig(normalizedOptions.repoRoot);
   await config.cloud.preload();
   const workflowContext = await materializeHostedWorkflowRun(spec, {
@@ -600,6 +685,7 @@ async function runPreparedHostedWorkflowCloudRun(spec, options) {
     throw error;
   } finally {
     renderer.close();
+    await bindResumeAliasIfRequested(manifest, normalizedOptions);
     await saveManifest(manifest);
   }
 
@@ -648,13 +734,21 @@ async function runCloudRunCommand(argv) {
 
 async function resumeRun(argv) {
   const parsed = parseArgs(argv, RUN_SPEC);
-  const options = normalizeOptions(parsed.options);
-  const runId = parsed.positionals[0];
-  if (!runId) throw new Error('Missing run id for resume.');
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const token = parsed.positionals[0] || options.resume;
+  if (!token) throw new Error('Missing run id or alias for resume.');
   const message = parsed.positionals.slice(1).join(' ').trim();
   const stateRoot = options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd());
-  const runDir = await resolveRunDir(runId, stateRoot);
+  const resolved = await resolveResumeToken(token, options.repoRoot, stateRoot, {
+    allowPendingAlias: false,
+    chatTarget: chatTargetForSelection(options.agent),
+  });
+  if (resolved.kind !== 'alias' && resolved.kind !== 'run') {
+    throw new Error(`Run or alias not found: ${token}`);
+  }
+  const runDir = await resolveRunDir(resolved.runId, stateRoot);
   const manifest = await loadManifestFromDir(runDir);
+  manifest.resumeToken = resolved.kind === 'alias' ? resolved.alias : resolved.runId;
   const renderer = new Renderer({ rawEvents: manifest.settings.rawEvents, quiet: manifest.settings.quiet });
   renderer.requestStarted(manifest.runId);
   try {
@@ -665,6 +759,7 @@ async function resumeRun(argv) {
     }
   } finally {
     renderer.close();
+    await bindResumeAliasIfRequested(manifest, options);
     await saveManifest(manifest);
   }
   await printRunSummary(manifest);
@@ -674,7 +769,8 @@ async function showStatus(argv) {
   const parsed = parseArgs(argv, STATUS_SPEC);
   const runId = parsed.positionals[0];
   if (!runId) throw new Error('Missing run id for status.');
-  const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const stateRoot = options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd());
   const runDir = await resolveRunDir(runId, stateRoot);
   const manifest = await loadManifestFromDir(runDir);
   await printRunSummary(manifest);
@@ -684,7 +780,8 @@ async function showLogs(argv) {
   const parsed = parseArgs(argv, LOGS_SPEC);
   const runId = parsed.positionals[0];
   if (!runId) throw new Error('Missing run id for logs.');
-  const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const stateRoot = options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd());
   const tail = parseInteger(parsed.options.tail, '--tail') || 40;
   const runDir = await resolveRunDir(runId, stateRoot);
   const manifest = await loadManifestFromDir(runDir);
@@ -693,7 +790,8 @@ async function showLogs(argv) {
 
 async function showList(argv) {
   const parsed = parseArgs(argv, STATUS_SPEC);
-  const stateRoot = parsed.options.stateRoot || defaultStateRoot(process.cwd());
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const stateRoot = options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd());
   const manifests = await listRunManifests(stateRoot);
   if (manifests.length === 0) { process.stdout.write(`No runs found in ${stateRoot}\n`); return; }
   for (const manifest of manifests) {
@@ -772,7 +870,8 @@ async function main(argv) {
   if (!command || command === 'shell' || String(command).startsWith('--')) {
     const shellArgv = !command ? [] : (command === 'shell' ? rest : argv);
     const parsed = parseArgs(shellArgv, RUN_SPEC);
-    await runInteractiveShell(normalizeOptions(parsed.options));
+    const { options } = await applyRootDescriptorToOptions(parsed.options);
+    await runInteractiveShell(options);
     return;
   }
 

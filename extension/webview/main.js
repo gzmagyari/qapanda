@@ -5,7 +5,24 @@
     : (function () {
         const ws = new WebSocket('ws://' + location.host + '/ws');
         const _ready = new Promise(function (r) { ws.addEventListener('open', r); });
-        const _SK = 'qapanda_state';
+        function _stateKey() {
+          try {
+            var url = new URL(location.href);
+            var params = Array.from(new URLSearchParams(url.search || '').entries())
+              .sort(function (a, b) {
+                if (a[0] === b[0]) return String(a[1]).localeCompare(String(b[1]));
+                return String(a[0]).localeCompare(String(b[0]));
+              })
+              .map(function (entry) {
+                return encodeURIComponent(entry[0]) + '=' + encodeURIComponent(entry[1]);
+              })
+              .join('&');
+            return 'qapanda_state:' + (url.pathname || '/') + (params ? ('?' + params) : '');
+          } catch (_) {
+            return 'qapanda_state:' + (location.pathname || '/') + (location.search || '');
+          }
+        }
+        const _SK = _stateKey();
         ws.addEventListener('message', function (e) {
           try {
             var msg = JSON.parse(e.data);
@@ -3143,12 +3160,16 @@
   // ── Persisted state ─────────────────────────────────────────────────
   // messageLog: array of message objects replayed on restore
   // runId: currently attached run id
+  const USER_MESSAGE_COLLAPSE_MAX_LINES = 50;
   const VISIBLE_HISTORY_MAX_CHARS = 50_000;
   const VISIBLE_HISTORY_TRUNCATION_BANNER = 'Showing only the latest chat tail for this run.';
   const VISIBLE_HISTORY_SCREENSHOT_PLACEHOLDER = '[Screenshot]';
   const VISIBLE_HISTORY_CARD_PLACEHOLDER = '[Card]';
   let messageLog = [];
   let currentRunId = null;
+  let currentWorkspace = null;
+  let currentResumeToken = null;
+  let currentRootIdentity = null;
   let pendingVisibleHistoryTrim = false;
   let reviewState = {
     visible: false,
@@ -3166,7 +3187,50 @@
     const state = { runId: currentRunId, config: getConfig() };
     if (novncPort) state.novncPort = novncPort;
     if (panelId) state.panelId = panelId;
+    if (currentWorkspace) state.workspace = currentWorkspace;
+    if (currentResumeToken) state.resume = currentResumeToken;
+    if (currentRootIdentity) state.rootIdentity = currentRootIdentity;
+    _dbg('saveState: ' + JSON.stringify({
+      runId: state.runId || null,
+      panelId: state.panelId || null,
+      workspace: state.workspace || null,
+      resume: state.resume || null,
+      rootIdentity: state.rootIdentity || null,
+      chatTarget: state.config && state.config.chatTarget || null,
+    }));
     vscode.setState(state);
+  }
+
+  function currentAgentLaunchToken() {
+    const pendingTarget = _pendingChatTarget || null;
+    const config = getConfig();
+    const target = pendingTarget || (config && config.chatTarget ? config.chatTarget : 'controller');
+    if (!target || target === 'controller' || target === 'claude') return target || 'controller';
+    if (target.startsWith('agent-')) return target.slice('agent-'.length);
+    return target;
+  }
+
+  function normalizeLaunchTarget(agent) {
+    const value = String(agent || '').trim();
+    if (!value) return null;
+    if (value === 'controller' || value === 'claude') return value;
+    return value.startsWith('agent-') ? value : ('agent-' + value);
+  }
+
+  function parseWorkspaceLaunchFromUrl() {
+    try {
+      const params = new URLSearchParams(location.search || '');
+      const match = /^\/w\/([^/?#]+)/.exec(location.pathname || '');
+      const workspace = match ? decodeURIComponent(match[1]) : null;
+      return {
+        workspace,
+        resume: params.get('resume') || null,
+        agent: params.get('agent') || null,
+        rootIdentity: workspace ? `workspace:${String(workspace).trim().toLowerCase()}` : null,
+      };
+    } catch (_) {
+      return { workspace: null, resume: null, agent: null, rootIdentity: null };
+    }
   }
 
   function _reviewScopeAvailable(scope) {
@@ -3272,10 +3336,39 @@
     return parts.length ? parts.join(' ') : VISIBLE_HISTORY_CARD_PLACEHOLDER;
   }
 
+  function getUserMessageText(msg) {
+    if (!msg || typeof msg !== 'object') return '';
+    return String(msg.text || '');
+  }
+
+  function getUserMessageLines(text) {
+    return String(text || '').split(/\r?\n/);
+  }
+
+  function isUserMessageExpanded(msg) {
+    return !!(msg && typeof msg === 'object' && msg.type === 'user' && msg._userMessageExpanded);
+  }
+
+  function getUserMessageDisplayState(msg) {
+    const fullText = getUserMessageText(msg);
+    const lines = getUserMessageLines(fullText);
+    const isLong = lines.length > USER_MESSAGE_COLLAPSE_MAX_LINES;
+    return {
+      fullText,
+      previewText: isLong ? lines.slice(0, USER_MESSAGE_COLLAPSE_MAX_LINES).join('\n') : fullText,
+      lineCount: lines.length,
+      isLong,
+      expanded: isLong ? isUserMessageExpanded(msg) : false,
+    };
+  }
+
   function visibleHistoryText(msg) {
     if (!msg || typeof msg !== 'object') return '';
     switch (msg.type) {
-      case 'user':
+      case 'user': {
+        const state = getUserMessageDisplayState(msg);
+        return state.expanded ? state.fullText : state.previewText;
+      }
       case 'controller':
       case 'claude':
       case 'mdLine':
@@ -3473,6 +3566,11 @@
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
     suppressTargetConfirm = true;
     if (config.chatTarget !== undefined && cfgChatTarget) {
+      const desiredTarget = config.chatTarget || 'controller';
+      const hasDesiredOption = Array.from(cfgChatTarget.options || []).some((option) => option.value === desiredTarget);
+      if (!hasDesiredOption && desiredTarget && desiredTarget !== 'controller' && desiredTarget !== 'claude') {
+        _pendingChatTarget = desiredTarget;
+      }
       cfgChatTarget.value = config.chatTarget;
       if (config.chatTarget && config.chatTarget !== 'controller' && config.chatTarget !== 'claude') {
         hasExplicitChatTarget = true;
@@ -5185,6 +5283,38 @@
     return entry;
   }
 
+  function renderUserEntryContent(entry, msg) {
+    if (!entry || !msg) return;
+    const content = entry.querySelector('.entry-content');
+    if (!content) return;
+
+    const state = getUserMessageDisplayState(msg);
+    const body = document.createElement('div');
+    body.className = `user-message-body${state.isLong ? ' is-long' : ''}${state.expanded ? ' is-expanded' : ' is-collapsed'}`;
+    body.textContent = state.expanded ? state.fullText : state.previewText;
+
+    content.replaceChildren(body);
+
+    if (!state.isLong) return;
+
+    const actions = document.createElement('div');
+    actions.className = 'user-message-actions';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'user-message-toggle';
+    toggle.textContent = state.expanded ? 'Collapse' : 'Expand';
+    toggle.setAttribute('aria-expanded', state.expanded ? 'true' : 'false');
+    toggle.addEventListener('click', (event) => {
+      event.preventDefault();
+      msg._userMessageExpanded = !state.expanded;
+      renderUserEntryContent(entry, msg);
+    });
+
+    actions.appendChild(toggle);
+    content.appendChild(actions);
+  }
+
   function addBanner(text) {
     closeSection();
     const el = document.createElement('div');
@@ -5262,7 +5392,8 @@
   const handlers = {
     user(msg) {
       streamingEntry = null;
-      addEntry('User', escapeHtml(msg.text), '', msg.text);
+      const entry = addEntry('User', '', '', msg.text);
+      renderUserEntryContent(entry, msg);
     },
 
     controller(msg) {
@@ -5641,6 +5772,9 @@
       renderCloudAccount();
       renderCloudEntryScreen();
       setConfig(msg.config);
+      if (msg.workspace !== undefined) currentWorkspace = msg.workspace || null;
+      if (msg.resume !== undefined) currentResumeToken = msg.resume || null;
+      if (msg.rootIdentity !== undefined) currentRootIdentity = msg.rootIdentity || null;
       if (msg.panelId && msg.panelId !== panelId) {
         panelId = msg.panelId;
         saveState();
@@ -5690,6 +5824,14 @@
         showInitWizard();
       }
       renderCloudEntryScreen();
+      saveState();
+    },
+
+    panelContext(msg) {
+      const context = msg && msg.context ? msg.context : {};
+      currentWorkspace = context.workspace || null;
+      currentResumeToken = context.resume || null;
+      currentRootIdentity = context.rootIdentity || null;
       saveState();
     },
 
@@ -5870,14 +6012,19 @@
 
     setRunId(msg) {
       currentRunId = msg.runId || null;
+      if (currentRunId && !currentResumeToken) {
+        currentResumeToken = currentRunId;
+      }
       saveState();
     },
 
     clearRunId() {
+      _dbg('clearRunId: before runId=' + (currentRunId || 'null') + ' resume=' + (currentResumeToken || 'null'));
       currentRunId = null;
       removeLiveQaReportCardSlot();
       hideProgressBubble();
       saveState();
+      _dbg('clearRunId: after runId=' + (currentRunId || 'null') + ' resume=' + (currentResumeToken || 'null'));
     },
 
     progressFull(msg) {
@@ -6166,21 +6313,54 @@
   // Chat history is rebuilt from transcript.jsonl on disk when the extension
   // host processes the 'ready' message and calls sendTranscript().
   const savedState = vscode.getState();
+  const launchParams = parseWorkspaceLaunchFromUrl();
   _dbg('STATE: savedState=' + JSON.stringify(savedState ? { runId: savedState.runId, panelId: savedState.panelId } : null));
+  const shouldIgnoreSavedState = Boolean(
+    savedState &&
+    (
+      (launchParams.rootIdentity &&
+        savedState.rootIdentity !== launchParams.rootIdentity) ||
+      (launchParams.resume &&
+        savedState.resume !== launchParams.resume)
+    )
+  );
+  if (launchParams.workspace) {
+    currentWorkspace = launchParams.workspace;
+    currentRootIdentity = launchParams.rootIdentity;
+  }
+  if (launchParams.resume) {
+    currentResumeToken = launchParams.resume;
+  }
+  if (launchParams.agent) {
+    const launchTarget = normalizeLaunchTarget(launchParams.agent);
+    if (launchTarget) {
+      _pendingChatTarget = launchTarget;
+      hasExplicitChatTarget = true;
+    }
+  }
   if (savedState) {
-    currentRunId = savedState.runId || null;
-    if (savedState.config) {
+    if (!shouldIgnoreSavedState) {
+      currentRunId = savedState.runId || null;
+      if (savedState.resume && !currentResumeToken) currentResumeToken = savedState.resume;
+      if (savedState.workspace && !currentWorkspace) currentWorkspace = savedState.workspace;
+      if (savedState.rootIdentity && !currentRootIdentity) currentRootIdentity = savedState.rootIdentity;
+    }
+    if (!shouldIgnoreSavedState && savedState.config) {
+      const restoredConfig = { ...savedState.config };
       // Save chatTarget for later — dropdown options aren't populated yet (agents arrive in initConfig)
-      if (savedState.config.chatTarget) {
-        _pendingChatTarget = savedState.config.chatTarget;
+      if (restoredConfig.chatTarget && !launchParams.agent) {
+        _pendingChatTarget = restoredConfig.chatTarget;
         hasExplicitChatTarget = true;
       }
-      setConfig(savedState.config);
+      if (launchParams.agent) {
+        delete restoredConfig.chatTarget;
+      }
+      setConfig(restoredConfig);
     }
-    if (savedState.panelId) {
+    if (!shouldIgnoreSavedState && savedState.panelId) {
       panelId = savedState.panelId;
     }
-    if (savedState.novncPort) {
+    if (!shouldIgnoreSavedState && savedState.novncPort) {
       novncPort = savedState.novncPort;
       updateComputerTab();
     }
@@ -6196,7 +6376,10 @@
   const COMMANDS = [
     { cmd: '/help', desc: 'Show help' },
     { cmd: '/new', desc: 'Start a new run' },
-    { cmd: '/resume', desc: 'Attach to an existing run' },
+    { cmd: '/resume', desc: 'Attach to an existing run or alias' },
+    { cmd: '/alias', desc: 'Save current run as an alias' },
+    { cmd: '/unalias', desc: 'Remove a saved alias' },
+    { cmd: '/aliases', desc: 'List saved aliases' },
     { cmd: '/run', desc: 'Continue interrupted request' },
     { cmd: '/status', desc: 'Show run status' },
     { cmd: '/list', desc: 'List saved runs' },
@@ -6466,7 +6649,16 @@
   _dbg('PRE-READY DOM: wizard.display="' + (wizardEl ? wizardEl.style.display : 'null') + '"');
   _dbg('READY sent: runId=' + currentRunId + ' panelId=' + panelId + ' readySessionId=' + readySessionId);
   function postReady() {
-    vscode.postMessage({ type: 'ready', runId: currentRunId, panelId: panelId, readySessionId: readySessionId });
+    vscode.postMessage({
+      type: 'ready',
+      runId: currentRunId,
+      panelId: panelId,
+      readySessionId: readySessionId,
+      workspace: currentWorkspace,
+      resume: currentResumeToken,
+      rootIdentity: currentRootIdentity,
+      agent: currentAgentLaunchToken(),
+    });
   }
   postReady();
   readyRetryTimer = setInterval(() => {

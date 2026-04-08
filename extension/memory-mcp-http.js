@@ -4,26 +4,34 @@
 const { createMcpHttpServer } = require('./mcp-http-server');
 const { TOOLS, handleToolCall } = require('./memory-mcp-core');
 
-let _memoryFile = '';
-let _server = null;
+const _servers = new Map();
 
 async function startMemoryMcpServer(memoryFile) {
-  if (_server) return _server;
-  _memoryFile = memoryFile;
+  const resolvedMemoryFile = require('node:path').resolve(memoryFile);
+  if (_servers.has(resolvedMemoryFile)) return _servers.get(resolvedMemoryFile);
   const result = await createMcpHttpServer({
     tools: TOOLS,
-    handleToolCall: (name, args) => handleToolCall(name, args, _memoryFile),
+    handleToolCall: (name, args) => handleToolCall(name, args, resolvedMemoryFile),
     serverName: 'cc-memory',
   });
-  _server = result;
-  console.error(`[cc-memory-http] Started on port ${result.port}, memory file: ${_memoryFile}`);
+  _servers.set(resolvedMemoryFile, result);
+  console.error(`[cc-memory-http] Started on port ${result.port}, memory file: ${resolvedMemoryFile}`);
   return result;
 }
 
-function stopMemoryMcpServer() {
-  if (_server) {
-    _server.close();
-    _server = null;
+async function stopMemoryMcpServer(memoryFile = null) {
+  if (memoryFile) {
+    const resolvedMemoryFile = require('node:path').resolve(memoryFile);
+    const existing = _servers.get(resolvedMemoryFile);
+    if (!existing) return;
+    await existing.close();
+    _servers.delete(resolvedMemoryFile);
+    return;
+  }
+  const servers = Array.from(_servers.values());
+  _servers.clear();
+  for (const server of servers) {
+    await server.close();
   }
 }
 

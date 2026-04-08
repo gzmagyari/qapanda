@@ -10,6 +10,9 @@ const { parseArgs, normalizeOptions, loadConfig, applyConfigToOptions } = requir
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 const RUN_SPEC = {
+  'workspace': { key: 'workspace', kind: 'value' },
+  'resume': { key: 'resume', kind: 'value' },
+  'save-resume-as': { key: 'saveResumeAs', kind: 'value' },
   'mode': { key: 'mode', kind: 'value' },
   'agent': { key: 'agent', kind: 'value' },
   'test-env': { key: 'testEnv', kind: 'value' },
@@ -73,6 +76,13 @@ describe('CLI flag parsing', () => {
   it('parses --wait flag', () => {
     const { options } = parseArgs(['--wait', '5m'], RUN_SPEC);
     assert.equal(options.wait, '5m');
+  });
+
+  it('parses named workspace and resume alias flags', () => {
+    const { options } = parseArgs(['--workspace', 'journal', '--resume', 'main', '--save-resume-as', 'planner'], RUN_SPEC);
+    assert.equal(options.workspace, 'journal');
+    assert.equal(options.resume, 'main');
+    assert.equal(options.saveResumeAs, 'planner');
   });
 
   it('parses --no-mcp-inject flag', () => {

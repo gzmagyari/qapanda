@@ -189,7 +189,7 @@ function handleToolCall(tasksFile, name, args) {
 
 // --- Server lifecycle ---
 
-let _server = null;
+const _servers = new Map();
 
 /**
  * Start the HTTP tasks MCP server.
@@ -197,7 +197,11 @@ let _server = null;
  * @returns {Promise<{port: number, close: function}>}
  */
 async function startTasksMcpServer(tasksFile) {
-  if (_server) return { port: _server.port, close: _server.close };
+  const key = path.resolve(tasksFile);
+  if (_servers.has(key)) {
+    const existing = _servers.get(key);
+    return { port: existing.port, close: existing.close };
+  }
 
   const result = await createMcpHttpServer({
     tools: TOOLS,
@@ -205,15 +209,25 @@ async function startTasksMcpServer(tasksFile) {
     serverName: 'cc-tasks',
   });
 
-  _server = result;
+  _servers.set(key, result);
   console.log(`[cc-tasks-http] Started on port ${result.port}, tasks file: ${tasksFile}`);
   return { port: result.port, close: result.close };
 }
 
-async function stopTasksMcpServer() {
-  if (!_server) return;
-  await _server.close();
-  _server = null;
+async function stopTasksMcpServer(tasksFile = null) {
+  if (tasksFile) {
+    const key = path.resolve(tasksFile);
+    const existing = _servers.get(key);
+    if (!existing) return;
+    await existing.close();
+    _servers.delete(key);
+    return;
+  }
+  const servers = Array.from(_servers.values());
+  _servers.clear();
+  for (const server of servers) {
+    await server.close();
+  }
 }
 
 module.exports = { startTasksMcpServer, stopTasksMcpServer };
