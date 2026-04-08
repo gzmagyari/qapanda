@@ -8,6 +8,22 @@ function multiline(count, prefix = 'line') {
   return Array.from({ length: count }, (_, index) => `${prefix}-${index + 1}`).join('\n');
 }
 
+function passingTestCard(title = 'Passing test', overrides = {}) {
+  return {
+    type: 'testCard',
+    label: 'QA Engineer (Browser)',
+    data: {
+      test_id: 'test-1',
+      title,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      steps: [{ name: 'Step 1', status: 'pass' }],
+      ...overrides,
+    },
+  };
+}
+
 beforeEach(() => {
   wv = createWebviewDom({ savedState: { currentMode: 'dev', runId: 'run-1' } });
   wv.postMessage(sampleInitConfig({ runId: 'run-1' }));
@@ -177,6 +193,67 @@ describe('Chat messages', () => {
     wv.postMessage({ type: 'banner', text: 'Reattached to run abc' });
     const msgs = wv.document.getElementById('messages');
     assert.ok(msgs.innerHTML.includes('Reattached to run abc'));
+  });
+
+  it('live passing test cards trigger confetti once', () => {
+    wv.postMessage(passingTestCard());
+    assert.equal(wv.confettiCount(), 1);
+  });
+
+  it('failing or zero-pass test cards do not trigger confetti', () => {
+    wv.postMessage({
+      type: 'testCard',
+      label: 'QA Engineer (Browser)',
+      data: { title: 'Failing test', passed: 0, failed: 1, skipped: 0, steps: [{ name: 'Step 1', status: 'fail' }] },
+    });
+    wv.postMessage({
+      type: 'testCard',
+      label: 'QA Engineer (Browser)',
+      data: { title: 'Untested test', passed: 0, failed: 0, skipped: 1, steps: [{ name: 'Step 1', status: 'skip' }] },
+    });
+    assert.equal(wv.confettiCount(), 0);
+  });
+
+  it('transcriptHistory replay renders passing test cards without confetti', () => {
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [passingTestCard('Replay pass')],
+    });
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('Replay pass'));
+    assert.equal(wv.confettiCount(), 0);
+  });
+
+  it('visible-history trim replay does not retrigger confetti for a recent passing test card', async () => {
+    for (let index = 0; index < 45; index += 1) {
+      wv.postMessage({ type: 'user', text: `prefill-${index} ` + 'x'.repeat(900) });
+    }
+    wv.postMessage(passingTestCard('Trim replay pass', { test_id: 'test-trim' }));
+    assert.equal(wv.confettiCount(), 1);
+
+    for (let index = 0; index < 20; index += 1) {
+      wv.postMessage({ type: 'user', text: `tail-${index} ` + 'y'.repeat(1100) });
+    }
+    await wv.flush();
+
+    const msgs = wv.document.getElementById('messages');
+    assert.ok(msgs.textContent.includes('Showing only the latest chat tail for this run.'));
+    assert.ok(msgs.textContent.includes('Trim replay pass'));
+    assert.equal(wv.confettiCount(), 1);
+  });
+
+  it('identical live passing test cards inside the dedupe window trigger confetti only once', () => {
+    const card = passingTestCard('Duplicate pass', { test_id: 'test-dup' });
+    wv.postMessage(card);
+    wv.postMessage(passingTestCard('Duplicate pass', { test_id: 'test-dup' }));
+    assert.equal(wv.confettiCount(), 1);
+  });
+
+  it('different live passing test cards still trigger confetti separately', () => {
+    wv.postMessage(passingTestCard('Pass A', { test_id: 'test-a' }));
+    wv.postMessage(passingTestCard('Pass B', { test_id: 'test-b' }));
+    assert.equal(wv.confettiCount(), 2);
   });
 
   it('keeps only the latest visible history tail in the live webview', async () => {

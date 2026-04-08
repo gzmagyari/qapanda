@@ -3165,12 +3165,15 @@
   const VISIBLE_HISTORY_TRUNCATION_BANNER = 'Showing only the latest chat tail for this run.';
   const VISIBLE_HISTORY_SCREENSHOT_PLACEHOLDER = '[Screenshot]';
   const VISIBLE_HISTORY_CARD_PLACEHOLDER = '[Card]';
+  const TEST_CARD_CONFETTI_DEDUPE_MS = 10_000;
   let messageLog = [];
   let currentRunId = null;
   let currentWorkspace = null;
   let currentResumeToken = null;
   let currentRootIdentity = null;
   let pendingVisibleHistoryTrim = false;
+  let suppressCelebrationEffects = 0;
+  const recentCelebratedTestCards = new Map();
   let reviewState = {
     visible: false,
     isGitRepo: false,
@@ -3444,13 +3447,15 @@
     }
     suppressUiLog = true;
     try {
-      for (const entry of messages) {
-        const handler = handlers[entry.type];
-        if (handler) {
-          handler(entry);
-          messageLog.push(entry);
+      withSuppressedCelebrationEffects(() => {
+        for (const entry of messages) {
+          const handler = handlers[entry.type];
+          if (handler) {
+            handler(entry);
+            messageLog.push(entry);
+          }
         }
-      }
+      });
     } finally {
       suppressUiLog = false;
     }
@@ -4350,6 +4355,59 @@
       requestAnimationFrame(animate);
     }
     animate();
+  }
+
+  function withSuppressedCelebrationEffects(fn) {
+    suppressCelebrationEffects += 1;
+    try {
+      return fn();
+    } finally {
+      suppressCelebrationEffects = Math.max(0, suppressCelebrationEffects - 1);
+    }
+  }
+
+  function buildTestCardCelebrationKey(msg) {
+    const data = (msg && msg.data) || {};
+    const steps = Array.isArray(data.steps)
+      ? data.steps.map((step) => {
+          const stepId = step && (step.id || step.name || '');
+          const status = step && step.status ? String(step.status) : '';
+          return `${stepId}:${status}`;
+        }).join('|')
+      : '';
+    return [
+      data.test_id || '',
+      data.title || '',
+      Number(data.passed) || 0,
+      Number(data.failed) || 0,
+      Number(data.skipped) || 0,
+      steps,
+    ].join('::');
+  }
+
+  function pruneRecentCelebratedTestCards(now) {
+    for (const [key, ts] of recentCelebratedTestCards.entries()) {
+      if ((now - ts) >= TEST_CARD_CONFETTI_DEDUPE_MS) {
+        recentCelebratedTestCards.delete(key);
+      }
+    }
+  }
+
+  function shouldCelebrateTestCard(msg) {
+    if (suppressCelebrationEffects > 0) return false;
+    const data = (msg && msg.data) || {};
+    const passed = Number(data.passed) || 0;
+    const failed = Number(data.failed) || 0;
+    if (!(failed === 0 && passed > 0)) return false;
+    const now = Date.now();
+    pruneRecentCelebratedTestCards(now);
+    const key = buildTestCardCelebrationKey(msg);
+    const lastSeen = recentCelebratedTestCards.get(key);
+    if (lastSeen && (now - lastSeen) < TEST_CARD_CONFETTI_DEDUPE_MS) {
+      return false;
+    }
+    recentCelebratedTestCards.set(key, now);
+    return true;
   }
 
   function _formatRelativeTime(iso) {
@@ -5497,11 +5555,7 @@
       if (!suppressUiLog) {
         vscode.postMessage({ type: 'logChatEntry', entry: { type: 'testCard', label: msg.label || 'QA', data: d } });
       }
-
-      // Confetti on all-pass!
-      var passed = d.passed || 0;
-      var failed = d.failed || 0;
-      if (failed === 0 && passed > 0) triggerConfetti();
+      if (shouldCelebrateTestCard(msg)) triggerConfetti();
     },
 
     bugCard(msg) {
@@ -6046,13 +6100,15 @@
       if (Array.isArray(msg.messages)) {
         suppressUiLog = true;
         try {
-          for (const entry of msg.messages) {
-            const handler = handlers[entry.type];
-            if (handler) {
-              handler(entry);
-              messageLog.push(entry);
+          withSuppressedCelebrationEffects(() => {
+            for (const entry of msg.messages) {
+              const handler = handlers[entry.type];
+              if (handler) {
+                handler(entry);
+                messageLog.push(entry);
+              }
             }
-          }
+          });
         } finally {
           suppressUiLog = false;
         }

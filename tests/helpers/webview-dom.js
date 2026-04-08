@@ -68,6 +68,20 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
     beforeParse(window) {
       // Skip onboarding animations in tests
       window._noOnboardAnimation = true;
+      window.requestAnimationFrame = (cb) => window.setTimeout(() => cb(Date.now()), 0);
+      window.cancelAnimationFrame = (id) => window.clearTimeout(id);
+      if (window.HTMLCanvasElement && window.HTMLCanvasElement.prototype) {
+        window.HTMLCanvasElement.prototype.getContext = () => ({
+          clearRect() {},
+          save() {},
+          translate() {},
+          rotate() {},
+          fillRect() {},
+          restore() {},
+          globalAlpha: 1,
+          fillStyle: '',
+        });
+      }
       // Mock acquireVsCodeApi — the only VSCode-specific global
       window.acquireVsCodeApi = () => ({
         postMessage: (msg) => messages.push(msg),
@@ -134,6 +148,9 @@ ${bodyHtml.slice(bodyHtml.indexOf('<body>'))}
     },
     async flush() {
       await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+    },
+    confettiCount() {
+      return dom.window.document.querySelectorAll('.confetti-canvas').length;
     },
     /** Clean up JSDOM */
     cleanup() {
