@@ -42,7 +42,7 @@ const {
   removeResumeAlias,
   resolveResumeToken,
 } = require('./named-workspaces');
-const { PROVIDERS } = require('./llm-client');
+const { listApiProviders, loadProviderSettings, isKnownApiProvider } = require('./api-provider-registry');
 const { compactApiSessionHistory, currentApiSessionTarget, describeCompactionResult } = require('./api-compaction');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000;
@@ -846,8 +846,10 @@ async function runInteractiveShell(options = {}) {
 
         if (command === '/api-provider') {
           if (!rest) { renderer.banner(`API provider: ${apiProvider}`); continue; }
-          if (!Object.prototype.hasOwnProperty.call(PROVIDERS, rest)) {
-            renderer.banner(`Unknown API provider: ${rest}`);
+          const settings = loadProviderSettings();
+          if (!isKnownApiProvider(rest, settings) && rest !== 'custom') {
+            const known = listApiProviders(settings).map((provider) => provider.id).join(', ');
+            renderer.banner(`Unknown API provider: ${rest}${known ? `. Known providers: ${known}` : ''}`);
             continue;
           }
           apiProvider = rest;

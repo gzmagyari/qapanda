@@ -233,7 +233,7 @@ function createPanelReadyHandler({
       rootIdentity: rootIdentity || null,
       onboarding: { complete: isOnboardingComplete(), data: onboardingData },
       featureFlags: loadFeatureFlags(context.extensionUri.fsPath, repoRoot),
-      apiCatalog: buildApiCatalogPayload(),
+      apiCatalog: buildApiCatalogPayload(loadSettings()),
       cloud,
       cloudSession: initialCloudSession,
       cloudStatus: initialCloudStatus,
@@ -698,9 +698,11 @@ async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, con
 
 async function postSettingsData(panel, session, cloudBoundary, context) {
   const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+  const settings = loadSettings();
   const payload = {
     type: 'settingsData',
-    settings: loadSettings(),
+    settings,
+    apiCatalog: buildApiCatalogPayload(settings),
     defaults: buildSelfTestingPrompt.DEFAULTS,
     cloudSession,
     cloudStatus: await buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),

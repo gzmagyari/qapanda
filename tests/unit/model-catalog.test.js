@@ -35,4 +35,17 @@ describe('model catalog', () => {
     assert.notEqual(payload.models.openai, API_PROVIDER_MODELS.openai);
     assert.notEqual(payload.thinking.openai, API_PROVIDER_THINKING.openai);
   });
+
+  it('buildApiCatalogPayload includes named custom providers with custom catalog behavior', () => {
+    const payload = buildApiCatalogPayload({
+      customProviders: [
+        { id: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
+      ],
+    });
+    const lmstudio = payload.providers.find((provider) => provider.id === 'lmstudio');
+    assert.ok(lmstudio);
+    assert.equal(lmstudio.name, 'LM Studio');
+    assert.equal(lmstudio.catalogKey, 'custom');
+    assert.equal(lmstudio.apiKeyOptional, true);
+  });
 });

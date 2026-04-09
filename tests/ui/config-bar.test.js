@@ -1,6 +1,7 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { createWebviewDom, sampleInitConfig } = require('../helpers/webview-dom');
+const { buildApiCatalogPayload } = require('../../src/model-catalog');
 
 let wv;
 
@@ -83,5 +84,48 @@ describe('Config bar', () => {
     assert.ok(values.includes('gpt-5.4'));
     assert.ok(values.includes('gpt-5.4-mini'));
     assert.ok(values.includes('_custom'));
+  });
+
+  it('includes named custom providers and auto-selects custom model inputs', async () => {
+    wv.postMessage(sampleInitConfig({
+      apiCatalog: buildApiCatalogPayload({
+        customProviders: [
+          { id: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
+        ],
+      }),
+      config: { controllerCli: 'api', workerCli: 'api', apiProvider: 'lmstudio' },
+    }));
+    await wv.flush();
+
+    const provider = wv.document.getElementById('cfg-api-provider');
+    const controllerModel = wv.document.getElementById('cfg-controller-model');
+    const workerModel = wv.document.getElementById('cfg-worker-model');
+    const controllerCustom = wv.document.getElementById('cfg-controller-custom-model');
+    const workerCustom = wv.document.getElementById('cfg-worker-custom-model');
+
+    assert.ok(Array.from(provider.options).some((option) => option.value === 'lmstudio'));
+    assert.equal(provider.value, 'lmstudio');
+    assert.equal(controllerModel.value, '_custom');
+    assert.equal(workerModel.value, '_custom');
+    assert.equal(controllerCustom.classList.contains('visible'), true);
+    assert.equal(workerCustom.classList.contains('visible'), true);
+  });
+
+  it('shows named custom providers in the agent editor provider dropdown', async () => {
+    wv.postMessage(sampleInitConfig({
+      apiCatalog: buildApiCatalogPayload({
+        customProviders: [
+          { id: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
+        ],
+      }),
+    }));
+    await wv.flush();
+
+    wv.click('.agent-add-btn[data-scope="project"]');
+    await wv.flush();
+
+    const provider = wv.document.getElementById('agent-f-provider');
+    assert.ok(provider, 'agent provider select should exist');
+    assert.ok(Array.from(provider.options).some((option) => option.value === 'lmstudio'));
   });
 });

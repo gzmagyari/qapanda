@@ -442,7 +442,7 @@ wss.on('connection', (ws) => {
           rootIdentity: attachedEntry.rootIdentity || null,
           onboarding: { complete: isOnboardingComplete(), data: onboardingData },
           featureFlags: loadFeatureFlags(path.join(__dirname, '..'), entryRepoRoot),
-          apiCatalog: buildApiCatalogPayload(),
+          apiCatalog: buildApiCatalogPayload(loadSettings()),
           cloud,
         });
 
@@ -515,14 +515,25 @@ wss.on('connection', (ws) => {
       }
 
       if (msg.type === 'settingsLoad') {
-        entryPostMessage({ type: 'settingsData', settings: loadSettings(), defaults: buildSelfTestingPrompt.DEFAULTS });
+        const settings = loadSettings();
+        entryPostMessage({
+          type: 'settingsData',
+          settings,
+          apiCatalog: buildApiCatalogPayload(settings),
+          defaults: buildSelfTestingPrompt.DEFAULTS,
+        });
         return;
       }
 
       if (msg.type === 'settingsSave') {
         const updated = saveSettings(msg.settings || {});
         attachedEntry.session._selfTesting = !!updated.selfTesting;
-        entryPostMessage({ type: 'settingsData', settings: updated, defaults: buildSelfTestingPrompt.DEFAULTS });
+        entryPostMessage({
+          type: 'settingsData',
+          settings: updated,
+          apiCatalog: buildApiCatalogPayload(updated),
+          defaults: buildSelfTestingPrompt.DEFAULTS,
+        });
         return;
       }
 

@@ -4,6 +4,7 @@
  * Uses the unified tool bridge for all tool execution (built-in + MCP).
  */
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
+const { resolveRuntimeApiProvider } = require('./api-provider-registry');
 const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
@@ -80,10 +81,17 @@ async function runApiWorkerTurn({
 
   // Resolve API config: agent-level overrides → manifest worker config → manifest global
   const apiConfig = manifest.worker.apiConfig || manifest.apiConfig || {};
-  const provider = (agentConfig && agentConfig.provider) || apiConfig.provider || 'openrouter';
-  const apiKey = resolveApiKey(provider, apiConfig.apiKey);
-  const baseURL = apiConfig.baseURL || null;
-  const model = (agentConfig && agentConfig.model) || apiConfig.model || defaultModelForProvider(provider);
+  const providerId = (agentConfig && agentConfig.provider) || apiConfig.provider || 'openrouter';
+  const resolvedProvider = resolveRuntimeApiProvider(providerId);
+  if (!resolvedProvider) {
+    throw new Error(`Unknown API provider "${providerId}". Configure it in Settings -> Custom Providers or select a built-in provider.`);
+  }
+  const provider = resolvedProvider.clientProvider;
+  const apiKey = resolveApiKey(resolvedProvider.id, apiConfig.apiKey);
+  const baseURL = resolvedProvider.custom
+    ? resolvedProvider.baseURL
+    : ((resolvedProvider.legacy ? apiConfig.baseURL : (apiConfig.baseURL || resolvedProvider.baseURL)) || null);
+  const model = (agentConfig && agentConfig.model) || apiConfig.model || defaultModelForProvider(providerId);
   const thinking = (agentConfig && agentConfig.thinking) || apiConfig.thinking || null;
 
   if (!model) {
@@ -183,7 +191,7 @@ async function runApiWorkerTurn({
         backend,
         requestId: request.id,
         loopIndex: loop.index,
-        provider,
+        provider: providerId,
         apiKey,
         baseURL,
         model,
@@ -200,8 +208,8 @@ async function runApiWorkerTurn({
     ];
   }
 
-  emitEvent({ source: 'worker-api', type: 'start', agentId, model, provider });
-  renderer.claude(`Using ${provider}/${model}`);
+  emitEvent({ source: 'worker-api', type: 'start', agentId, model, provider: providerId });
+  renderer.claude(`Using ${providerId}/${model}`);
 
   let iterations = 0;
   let finalText = '';

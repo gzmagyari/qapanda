@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { loadAllTools, executeTool, closeAll, _mcpToolToOpenAI } = require('../../src/mcp-tool-bridge');
+const { createMcpHttpServer } = require('../../extension/mcp-http-server');
+const { loadAllTools, executeTool, closeAll, _mcpToolToOpenAI, _sanitizeToolNamePart } = require('../../src/mcp-tool-bridge');
 
 let tmpDir;
 let tmpDir2;
@@ -48,6 +49,18 @@ describe('_mcpToolToOpenAI', () => {
     assert.equal(result.function.description, 'Read a resource');
     assert.equal(result._mcpServer, 'my-server');
     assert.equal(result._mcpOriginalName, 'read_resource');
+  });
+
+  it('sanitizes dotted MCP tool names for strict OpenAI-compatible providers', () => {
+    const mcpTool = {
+      name: 'chat.search',
+      description: 'Search chat history',
+      inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+    };
+    const result = _mcpToolToOpenAI('chat-search', mcpTool);
+    assert.equal(result.function.name, 'chat_search__chat_x2e_search');
+    assert.match(result.function.name, /^[a-zA-Z0-9_-]+$/);
+    assert.equal(_sanitizeToolNamePart('chat.list_sessions'), 'chat_x2e_list_sessions');
   });
 });
 
@@ -149,5 +162,44 @@ describe('executeTool — routes through stdio MCP', () => {
     );
     assert.equal(result.isError, true);
     assert.ok(resultText(result).includes('Error executing tool'));
+  });
+
+  it('routes sanitized dotted HTTP MCP tool names back to the original MCP name', async () => {
+    const server = await createMcpHttpServer({
+      serverName: 'chat-search',
+      tools: [{
+        name: 'chat.search',
+        description: 'Search chat history',
+        inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      }],
+      handleToolCall(name, args) {
+        return JSON.stringify({ name, args });
+      },
+    });
+    try {
+      const config = {
+        'chat-search': { url: `http://127.0.0.1:${server.port}/mcp` },
+      };
+      const tools = await loadAllTools(config, tmpDir);
+      const dottedTool = tools.find((tool) => tool.function && tool.function.name === 'chat_search__chat_x2e_search');
+      assert.ok(dottedTool, 'expected chat.search tool to be loaded');
+      assert.match(dottedTool.function.name, /^[a-zA-Z0-9_-]+$/);
+
+      const result = await executeTool(
+        {
+          function: {
+            name: dottedTool.function.name,
+            arguments: JSON.stringify({ query: 'hello' }),
+          },
+        },
+        config,
+        tmpDir
+      );
+      const text = resultText(result);
+      assert.ok(text.includes('chat.search'));
+      assert.ok(text.includes('hello'));
+    } finally {
+      await server.close();
+    }
   });
 });

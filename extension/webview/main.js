@@ -202,6 +202,10 @@
   const settingPromptAgent = document.getElementById('setting-prompt-agent');
   const settingsPromptsSave = document.getElementById('settings-prompts-save');
   const settingsPromptsReset = document.getElementById('settings-prompts-reset');
+  const customProviderList = document.getElementById('custom-provider-list');
+  const customProviderAdd = document.getElementById('custom-provider-add');
+  const customProviderSave = document.getElementById('custom-provider-save');
+  const customProviderStatus = document.getElementById('custom-provider-status');
   const cloudAccountSection = document.getElementById('cloud-account-section');
   const cloudAccountState = document.getElementById('cloud-account-state');
   const cloudAccountDesc = document.getElementById('cloud-account-desc');
@@ -238,6 +242,7 @@
   const cloudAccountLogout = document.getElementById('cloud-account-logout');
   const appInfoText = document.getElementById('app-info-text');
   const appInfoEnabled = document.getElementById('app-info-enabled');
+  const BUILTIN_API_PROVIDER_IDS = ['openai', 'anthropic', 'openrouter', 'gemini'];
   const appInfoSave = document.getElementById('app-info-save');
   const appInfoStatus = document.getElementById('app-info-status');
   const memoryText = document.getElementById('memory-text');
@@ -890,6 +895,167 @@
     });
   }
 
+  function sanitizeProviderIdCandidate(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function buildCustomProviderDraft(provider) {
+    return {
+      id: provider && provider.id ? String(provider.id) : '',
+      name: provider && provider.name ? String(provider.name) : '',
+      baseURL: provider && provider.baseURL ? String(provider.baseURL) : '',
+    };
+  }
+
+  function getCustomProviderRows() {
+    return Array.from((customProviderList && customProviderList.querySelectorAll('.custom-provider-card')) || []).map(function(row) {
+      const nameInput = row.querySelector('[data-field="name"]');
+      const idInput = row.querySelector('[data-field="id"]');
+      const baseURLInput = row.querySelector('[data-field="baseURL"]');
+      const apiKeyInput = row.querySelector('[data-field="apiKey"]');
+      const name = nameInput ? nameInput.value : '';
+      const id = idInput ? idInput.value : '';
+      const providerId = sanitizeProviderIdCandidate(id || name);
+      return {
+        id: id,
+        name: name,
+        baseURL: baseURLInput ? baseURLInput.value : '',
+        apiKey: apiKeyInput ? apiKeyInput.value : '',
+        normalizedId: providerId,
+      };
+    });
+  }
+
+  function setCustomProviderStatus(text, isError) {
+    if (!customProviderStatus) return;
+    customProviderStatus.textContent = text || '';
+    customProviderStatus.style.color = isError ? 'var(--vscode-errorForeground, #f48771)' : '';
+  }
+
+  function snapshotCustomProviderDraftState() {
+    var rows = getCustomProviderRows()
+      .filter(function(row) { return row.name || row.id || row.baseURL || row.apiKey; });
+    var nextApiKeys = {};
+    Object.keys(_apiKeys || {}).forEach(function(key) {
+      if (BUILTIN_API_PROVIDER_IDS.indexOf(key) !== -1) nextApiKeys[key] = _apiKeys[key];
+    });
+    rows.forEach(function(row) {
+      if (row.normalizedId) nextApiKeys[row.normalizedId] = row.apiKey || '';
+    });
+    _apiKeys = nextApiKeys;
+    _customProviders = rows.map(function(row) {
+      return buildCustomProviderDraft({
+        id: row.normalizedId || row.id || row.name,
+        name: row.name,
+        baseURL: row.baseURL,
+      });
+    });
+  }
+
+  function renderCustomProviderSettings() {
+    if (!customProviderList) return;
+    customProviderList.innerHTML = '';
+    if (!_customProviders || _customProviders.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'settings-item';
+      empty.innerHTML = '<div class="settings-item-info"><div class="settings-item-name">No custom providers yet</div><div class="settings-item-desc">Add a named OpenAI-compatible endpoint to use it from API agents and the config bar.</div></div>';
+      customProviderList.appendChild(empty);
+      return;
+    }
+    _customProviders.forEach(function(provider) {
+      const providerId = provider && provider.id ? String(provider.id) : '';
+      const apiKeyValue = providerId && Object.prototype.hasOwnProperty.call(_apiKeys, providerId) ? (_apiKeys[providerId] || '') : '';
+      const card = document.createElement('div');
+      card.className = 'custom-provider-card';
+      card.innerHTML =
+        '<div class="custom-provider-header">' +
+          '<div class="settings-item-name">Custom Provider</div>' +
+          '<button class="mcp-btn" type="button" data-action="remove">Remove</button>' +
+        '</div>' +
+        '<div class="custom-provider-grid">' +
+          '<div class="custom-provider-field"><label>Name</label><input class="mcp-input" data-field="name" placeholder="LM Studio" value="' + escapeHtml(provider && provider.name ? provider.name : '') + '" /></div>' +
+          '<div class="custom-provider-field"><label>ID</label><input class="mcp-input" data-field="id" placeholder="lmstudio" value="' + escapeHtml(providerId) + '" /></div>' +
+          '<div class="custom-provider-field custom-provider-field-wide"><label>Base URL</label><input class="mcp-input" data-field="baseURL" placeholder="http://localhost:1234/v1" value="' + escapeHtml(provider && provider.baseURL ? provider.baseURL : '') + '" /></div>' +
+          '<div class="custom-provider-field custom-provider-field-wide"><label>API Key (optional)</label><input class="mcp-input" data-field="apiKey" type="password" placeholder="Optional" value="' + escapeHtml(apiKeyValue) + '" /></div>' +
+        '</div>';
+      customProviderList.appendChild(card);
+    });
+
+    Array.from(customProviderList.querySelectorAll('[data-action="remove"]')).forEach(function(button) {
+      button.addEventListener('click', function() {
+        const card = button.closest('.custom-provider-card');
+        if (!card) return;
+        const rows = getCustomProviderRows();
+        const cards = Array.from(customProviderList.querySelectorAll('.custom-provider-card'));
+        const removeIndex = cards.indexOf(card);
+        card.remove();
+        const nextRows = rows
+          .filter(function(_row, index) { return index !== removeIndex; })
+          .filter(function(row) { return row.name || row.id || row.baseURL || row.apiKey; });
+        const nextApiKeys = {};
+        Object.keys(_apiKeys || {}).forEach(function(key) {
+          if (BUILTIN_API_PROVIDER_IDS.indexOf(key) !== -1) nextApiKeys[key] = _apiKeys[key];
+        });
+        nextRows.forEach(function(row) {
+          if (row.normalizedId) nextApiKeys[row.normalizedId] = row.apiKey || '';
+        });
+        _apiKeys = nextApiKeys;
+        _customProviders = nextRows.map(function(row) {
+          return buildCustomProviderDraft({
+            id: row.normalizedId || row.id || row.name,
+            name: row.name,
+            baseURL: row.baseURL,
+          });
+        });
+        renderCustomProviderSettings();
+        setCustomProviderStatus('', false);
+      });
+    });
+  }
+
+  if (customProviderAdd) {
+    customProviderAdd.addEventListener('click', function() {
+      snapshotCustomProviderDraftState();
+      _customProviders.push(buildCustomProviderDraft({}));
+      renderCustomProviderSettings();
+      setCustomProviderStatus('', false);
+    });
+  }
+
+  if (customProviderSave) {
+    customProviderSave.addEventListener('click', function() {
+      const rows = getCustomProviderRows()
+        .filter(function(row) { return row.name || row.id || row.baseURL || row.apiKey; });
+      const customProviders = rows.map(function(row) {
+        return {
+          id: row.id || row.name,
+          name: row.name,
+          baseURL: row.baseURL,
+        };
+      });
+      const nextApiKeys = {};
+      Object.keys(_apiKeys || {}).forEach(function(key) {
+        if (BUILTIN_API_PROVIDER_IDS.indexOf(key) !== -1) nextApiKeys[key] = _apiKeys[key];
+      });
+      rows.forEach(function(row) {
+        if (!row.normalizedId) return;
+        nextApiKeys[row.normalizedId] = row.apiKey || '';
+      });
+      setCustomProviderStatus('Saving custom providers...', false);
+      vscode.postMessage({
+        type: 'settingsSave',
+        settings: {
+          customProviders: customProviders,
+          apiKeys: nextApiKeys,
+        },
+      });
+    });
+  }
+
   // API key auto-save on change
   document.querySelectorAll('.settings-api-key-input').forEach(el => {
     el.addEventListener('change', () => {
@@ -1145,6 +1311,26 @@
   let agentsProject = {};
   let agentEditingForm = null; // { scope, id } or null
 
+  function apiProviderOptionsHtml(selectedValue) {
+    var selected = String(selectedValue || 'openrouter');
+    var options = API_PROVIDER_OPTIONS.length ? API_PROVIDER_OPTIONS.slice() : defaultApiProviderOptions();
+    if (selected === 'custom') {
+      options = options.concat([legacyCustomProviderMeta()]);
+    } else if (selected && !options.some(function(provider) { return provider.id === selected; })) {
+      options = options.concat([{
+        id: selected,
+        name: selected + ' (missing)',
+        catalogKey: 'custom',
+        builtIn: false,
+        custom: true,
+        apiKeyOptional: true,
+      }]);
+    }
+    return options.map(function(provider) {
+      return '<option value="' + escapeHtml(provider.id) + '"' + (selected === provider.id ? ' selected' : '') + '>' + escapeHtml(provider.name) + '</option>';
+    }).join('');
+  }
+
   function renderAgentList(scope) {
     const listEl = document.getElementById('agent-list-' + scope);
     if (!listEl) return;
@@ -1313,10 +1499,7 @@
       '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
       '<div class="agent-form-row" id="agent-f-provider-row"><label>Provider</label><select class="mcp-input" id="agent-f-provider">' +
-        '<option value="openrouter"' + (existingProvider === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>' +
-        '<option value="openai"' + (existingProvider === 'openai' ? ' selected' : '') + '>OpenAI</option>' +
-        '<option value="anthropic"' + (existingProvider === 'anthropic' ? ' selected' : '') + '>Anthropic</option>' +
-        '<option value="gemini"' + (existingProvider === 'gemini' ? ' selected' : '') + '>Google Gemini</option>' +
+        apiProviderOptionsHtml(existingProvider) +
       '</select></div>' +
       '<div class="agent-form-row"><label>Model</label><select class="mcp-input" id="agent-f-model"><option value="">Default</option></select>' +
       '<input type="text" class="mcp-input cfg-custom-model" id="agent-f-custom-model" placeholder="custom model name" value="' + escapeHtml(existing && existing.model && !['', '_custom'].includes(existing.model) ? '' : (existing ? existing.model || '' : '')) + '" />' +
@@ -1343,16 +1526,24 @@
       const thinkingEl = document.getElementById('agent-f-thinking');
 
       function isCodexCli(v) { return v === 'codex' || v === 'qa-remote-codex'; }
+      function effectiveAgentModelValue() {
+        return effectiveModelValue(modelEl, customModelEl);
+      }
 
       function updateAgentModelOptions() {
         const cli = cliEl ? cliEl.value : '';
         const useCodex = isCodexCli(cli);
         const useApi = cli === 'api';
+        const currentProvider = providerEl ? (providerEl.value || existingProvider || 'openrouter') : (existingProvider || 'openrouter');
+        const providerMeta = currentProviderMeta(currentProvider);
+        const previousModel = effectiveAgentModelValue();
+        const previousThinking = thinkingEl ? thinkingEl.value : '';
         var models, thinkings;
         if (useApi) {
-          var prov = providerEl ? providerEl.value : 'openrouter';
-          models = API_PROVIDER_MODELS[prov] || API_PROVIDER_MODELS.openrouter;
-          thinkings = API_PROVIDER_THINKING[prov] || API_PROVIDER_THINKING.openrouter;
+          repopulateProviderSelect(providerEl, currentProvider);
+          var catalogKey = providerMeta && providerMeta.catalogKey ? providerMeta.catalogKey : currentProvider;
+          models = API_PROVIDER_MODELS[catalogKey] || API_PROVIDER_MODELS.openrouter;
+          thinkings = API_PROVIDER_THINKING[catalogKey] || API_PROVIDER_THINKING.openrouter;
         } else if (useCodex) {
           models = CODEX_MODELS;
           thinkings = CODEX_THINKING;
@@ -1360,8 +1551,12 @@
           models = CLAUDE_MODELS;
           thinkings = CLAUDE_THINKING;
         }
-        repopulateSelect(modelEl, models, modelEl ? modelEl.value : '');
-        repopulateSelect(thinkingEl, thinkings, thinkingEl ? thinkingEl.value : '');
+        repopulateSelect(modelEl, models, '');
+        repopulateSelect(thinkingEl, thinkings, previousThinking);
+        setSelectWithCustomValue(modelEl, customModelEl, previousModel);
+        if (useApi && providerMeta && providerMeta.custom && !previousModel) {
+          ensureCustomModelSelection(modelEl, customModelEl);
+        }
         if (!useApi) {
           if (modelEl && modelEl.options[0]) modelEl.options[0].text = 'Model: default';
           if (thinkingEl && thinkingEl.options[0]) thinkingEl.options[0].text = 'Thinking: default';
@@ -1387,7 +1582,9 @@
 
       // Populate on load with saved values
       updateAgentModelOptions();
-      if (modelEl) modelEl.value = existingModel;
+      if (modelEl && !(currentProviderMeta(existingProvider) && currentProviderMeta(existingProvider).custom && !existingModel)) {
+        setSelectWithCustomValue(modelEl, customModelEl, existingModel || '');
+      }
       if (thinkingEl) thinkingEl.value = existingThinking;
 
       if (cliEl) cliEl.addEventListener('change', updateAgentModelOptions);
@@ -3796,6 +3993,7 @@
   }
 
   function getConfig() {
+    var selectedProvider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
     return {
       controllerModel: cfgControllerModel.value === '_custom' && cfgControllerCustomModel ? cfgControllerCustomModel.value : cfgControllerModel.value,
       workerModel: cfgWorkerModel.value === '_custom' && cfgWorkerCustomModel ? cfgWorkerCustomModel.value : cfgWorkerModel.value,
@@ -3808,13 +4006,18 @@
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',
       codexMode: cfgCodexMode ? cfgCodexMode.value : 'app-server',
       workerCli: cfgWorkerCli ? cfgWorkerCli.value : 'codex',
-      apiProvider: cfgApiProvider ? cfgApiProvider.value : 'openrouter',
-      apiBaseURL: cfgApiBaseURL ? cfgApiBaseURL.value.trim() : '',
+      apiProvider: selectedProvider,
+      apiBaseURL: selectedProvider === 'custom' && cfgApiBaseURL ? cfgApiBaseURL.value.trim() : '',
     };
   }
 
   function setSelectWithCustomValue(selectEl, customInputEl, value) {
     if (!selectEl || value === undefined) return;
+    if (value === '_custom') {
+      selectEl.value = '_custom';
+      if (customInputEl) customInputEl.classList.toggle('visible', true);
+      return;
+    }
     const hasExactOption = Array.from(selectEl.options || []).some((option) => option.value === value);
     const hasCustomOption = Array.from(selectEl.options || []).some((option) => option.value === '_custom');
 
@@ -3836,13 +4039,21 @@
     if (config.codexMode !== undefined && cfgCodexMode) cfgCodexMode.value = config.codexMode;
     if (config.workerCli !== undefined && cfgWorkerCli) cfgWorkerCli.value = config.workerCli;
     // Set API fields before repopulating dropdowns (provider affects model list)
-    if (config.apiProvider !== undefined && cfgApiProvider) cfgApiProvider.value = config.apiProvider;
+    if (config.apiProvider !== undefined && cfgApiProvider) {
+      repopulateProviderSelect(cfgApiProvider, config.apiProvider);
+      cfgApiProvider.value = config.apiProvider;
+    }
     if (config.apiBaseURL !== undefined && cfgApiBaseURL) cfgApiBaseURL.value = config.apiBaseURL || '';
     // Repopulate model/thinking options based on selected CLIs, preserving current values where possible
     updateControllerDropdowns();
     // Now set the model/thinking values (options exist after repopulate)
-    if (config.controllerModel !== undefined) setSelectWithCustomValue(cfgControllerModel, cfgControllerCustomModel, config.controllerModel);
-    if (config.workerModel !== undefined) setSelectWithCustomValue(cfgWorkerModel, cfgWorkerCustomModel, config.workerModel);
+    var selectedProviderMeta = currentProviderMeta(cfgApiProvider ? cfgApiProvider.value : 'openrouter');
+    if (config.controllerModel !== undefined && !(selectedProviderMeta && selectedProviderMeta.custom && !config.controllerModel)) {
+      setSelectWithCustomValue(cfgControllerModel, cfgControllerCustomModel, config.controllerModel);
+    }
+    if (config.workerModel !== undefined && !(selectedProviderMeta && selectedProviderMeta.custom && !config.workerModel)) {
+      setSelectWithCustomValue(cfgWorkerModel, cfgWorkerCustomModel, config.workerModel);
+    }
     if (config.controllerThinking !== undefined) cfgControllerThinking.value = config.controllerThinking;
     if (config.workerThinking !== undefined) cfgWorkerThinking.value = config.workerThinking;
     if (config.loopMode !== undefined && loopToggle) loopToggle.checked = !!config.loopMode;
@@ -3896,9 +4107,32 @@
   // API provider model/thinking lists (loaded from extension initConfig)
   var API_PROVIDER_MODELS = {};
   var API_PROVIDER_THINKING = {};
+  var API_PROVIDER_OPTIONS = [];
+  var API_PROVIDER_META = {};
 
   function cloneCatalogOptions(options) {
     return Array.isArray(options) ? options.map(function(option) { return { value: option.value, label: option.label }; }) : [];
+  }
+
+  function defaultApiProviderOptions() {
+    return [
+      { id: 'openrouter', name: 'OpenRouter', catalogKey: 'openrouter', builtIn: true, custom: false, apiKeyOptional: false },
+      { id: 'openai', name: 'OpenAI', catalogKey: 'openai', builtIn: true, custom: false, apiKeyOptional: false },
+      { id: 'anthropic', name: 'Anthropic', catalogKey: 'anthropic', builtIn: true, custom: false, apiKeyOptional: false },
+      { id: 'gemini', name: 'Google Gemini', catalogKey: 'gemini', builtIn: true, custom: false, apiKeyOptional: false },
+    ];
+  }
+
+  function legacyCustomProviderMeta() {
+    return {
+      id: 'custom',
+      name: 'Custom (legacy)',
+      catalogKey: 'custom',
+      builtIn: true,
+      custom: false,
+      legacy: true,
+      apiKeyOptional: true,
+    };
   }
 
   function withCustomModelOption(options) {
@@ -3912,8 +4146,25 @@
   function applyApiCatalog(catalog) {
     var models = (catalog && catalog.models) || {};
     var thinking = (catalog && catalog.thinking) || {};
+    var providers = Array.isArray(catalog && catalog.providers) && catalog.providers.length
+      ? catalog.providers
+      : defaultApiProviderOptions();
     API_PROVIDER_MODELS = {};
     API_PROVIDER_THINKING = {};
+    API_PROVIDER_OPTIONS = providers.map(function(provider) {
+      return {
+        id: provider.id,
+        name: provider.name,
+        catalogKey: provider.catalogKey || provider.id,
+        builtIn: !!provider.builtIn,
+        custom: !!provider.custom,
+        apiKeyOptional: !!provider.apiKeyOptional,
+      };
+    });
+    API_PROVIDER_META = {};
+    API_PROVIDER_OPTIONS.forEach(function(provider) {
+      API_PROVIDER_META[provider.id] = provider;
+    });
     Object.keys(models).forEach(function(provider) {
       API_PROVIDER_MODELS[provider] = withCustomModelOption(models[provider]);
     });
@@ -3937,10 +4188,17 @@
   var cfgWorkerCustomModel = document.getElementById('cfg-worker-custom-model');
   var cfgApiKeyWarning = document.getElementById('cfg-api-key-warning');
   var _apiKeys = {};  // { openai: '...', anthropic: '...', ... } loaded from settings
+  var _customProviders = [];
 
   function repopulateSelect(el, options, currentValue) {
     if (!el) return;
-    el.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+    el.innerHTML = '';
+    (options || []).forEach(function(option) {
+      var opt = document.createElement('option');
+      opt.value = option.value;
+      opt.textContent = option.label;
+      el.appendChild(opt);
+    });
     // Restore previous value if it still exists, otherwise select first option
     if (currentValue && options.some(o => o.value === currentValue)) {
       el.value = currentValue;
@@ -3949,17 +4207,75 @@
     }
   }
 
+  function currentProviderMeta(providerId) {
+    if (providerId === 'custom') return legacyCustomProviderMeta();
+    return API_PROVIDER_META[providerId] || null;
+  }
+
+  function providerLabel(providerId) {
+    var meta = currentProviderMeta(providerId);
+    if (meta && meta.name) return meta.name;
+    return providerId || 'Provider';
+  }
+
+  function repopulateProviderSelect(selectEl, currentValue) {
+    if (!selectEl) return;
+    var options = API_PROVIDER_OPTIONS.length ? API_PROVIDER_OPTIONS.slice() : defaultApiProviderOptions();
+    var nextValue = currentValue || '';
+    selectEl.innerHTML = '';
+    options.forEach(function(provider) {
+      var opt = document.createElement('option');
+      opt.value = provider.id;
+      opt.textContent = provider.name;
+      selectEl.appendChild(opt);
+    });
+    if (nextValue === 'custom') {
+      var legacy = document.createElement('option');
+      legacy.value = 'custom';
+      legacy.textContent = 'Custom (legacy manual)';
+      selectEl.appendChild(legacy);
+    } else if (nextValue && !options.some(function(provider) { return provider.id === nextValue; })) {
+      var missing = document.createElement('option');
+      missing.value = nextValue;
+      missing.textContent = nextValue + ' (missing)';
+      selectEl.appendChild(missing);
+    }
+    if (nextValue) {
+      selectEl.value = nextValue;
+    } else if (selectEl.options.length > 0) {
+      selectEl.value = selectEl.options[0].value;
+    }
+  }
+
+  function effectiveModelValue(selectEl, customInputEl) {
+    if (!selectEl) return '';
+    if (selectEl.value === '_custom') {
+      return customInputEl && customInputEl.value.trim() ? customInputEl.value.trim() : '_custom';
+    }
+    return selectEl.value || '';
+  }
+
+  function ensureCustomModelSelection(selectEl, customInputEl) {
+    if (!selectEl) return;
+    selectEl.value = '_custom';
+    if (customInputEl) customInputEl.classList.toggle('visible', true);
+  }
+
   function _modelsForCli(cli) {
     if (cli === 'api') {
       var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
-      return API_PROVIDER_MODELS[provider] || API_PROVIDER_MODELS.openrouter;
+      var providerMeta = currentProviderMeta(provider);
+      var catalogKey = providerMeta && providerMeta.catalogKey ? providerMeta.catalogKey : provider;
+      return API_PROVIDER_MODELS[catalogKey] || API_PROVIDER_MODELS.openrouter;
     }
     return cli === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
   }
   function _thinkingForCli(cli) {
     if (cli === 'api') {
       var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
-      return API_PROVIDER_THINKING[provider] || API_PROVIDER_THINKING.openrouter;
+      var providerMeta = currentProviderMeta(provider);
+      var catalogKey = providerMeta && providerMeta.catalogKey ? providerMeta.catalogKey : provider;
+      return API_PROVIDER_THINKING[catalogKey] || API_PROVIDER_THINKING.openrouter;
     }
     return cli === 'claude' ? CLAUDE_THINKING : CODEX_THINKING;
   }
@@ -3967,11 +4283,27 @@
   function updateControllerDropdowns() {
     const controllerCli = cfgControllerCli ? cfgControllerCli.value : 'codex';
     const workerCli = cfgWorkerCli ? cfgWorkerCli.value : 'codex';
+    const selectedProvider = cfgApiProvider ? (cfgApiProvider.value || 'openrouter') : 'openrouter';
+    const providerMeta = currentProviderMeta(selectedProvider);
+    const previousControllerModel = effectiveModelValue(cfgControllerModel, cfgControllerCustomModel);
+    const previousWorkerModel = effectiveModelValue(cfgWorkerModel, cfgWorkerCustomModel);
+    const previousControllerThinking = cfgControllerThinking ? cfgControllerThinking.value : '';
+    const previousWorkerThinking = cfgWorkerThinking ? cfgWorkerThinking.value : '';
 
-    repopulateSelect(cfgControllerModel, _modelsForCli(controllerCli), cfgControllerModel ? cfgControllerModel.value : '');
-    repopulateSelect(cfgControllerThinking, _thinkingForCli(controllerCli), cfgControllerThinking ? cfgControllerThinking.value : '');
-    repopulateSelect(cfgWorkerModel, _modelsForCli(workerCli), cfgWorkerModel ? cfgWorkerModel.value : '');
-    repopulateSelect(cfgWorkerThinking, _thinkingForCli(workerCli), cfgWorkerThinking ? cfgWorkerThinking.value : '');
+    repopulateProviderSelect(cfgApiProvider, selectedProvider);
+
+    repopulateSelect(cfgControllerModel, _modelsForCli(controllerCli), '');
+    repopulateSelect(cfgControllerThinking, _thinkingForCli(controllerCli), previousControllerThinking);
+    repopulateSelect(cfgWorkerModel, _modelsForCli(workerCli), '');
+    repopulateSelect(cfgWorkerThinking, _thinkingForCli(workerCli), previousWorkerThinking);
+    setSelectWithCustomValue(cfgControllerModel, cfgControllerCustomModel, previousControllerModel);
+    setSelectWithCustomValue(cfgWorkerModel, cfgWorkerCustomModel, previousWorkerModel);
+    if (controllerCli === 'api' && providerMeta && providerMeta.custom && !previousControllerModel) {
+      ensureCustomModelSelection(cfgControllerModel, cfgControllerCustomModel);
+    }
+    if (workerCli === 'api' && providerMeta && providerMeta.custom && !previousWorkerModel) {
+      ensureCustomModelSelection(cfgWorkerModel, cfgWorkerCustomModel);
+    }
 
     // Show/hide Codex Mode dropdown based on controller CLI
     document.querySelectorAll('.cfg-codex-only').forEach(el => {
@@ -3982,6 +4314,10 @@
     document.querySelectorAll('.cfg-api-only').forEach(el => {
       el.classList.toggle('tab-hidden', !useApi);
     });
+    var baseUrlGroup = cfgApiBaseURL ? cfgApiBaseURL.closest('.config-group') : null;
+    if (baseUrlGroup) {
+      baseUrlGroup.classList.toggle('tab-hidden', !useApi || !(providerMeta && providerMeta.legacy));
+    }
     // Show/hide custom model text inputs
     if (cfgControllerCustomModel) {
       cfgControllerCustomModel.classList.toggle('visible', cfgControllerModel && cfgControllerModel.value === '_custom');
@@ -3992,12 +4328,11 @@
     // Show warning if no API key for selected provider
     if (cfgApiKeyWarning) {
       var provider = cfgApiProvider ? cfgApiProvider.value : 'openrouter';
-      var providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter', gemini: 'Google Gemini', custom: 'Custom' };
-      if (useApi && provider === 'custom' && !(cfgApiBaseURL && cfgApiBaseURL.value.trim())) {
+      if (useApi && providerMeta && providerMeta.legacy && !(cfgApiBaseURL && cfgApiBaseURL.value.trim())) {
         cfgApiKeyWarning.textContent = '\u26A0\uFE0F Custom provider requires a Base URL.';
         cfgApiKeyWarning.style.display = '';
-      } else if (useApi && !_apiKeys[provider]) {
-        cfgApiKeyWarning.textContent = '\u26A0\uFE0F No API key for ' + (providerNames[provider] || provider) + '. Set it in Settings \u2192 API Keys.';
+      } else if (useApi && (!providerMeta || !providerMeta.apiKeyOptional) && !_apiKeys[provider]) {
+        cfgApiKeyWarning.textContent = '\u26A0\uFE0F No API key for ' + providerLabel(provider) + '. Set it in Settings \u2192 API Keys.';
         cfgApiKeyWarning.style.display = '';
       } else {
         cfgApiKeyWarning.style.display = 'none';
@@ -6551,13 +6886,22 @@
         settingPromptAgent.value = msg.settings.selfTestPromptAgent || defaults.agent || '';
       }
       updatePromptsVisibility();
+      if (msg.apiCatalog) {
+        applyApiCatalog(msg.apiCatalog);
+        repopulateProviderSelect(cfgApiProvider, cfgApiProvider ? cfgApiProvider.value : 'openrouter');
+      }
       // Populate API keys
       _apiKeys = (msg.settings && msg.settings.apiKeys) || {};
+      _customProviders = (msg.settings && msg.settings.customProviders) || [];
       document.querySelectorAll('.settings-api-key-input').forEach(el => {
         const provider = el.dataset.provider;
         if (provider && _apiKeys[provider]) el.value = _apiKeys[provider];
         else el.value = '';
       });
+      renderCustomProviderSettings();
+      if (customProviderStatus && customProviderStatus.textContent === 'Saving custom providers...') {
+        setCustomProviderStatus('Custom providers saved.', false);
+      }
       // Re-evaluate warnings
       updateControllerDropdowns();
     },

@@ -3,21 +3,25 @@
  * Supports OpenAI, Anthropic, OpenRouter, Google Gemini, and any OpenAI-compatible endpoint.
  */
 const OpenAI = require('openai');
-const fs = require('node:fs');
-const path = require('node:path');
-const os = require('node:os');
 const {
   API_PROVIDER_MODELS: PROVIDER_MODELS,
   API_PROVIDER_THINKING: THINKING_TIERS,
 } = require('./model-catalog');
+const {
+  BUILTIN_PROVIDER_DEFS,
+  LEGACY_CUSTOM_PROVIDER,
+  loadProviderSettings,
+  providerCatalogKey,
+  resolveApiProvider,
+} = require('./api-provider-registry');
 
 // Provider definitions
 const PROVIDERS = {
-  openai: { name: 'OpenAI', baseURL: undefined, envKey: 'OPENAI_API_KEY' },
-  anthropic: { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1/', envKey: 'ANTHROPIC_API_KEY' },
-  openrouter: { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', envKey: 'OPENROUTER_API_KEY' },
-  gemini: { name: 'Google Gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', envKey: 'GEMINI_API_KEY' },
-  custom: { name: 'Custom', baseURL: undefined, envKey: null },
+  openai: { name: BUILTIN_PROVIDER_DEFS.openai.name, baseURL: BUILTIN_PROVIDER_DEFS.openai.baseURL, envKey: BUILTIN_PROVIDER_DEFS.openai.envKey },
+  anthropic: { name: BUILTIN_PROVIDER_DEFS.anthropic.name, baseURL: BUILTIN_PROVIDER_DEFS.anthropic.baseURL, envKey: BUILTIN_PROVIDER_DEFS.anthropic.envKey },
+  openrouter: { name: BUILTIN_PROVIDER_DEFS.openrouter.name, baseURL: BUILTIN_PROVIDER_DEFS.openrouter.baseURL, envKey: BUILTIN_PROVIDER_DEFS.openrouter.envKey },
+  gemini: { name: BUILTIN_PROVIDER_DEFS.gemini.name, baseURL: BUILTIN_PROVIDER_DEFS.gemini.baseURL, envKey: BUILTIN_PROVIDER_DEFS.gemini.envKey },
+  custom: { name: LEGACY_CUSTOM_PROVIDER.name, baseURL: LEGACY_CUSTOM_PROVIDER.baseURL, envKey: LEGACY_CUSTOM_PROVIDER.envKey },
 };
 
 const ANTHROPIC_THINKING_BUDGETS = {
@@ -203,14 +207,13 @@ class LLMClient {
  * @param {string} [fallback]
  * @returns {string|null}
  */
-function resolveApiKey(provider, fallback) {
-  try {
-    const settingsPath = path.join(os.homedir(), '.qpanda', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    if (settings.apiKeys && settings.apiKeys[provider]) return settings.apiKeys[provider];
-  } catch {}
+function resolveApiKey(provider, fallback, settings = loadProviderSettings()) {
+  if (settings && settings.apiKeys && Object.prototype.hasOwnProperty.call(settings.apiKeys, provider)) {
+    return String(settings.apiKeys[provider] || '').trim();
+  }
 
-  const providerConfig = PROVIDERS[provider];
+  const resolvedProvider = resolveApiProvider(provider, settings);
+  const providerConfig = resolvedProvider || PROVIDERS[provider];
   if (providerConfig && providerConfig.envKey && process.env[providerConfig.envKey]) {
     return process.env[providerConfig.envKey];
   }
@@ -218,8 +221,8 @@ function resolveApiKey(provider, fallback) {
   return null;
 }
 
-function defaultModelForProvider(provider) {
-  const models = PROVIDER_MODELS[provider] || PROVIDER_MODELS.openrouter;
+function defaultModelForProvider(provider, settings = null) {
+  const models = PROVIDER_MODELS[providerCatalogKey(provider, settings)] || PROVIDER_MODELS.openrouter;
   const firstNamedModel = models.find((entry) => entry && entry.value && entry.value !== '_custom');
   return firstNamedModel ? firstNamedModel.value : null;
 }

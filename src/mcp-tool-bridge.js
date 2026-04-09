@@ -13,12 +13,25 @@ let _activeClients = {};
 // ── MCP tool loading ─────────────────────────────────────────────
 
 /** Convert MCP tool definition to OpenAI function-calling format */
+function _sanitizeToolNamePart(value) {
+  let output = '';
+  for (const char of String(value || '')) {
+    if (/^[a-zA-Z0-9_-]$/.test(char)) {
+      output += char;
+    } else {
+      output += `_x${char.codePointAt(0).toString(16)}_`;
+    }
+  }
+  return output;
+}
+
 function _mcpToolToOpenAI(serverName, mcpTool) {
-  const prefix = serverName.replace(/-/g, '_');
+  const prefix = _sanitizeToolNamePart(String(serverName || '').replace(/-/g, '_'));
+  const safeName = _sanitizeToolNamePart(mcpTool.name);
   return {
     type: 'function',
     function: {
-      name: `${prefix}__${mcpTool.name}`,
+      name: `${prefix}__${safeName}`,
       description: mcpTool.description || '',
       parameters: mcpTool.inputSchema || { type: 'object', properties: {} },
     },
@@ -265,5 +278,6 @@ module.exports = {
   closeAll,
   // Exposed for testing
   _mcpToolToOpenAI,
+  _sanitizeToolNamePart,
   _processToolResult,
 };

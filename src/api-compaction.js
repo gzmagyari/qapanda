@@ -1,4 +1,5 @@
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
+const { resolveRuntimeApiProvider } = require('./api-provider-registry');
 const {
   appendTranscriptRecord,
   buildSessionReplay,
@@ -170,8 +171,20 @@ async function generateCompactionSummary({
   inputText,
   signal,
 }) {
-  const resolvedApiKey = resolveApiKey(provider, apiKey);
-  const client = new LLMClient({ provider, apiKey: resolvedApiKey, baseURL, model });
+  const resolvedProvider = resolveRuntimeApiProvider(provider);
+  if (!resolvedProvider) {
+    throw new Error(`Unknown API provider "${provider}". Configure it in Settings -> Custom Providers or select a built-in provider.`);
+  }
+  const resolvedApiKey = resolveApiKey(resolvedProvider.id, apiKey);
+  const resolvedBaseURL = resolvedProvider.custom
+    ? resolvedProvider.baseURL
+    : ((resolvedProvider.legacy ? baseURL : (baseURL || resolvedProvider.baseURL)) || null);
+  const client = new LLMClient({
+    provider: resolvedProvider.clientProvider,
+    apiKey: resolvedApiKey,
+    baseURL: resolvedBaseURL,
+    model,
+  });
   const response = await client.chat([
     {
       role: 'system',
@@ -321,12 +334,16 @@ function currentApiSessionTarget({
     const cli = controllerCli || (manifest.controller && manifest.controller.cli) || 'codex';
     if (cli !== 'api') return null;
     const config = (manifest.controller && manifest.controller.apiConfig) || manifest.apiConfig || {};
+    const providerId = config.provider || 'openrouter';
+    const resolvedProvider = resolveRuntimeApiProvider(providerId);
     return {
       sessionKey: 'controller:main',
       backend: 'controller:api',
-      provider: config.provider || 'openrouter',
-      baseURL: config.baseURL || null,
-      model: config.model || defaultModelForProvider(config.provider || 'openrouter'),
+      provider: providerId,
+      baseURL: resolvedProvider && resolvedProvider.custom
+        ? resolvedProvider.baseURL
+        : ((resolvedProvider && resolvedProvider.legacy ? config.baseURL : (config.baseURL || (resolvedProvider && resolvedProvider.baseURL))) || null),
+      model: config.model || defaultModelForProvider(providerId),
       thinking: config.thinking || null,
     };
   }
@@ -336,12 +353,16 @@ function currentApiSessionTarget({
   const cli = (agentConfig && agentConfig.cli) || workerCli || (manifest.worker && manifest.worker.cli) || 'codex';
   if (cli !== 'api') return null;
   const config = (manifest.worker && manifest.worker.apiConfig) || manifest.apiConfig || {};
+  const providerId = (agentConfig && agentConfig.provider) || config.provider || 'openrouter';
+  const resolvedProvider = resolveRuntimeApiProvider(providerId);
   return {
     sessionKey: workerSessionKey(agentId),
     backend: 'worker:api',
-    provider: (agentConfig && agentConfig.provider) || config.provider || 'openrouter',
-    baseURL: config.baseURL || null,
-    model: (agentConfig && agentConfig.model) || config.model || defaultModelForProvider((agentConfig && agentConfig.provider) || config.provider || 'openrouter'),
+    provider: providerId,
+    baseURL: resolvedProvider && resolvedProvider.custom
+      ? resolvedProvider.baseURL
+      : ((resolvedProvider && resolvedProvider.legacy ? config.baseURL : (config.baseURL || (resolvedProvider && resolvedProvider.baseURL))) || null),
+    model: (agentConfig && agentConfig.model) || config.model || defaultModelForProvider(providerId),
     thinking: (agentConfig && agentConfig.thinking) || config.thinking || null,
     agentId,
   };

@@ -192,10 +192,6 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <label>Provider</label>
         <select id="cfg-api-provider">
           <option value="openrouter">OpenRouter</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="custom">Custom</option>
         </select>
       </div>
       <div class="config-group cfg-api-only">
@@ -505,11 +501,19 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
               <div class="settings-item-info"><div class="settings-item-name">Google Gemini</div><div class="settings-item-desc">For Gemini 2.5 and 3.x Pro/Flash models</div></div>
               <input type="password" class="settings-api-key-input" id="api-key-gemini" placeholder="AI..." data-provider="gemini" />
             </div>
-            <div class="settings-item">
-              <div class="settings-item-info"><div class="settings-item-name">Custom</div><div class="settings-item-desc">For any OpenAI-compatible endpoint</div></div>
-              <input type="password" class="settings-api-key-input" id="api-key-custom" placeholder="API key" data-provider="custom" />
-            </div>
           </div>
+        </div>
+        <div class="mcp-section">
+          <div class="mcp-section-header">
+            <h3>Custom Providers</h3>
+            <span class="mcp-section-path">Named OpenAI-compatible endpoints for API mode. Example: LM Studio on <code>http://localhost:1234/v1</code>.</span>
+          </div>
+          <div class="settings-list" id="custom-provider-list"></div>
+          <div class="mcp-form-actions">
+            <button class="mcp-btn" id="custom-provider-add">Add Provider</button>
+            <button class="mcp-btn mcp-btn-primary" id="custom-provider-save">Save Custom Providers</button>
+          </div>
+          <div class="settings-item-desc" id="custom-provider-status"></div>
         </div>
         <div class="mcp-section">
           <div class="mcp-section-header">

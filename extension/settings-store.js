@@ -5,13 +5,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { normalizeSettingsData } = require('./src/api-provider-registry');
 
 const DEFAULTS = {
   selfTesting: false,
   selfTestPromptController: '',
   selfTestPromptQaBrowser: '',
   selfTestPromptAgent: '',
-  apiKeys: {},  // { openai: 'sk-...', anthropic: 'sk-ant-...', openrouter: 'sk-or-...', gemini: '...', custom: '...' }
+  apiKeys: {},  // { openai: 'sk-...', anthropic: 'sk-ant-...', openrouter: 'sk-or-...', gemini: '...', lmstudio: '...' }
+  customProviders: [],
 };
 
 function settingsPath() {
@@ -21,9 +23,9 @@ function settingsPath() {
 function loadSettings() {
   try {
     const data = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
-    return { ...DEFAULTS, ...data };
+    return normalizeSettingsData({ ...DEFAULTS, ...data });
   } catch {
-    return { ...DEFAULTS };
+    return normalizeSettingsData({ ...DEFAULTS });
   }
 }
 
@@ -32,7 +34,7 @@ function saveSettings(updates) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const existing = loadSettings();
-  const merged = { ...existing, ...updates };
+  const merged = normalizeSettingsData({ ...existing, ...updates });
   fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), 'utf8');
   return merged;
 }

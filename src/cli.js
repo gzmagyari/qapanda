@@ -92,8 +92,8 @@ Common options:
   --worker-cli <codex|api${_flags.enableClaudeCli ? '|claude' : ''}>        Worker CLI backend
   --worker-model <name>              Worker model
   --worker-thinking <level>          Worker thinking (low/medium/high)
-  --api-provider <name>              API provider (openrouter/openai/anthropic/gemini/custom)
-  --api-base-url <url>               API base URL override
+  --api-provider <name>              API provider (built-in or named custom provider from Settings)
+  --api-base-url <url>               Legacy/manual API base URL override
   --wait <delay>                     Auto-pass delay (1m, 5m, 1h, etc.)
   --no-mcp-inject                    Disable system MCP auto-injection
   --raw-events                       Show raw streaming events

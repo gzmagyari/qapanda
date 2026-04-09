@@ -1,3 +1,5 @@
+const { listApiProviders } = require('./api-provider-registry');
+
 const API_PROVIDER_MODELS = {
   openai: [
     // Curated to models that pass the current direct chat-completions smoke tests.
@@ -111,7 +113,7 @@ function cloneCatalogEntries(entries) {
   return (entries || []).map((entry) => ({ ...entry }));
 }
 
-function buildApiCatalogPayload() {
+function buildApiCatalogPayload(settings = null) {
   const models = {};
   const thinking = {};
   for (const provider of Object.keys(API_PROVIDER_MODELS)) {
@@ -120,7 +122,16 @@ function buildApiCatalogPayload() {
   for (const provider of Object.keys(API_PROVIDER_THINKING)) {
     thinking[provider] = cloneCatalogEntries(API_PROVIDER_THINKING[provider]);
   }
-  return { models, thinking };
+  const providers = listApiProviders(settings).map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    catalogKey: provider.catalogKey,
+    builtIn: !!provider.builtIn,
+    custom: !!provider.custom,
+    apiKeyOptional: !!provider.apiKeyOptional,
+    baseURL: provider.baseURL || '',
+  }));
+  return { models, thinking, providers };
 }
 
 module.exports = {

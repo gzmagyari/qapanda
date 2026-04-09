@@ -4,6 +4,7 @@
  * Returns structured JSON decisions (delegate/stop) like the CLI controllers.
  */
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
+const { resolveRuntimeApiProvider } = require('./api-provider-registry');
 const { buildControllerPrompt } = require('./prompts');
 const { controllerDecisionSchema, validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
 const { writeText } = require('./utils');
@@ -27,10 +28,17 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
 
   // Resolve API config: controller manifest config → global config
   const apiConfig = manifest.controller.apiConfig || manifest.apiConfig || {};
-  const provider = apiConfig.provider || 'openrouter';
-  const apiKey = resolveApiKey(provider, apiConfig.apiKey);
-  const baseURL = apiConfig.baseURL || null;
-  const model = apiConfig.model || defaultModelForProvider(provider);
+  const providerId = apiConfig.provider || 'openrouter';
+  const resolvedProvider = resolveRuntimeApiProvider(providerId);
+  if (!resolvedProvider) {
+    throw new Error(`Unknown API provider "${providerId}". Configure it in Settings -> Custom Providers or select a built-in provider.`);
+  }
+  const provider = resolvedProvider.clientProvider;
+  const apiKey = resolveApiKey(resolvedProvider.id, apiConfig.apiKey);
+  const baseURL = resolvedProvider.custom
+    ? resolvedProvider.baseURL
+    : ((resolvedProvider.legacy ? apiConfig.baseURL : (apiConfig.baseURL || resolvedProvider.baseURL)) || null);
+  const model = apiConfig.model || defaultModelForProvider(providerId);
   const thinking = apiConfig.thinking || null;
   // Note: controller doesn't have per-agent overrides — it's always manifest-level
 
@@ -40,7 +48,7 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
 
   const client = new LLMClient({ provider, apiKey, baseURL, model });
 
-  emitEvent({ source: 'controller-api', type: 'start', model, provider });
+  emitEvent({ source: 'controller-api', type: 'start', model, provider: providerId });
   renderer.controller('Thinking about the next step.');
 
   // Stream the response — collect text

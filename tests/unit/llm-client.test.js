@@ -1,7 +1,7 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { createMockServer } = require('./llm-mock-server');
-const { LLMClient, PROVIDERS, PROVIDER_MODELS, THINKING_TIERS } = require('../../src/llm-client');
+const { LLMClient, PROVIDERS, PROVIDER_MODELS, THINKING_TIERS, resolveApiKey, defaultModelForProvider } = require('../../src/llm-client');
 
 let mock;
 
@@ -195,5 +195,26 @@ describe('Provider/model data exports', () => {
         assert.ok('label' in m, `${provider} model missing label`);
       }
     }
+  });
+
+  it('resolves named custom provider API keys from settings', () => {
+    const apiKey = resolveApiKey('lmstudio', null, {
+      apiKeys: { lmstudio: 'local-key' },
+      customProviders: [
+        { id: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
+      ],
+    });
+    assert.equal(apiKey, 'local-key');
+  });
+
+  it('uses custom model catalog defaults for named custom providers', () => {
+    assert.equal(
+      defaultModelForProvider('lmstudio', {
+        customProviders: [
+          { id: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
+        ],
+      }),
+      null
+    );
   });
 });
