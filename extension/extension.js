@@ -434,8 +434,8 @@ function defaultCloudRuntimeState(sessionState) {
       status: loggedIn ? 'idle' : 'disabled',
       label: loggedIn ? 'Starting sync' : 'Signed out',
       detail: loggedIn
-        ? 'Preparing repository sync for this workspace.'
-        : 'Sign in to enable hosted repository sync.',
+        ? 'Preparing connected-project sync for this workspace.'
+        : 'Sign in to enable hosted connected-project sync.',
       tone: 'neutral',
     },
     conflicts: [],
@@ -475,7 +475,7 @@ function resolveHostedRepositoryContextUrl(cloudBoundary, binding) {
   const query = binding.repositoryContextId
     ? `?contextId=${encodeURIComponent(binding.repositoryContextId)}`
     : '';
-  return `${trim}/app/repositories/${encodeURIComponent(binding.repositoryId)}${query}`;
+  return `${trim}/app/projects/${encodeURIComponent(binding.repositoryId)}${query}`;
 }
 
 async function saveExtensionCloudContext(cloudBoundary, context, updates = {}) {
@@ -1030,11 +1030,11 @@ function _activateInner(context) {
           await postSettingsData(panel, session, cloudBoundary, context);
           await refreshExtensionCloudStatusSurface(cloudBoundary, context);
           try {
-            panel.webview.postMessage({
-              type: 'cloudSessionNotice',
-              level: 'info',
-              text: 'Saved repository context for this checkout.',
-            });
+              panel.webview.postMessage({
+                type: 'cloudSessionNotice',
+                level: 'info',
+              text: 'Saved connected-project context for this checkout.',
+              });
           } catch {}
           return;
         }
@@ -1399,7 +1399,7 @@ async function _deserializeInner(panel, state, context) {
               panel.webview.postMessage({
                 type: 'cloudSessionNotice',
                 level: 'info',
-                text: 'Saved repository context for this checkout.',
+                text: 'Saved connected-project context for this checkout.',
               });
             } catch {}
             return;

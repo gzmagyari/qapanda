@@ -15,6 +15,8 @@ describe('cloud entry screen', () => {
 
       const entry = wv.document.getElementById('cloud-entry-screen');
       assert.ok(entry.classList.contains('visible'));
+      assert.match(entry.textContent, /connected-project sync/i);
+      assert.doesNotMatch(entry.textContent, /this repository/i);
 
       wv.click('#cloud-entry-guest');
       await wv.flush();

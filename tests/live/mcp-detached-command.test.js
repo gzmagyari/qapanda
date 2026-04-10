@@ -45,10 +45,42 @@ describe('Detached Command MCP server', () => {
     const res = await mcp.call('tools/list', {});
     const toolNames = res.result.tools.map(t => t.name);
     assert.ok(toolNames.includes('start_command'));
+    assert.ok(toolNames.includes('sleep'));
     assert.ok(toolNames.includes('list_jobs'));
     assert.ok(toolNames.includes('get_job'));
     assert.ok(toolNames.includes('read_output'));
     assert.ok(toolNames.includes('stop_job'));
+  });
+
+  it('sleep blocks, returns structured output, and does not create jobs', async () => {
+    await initMcp(path.join(tmp.ccDir, '.detached-jobs'));
+
+    const beforeList = await mcp.callTool('list_jobs', {});
+    const beforeStructured = getStructured(beforeList);
+    const beforeCount = beforeStructured ? beforeStructured.count : null;
+
+    const startedAt = Date.now();
+    const sleepRes = await mcp.callTool('sleep', { duration_ms: 250 });
+    const elapsedMs = Date.now() - startedAt;
+    const sleepText = getToolText(sleepRes);
+    const sleepStructured = getStructured(sleepRes);
+
+    assert.ok(elapsedMs >= 200, `sleep should block for at least ~200ms, got ${elapsedMs}ms`);
+    assert.ok(sleepText.includes('Slept for 250ms.'));
+    assert.equal(sleepStructured.duration_ms, 250);
+
+    const afterList = await mcp.callTool('list_jobs', {});
+    const afterStructured = getStructured(afterList);
+    assert.equal(afterStructured.count, beforeCount);
+  });
+
+  it('rejects invalid sleep durations', async () => {
+    await initMcp(path.join(tmp.ccDir, '.detached-jobs'));
+
+    for (const args of [{}, { duration_ms: 0 }, { duration_ms: 12.5 }, { duration_ms: 300001 }]) {
+      const res = await mcp.callTool('sleep', args);
+      assert.ok(res.error || (res.result && res.result.isError), `invalid sleep should fail: ${JSON.stringify(args)}`);
+    }
   });
 
   it('starts a command and gets output', async () => {

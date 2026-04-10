@@ -34,6 +34,16 @@ export const startCommandSchema = z
         .describe("How long to wait for the detached runner to report a PID before returning."),
 })
     .strict();
+export const sleepSchema = z
+    .object({
+    duration_ms: z
+        .number()
+        .int()
+        .positive()
+        .max(300000)
+        .describe("How long to wait before returning, in milliseconds."),
+})
+    .strict();
 export const listJobsSchema = z
     .object({
     scope: scopeSchema,

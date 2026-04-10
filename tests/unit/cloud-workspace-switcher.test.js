@@ -124,7 +124,7 @@ describe('cloud workspace switcher', () => {
     }
   });
 
-  it('renders canonical repository identity details in settings and explains local fallback mode', async () => {
+  it('renders connected-project identity details in settings and explains local fallback mode', async () => {
     const wv = createWebviewDom();
     try {
       wv.postMessage(sampleInitConfig({
@@ -136,7 +136,7 @@ describe('cloud workspace switcher', () => {
       wv.click('[data-tab="settings"]');
       await wv.flush();
 
-      assert.match(wv.text('#cloud-repository-state'), /resolves this checkout as cc-manager across machines/i);
+      assert.match(wv.text('#cloud-repository-state'), /resolves this checkout to the connected project cc-manager across machines/i);
       assert.match(wv.text('#cloud-repository-meta'), /git:github\.com\/qa-panda\/cc-manager/);
       assert.match(wv.text('#cloud-repository-meta'), /ctx:shared/);
 
@@ -158,7 +158,7 @@ describe('cloud workspace switcher', () => {
       await wv.flush();
 
       assert.match(wv.text('#cloud-repository-state'), /local path fallback/i);
-      assert.match(wv.text('#cloud-repository-meta'), /Repository path:1234abcd/);
+      assert.match(wv.text('#cloud-repository-meta'), /Project key path:1234abcd/);
     } finally {
       wv.cleanup();
     }
@@ -176,7 +176,7 @@ describe('cloud workspace switcher', () => {
       wv.click('[data-tab="settings"]');
       await wv.flush();
 
-      assert.match(wv.text('#cloud-objects-state'), /2 tests, 1 issues?, and 1 recipes?/i);
+      assert.match(wv.text('#cloud-objects-state'), /2 tests, 1 issues?, and 1 recipes? are currently mirrored for this connected-project context/i);
       assert.match(wv.text('#cloud-objects-meta'), /Hosted context context-1/);
       assert.match(wv.text('#cloud-objects-list'), /issue-7/);
       assert.match(wv.text('#cloud-objects-list'), /Checkout fails on login/);
@@ -213,7 +213,7 @@ describe('cloud workspace switcher', () => {
     }
   });
 
-  it('renders repository context controls and posts a save request', async () => {
+  it('renders connected-project context controls and posts a save request', async () => {
     const wv = createWebviewDom();
     try {
       wv.postMessage(sampleInitConfig({
@@ -258,7 +258,7 @@ describe('cloud workspace switcher', () => {
     }
   });
 
-  it('posts a hosted repository context open request from settings', async () => {
+  it('posts a connected-project open request from settings', async () => {
     const wv = createWebviewDom();
     try {
       wv.postMessage(sampleInitConfig({

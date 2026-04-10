@@ -29,6 +29,13 @@ export declare const startCommandSchema: z.ZodObject<{
     instance_id?: string | undefined;
     startup_wait_ms?: number | undefined;
 }>;
+export declare const sleepSchema: z.ZodObject<{
+    duration_ms: z.ZodNumber;
+}, "strict", z.ZodTypeAny, {
+    duration_ms: number;
+}, {
+    duration_ms: number;
+}>;
 export declare const listJobsSchema: z.ZodObject<{
     scope: z.ZodDefault<z.ZodEnum<["current", "all", "explicit"]>>;
     instance_id: z.ZodOptional<z.ZodString>;

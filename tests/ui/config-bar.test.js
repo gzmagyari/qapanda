@@ -128,4 +128,20 @@ describe('Config bar', () => {
     assert.ok(provider, 'agent provider select should exist');
     assert.ok(Array.from(provider.options).some((option) => option.value === 'lmstudio'));
   });
+
+  it('preserves imported Claude target and worker selections when Claude UI is otherwise hidden', async () => {
+    wv.postMessage(sampleInitConfig({
+      featureFlags: { enableRemoteDesktop: true, enableClaudeCli: false },
+      config: { chatTarget: 'claude', workerCli: 'claude' },
+    }));
+    await wv.flush();
+
+    const target = wv.document.getElementById('cfg-chat-target');
+    const workerCli = wv.document.getElementById('cfg-worker-cli');
+
+    assert.ok(Array.from(target.options).some((option) => option.value === 'claude'));
+    assert.equal(target.value, 'claude');
+    assert.ok(Array.from(workerCli.options).some((option) => option.value === 'claude'));
+    assert.equal(workerCli.value, 'claude');
+  });
 });

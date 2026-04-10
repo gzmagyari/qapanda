@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { renderCompleteCard } = require('../../src/mcp-cards');
+const { CARD_MAP, renderStartCard, renderCompleteCard } = require('../../src/mcp-cards');
 
 function makeRenderer() {
   const output = [];
@@ -69,5 +69,35 @@ describe('mcp-cards', () => {
     assert.equal(renderer.output.filter((msg) => msg.type === 'clearLiveEntityCard').length, 1);
     assert.equal(renderer.output.filter((msg) => msg.type === 'testCard').length, 1);
     assert.equal(renderer.output.filter((msg) => msg.type === 'mcpCardComplete').length, 0);
+  });
+
+  it('maps detached sleep to a standard waiting card', () => {
+    const renderer = makeRenderer();
+
+    const startSuppressed = renderStartCard(
+      'sleep',
+      { duration_ms: 750 },
+      renderer,
+      'Developer',
+      'card-3'
+    );
+    const completeSuppressed = renderCompleteCard(
+      'sleep',
+      { duration_ms: 750 },
+      { content: [{ type: 'text', text: 'Slept for 750ms.' }] },
+      renderer,
+      'Developer',
+      'card-3'
+    );
+
+    assert.equal(CARD_MAP.sleep.text, 'Wait complete');
+    assert.equal(startSuppressed, true);
+    assert.equal(completeSuppressed, true);
+    assert.equal(renderer.output[0].type, 'mcpCardStart');
+    assert.equal(renderer.output[0].text, 'Waiting');
+    assert.equal(renderer.output[0].detail, '750');
+    assert.equal(renderer.output[1].type, 'mcpCardComplete');
+    assert.equal(renderer.output[1].text, 'Wait complete');
+    assert.equal(renderer.output[1].detail, '750');
   });
 });

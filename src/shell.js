@@ -20,6 +20,8 @@ const {
   saveManifest,
 } = require('./state');
 const { summarizeError } = require('./utils');
+const { discoverExternalChatSessions } = require('./external-chat-discovery');
+const { importExternalChatSession } = require('./external-chat-import');
 const {
   findResourcesDir,
   loadMergedAgents,
@@ -71,6 +73,7 @@ Commands:
   /help                Show this help
   /new <message>       Start a new run and send the first user message
   /resume [run-id-or-alias] Attach to an existing run or alias
+  /import-chat [provider]  List importable Codex/Claude chats for this repo
   /use [run-id-or-alias] Alias for /resume
   /alias <name>        Save the current run as a resume alias
   /unalias <name>      Remove a saved resume alias
@@ -631,6 +634,51 @@ async function runInteractiveShell(options = {}) {
           activeManifest.resumeToken = resolved.kind === 'alias' ? resolved.alias : resolved.runId;
           if (activeManifest.waitDelay) { waitDelay = activeManifest.waitDelay; renderer.banner(`Wait delay restored: ${formatWaitDelay(parseWaitDelay(waitDelay))}`); }
           renderer.requestStarted(activeManifest.runId);
+          continue;
+        }
+
+        if (command === '/import-chat') {
+          const parts = rest ? rest.split(/\s+/).filter(Boolean) : [];
+          const provider = parts[0] ? String(parts[0]).trim().toLowerCase() : '';
+          const sessionId = parts[1] ? String(parts[1]).trim() : '';
+          if (parts.length > 2 || (provider && provider !== 'codex' && provider !== 'claude')) {
+            renderer.banner('Usage: /import-chat [codex|claude] [session-id]');
+            continue;
+          }
+
+          if (!sessionId) {
+            const sessions = await discoverExternalChatSessions({
+              repoRoot: cwd,
+              provider: provider || null,
+              limit: 10,
+            });
+            if (!sessions.length) {
+              renderer.banner('No matching external chats found for this repository.');
+              continue;
+            }
+            renderer.banner([
+              'Importable chats:',
+              ...sessions.map((session) => `  ${session.provider} ${session.sessionId} | ${session.preview || session.updatedAt || session.filePath}`),
+              '',
+              'Import with: /import-chat <provider> <session-id>',
+            ].join('\n'));
+            continue;
+          }
+
+          clearWaitTimer();
+          activeManifest = null;
+          const imported = await importExternalChatSession({
+            repoRoot: cwd,
+            stateRoot,
+            provider,
+            sessionId,
+            runOptions: buildRunOptions(),
+          });
+          activeManifest = imported.manifest;
+          await bindCurrentRunAliases();
+          await saveManifest(activeManifest);
+          renderer.requestStarted(activeManifest.runId);
+          renderer.banner(`Imported ${provider} session ${sessionId} into ${activeManifest.runId}.`);
           continue;
         }
 

@@ -5,10 +5,11 @@ import { z } from "zod";
 import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
 import { JobManager } from "./services/jobManager.js";
 import { JobStore } from "./services/jobStore.js";
-import { getJobSchema, listJobsSchema, readOutputSchema, startCommandSchema, stopJobSchema } from "./schemas.js";
+import { getJobSchema, listJobsSchema, readOutputSchema, sleepSchema, startCommandSchema, stopJobSchema } from "./schemas.js";
 import { loadServerConfig } from "./utils/env.js";
 import { UserError, toErrorMessage } from "./utils/errors.js";
 import { formatJobList, formatJobSummary, formatOutputBlock } from "./utils/format.js";
+import { sleep } from "./utils/fs.js";
 const config = loadServerConfig();
 const store = new JobStore(config);
 const manager = new JobManager(config, store);
@@ -84,6 +85,33 @@ server.registerTool("start_command", {
         `launch_state: ${result.launchState}`,
         "",
         formatJobSummary(result.job),
+    ].join("\n");
+    return {
+        content: [{ type: "text", text }],
+        structuredContent: structured,
+    };
+});
+server.registerTool("sleep", {
+    title: "Wait before polling again",
+    description: "Pause for a bounded amount of time, then return. Use this between get_job or read_output polling attempts to avoid hammering the detached-command MCP server.",
+    inputSchema: sleepSchema,
+    annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+    },
+}, async (params) => {
+    await sleep(params.duration_ms);
+    const structured = {
+        current_instance_id: config.currentInstanceId,
+        duration_ms: params.duration_ms,
+    };
+    const text = [
+        `current_instance_id: ${config.currentInstanceId}`,
+        `duration_ms: ${params.duration_ms}`,
+        "",
+        `Slept for ${params.duration_ms}ms.`,
     ].join("\n");
     return {
         content: [{ type: "text", text }],

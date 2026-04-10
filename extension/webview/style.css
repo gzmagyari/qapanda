@@ -622,6 +622,24 @@ html, body {
   background: rgba(255,255,255,0.08);
   border-color: rgba(255,255,255,0.15);
 }
+.run-history-search {
+  margin-bottom: 8px;
+}
+.run-history-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.04);
+  color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+  font-family: inherit;
+  font-size: 12px;
+}
+.run-history-search-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
 .run-history-title {
   font-size: 13px;
   color: var(--vscode-editor-foreground);
@@ -633,6 +651,12 @@ html, body {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
   margin-top: 2px;
+}
+.run-history-match {
+  font-size: 11px;
+  color: var(--vscode-editor-foreground, #ddd);
+  margin-top: 6px;
+  line-height: 1.4;
 }
 .run-history-empty {
   color: var(--vscode-descriptionForeground);

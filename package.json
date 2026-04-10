@@ -1,6 +1,6 @@
 {
   "name": "qapanda",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Interactive manager CLI that uses Codex to control Claude Code",
   "bin": {
     "qapanda": "./bin/qapanda.js"

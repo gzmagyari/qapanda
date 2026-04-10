@@ -17,6 +17,15 @@ const {
 const { parseInteger, parseNumber, readAllStdin } = require('./utils');
 const { runInteractiveShell } = require('./shell');
 const {
+  discoverExternalChatSessions,
+} = require('./external-chat-discovery');
+const {
+  importExternalChatSession,
+} = require('./external-chat-import');
+const {
+  searchExternalChatSessions,
+} = require('./external-chat-search');
+const {
   findResourcesDir,
   loadMergedAgents,
   loadMergedModes,
@@ -60,6 +69,7 @@ Commands:
   qapanda                         Start the interactive shell
   qapanda shell                   Start the interactive shell
   qapanda run <message...>        Start a new run, process until STOP, then exit
+  qapanda import-chat             Import a Codex or Claude chat into a new QA Panda run
   qapanda test list               List tracked Panda prompt tests
   qapanda test run [path-or-glob ...]
                                   Run tracked Panda prompt tests
@@ -183,6 +193,15 @@ const TEST_SPEC = {
   'agent': { key: 'agent', kind: 'value' },
 };
 const DOCTOR_SPEC = { 'codex-bin': { key: 'codexBin', kind: 'value' }, 'claude-bin': { key: 'claudeBin', kind: 'value' } };
+const IMPORT_CHAT_SPEC = {
+  'repo': { key: 'repoRoot', kind: 'value' },
+  'workspace': { key: 'workspace', kind: 'value' },
+  'state-dir': { key: 'stateRoot', kind: 'value' },
+  'provider': { key: 'provider', kind: 'value' },
+  'latest': { key: 'latest', kind: 'boolean' },
+  'session-id': { key: 'sessionId', kind: 'value' },
+  'query': { key: 'query', kind: 'value' },
+};
 
 function parseArgs(argv, spec) {
   const options = {};
@@ -880,6 +899,27 @@ function printPandaTestList(entries) {
   }
 }
 
+function printImportChatList(entries, options = {}) {
+  const query = String(options.query || '').trim();
+  if (!entries || entries.length === 0) {
+    process.stdout.write('No matching external chats found for this repository.\n');
+    return;
+  }
+  process.stdout.write(query ? `Matching chats for "${query}":\n\n` : 'Importable chats:\n\n');
+  for (const entry of entries) {
+    process.stdout.write(`  ${entry.provider} ${entry.sessionId}\n`);
+    process.stdout.write(`    Updated: ${entry.updatedAt || '(unknown)'}\n`);
+    process.stdout.write(`    Path: ${entry.filePath}\n`);
+    if (entry.preview) {
+      process.stdout.write(`    Preview: ${entry.preview}\n`);
+    }
+    if (entry.matchPreview) {
+      process.stdout.write(`    Match: ${entry.matchPreview}\n`);
+    }
+    process.stdout.write('\n');
+  }
+}
+
 async function pandaTestCommand(argv) {
   const [subcommand, ...rest] = argv;
   if (!subcommand || (subcommand !== 'list' && subcommand !== 'run')) {
@@ -924,6 +964,67 @@ async function pandaTestCommand(argv) {
     }
     throw error;
   }
+}
+
+async function importChatCommand(argv) {
+  const parsed = parseArgs(argv, IMPORT_CHAT_SPEC);
+  const provider = String(parsed.options.provider || '').trim().toLowerCase();
+  if (provider !== 'codex' && provider !== 'claude') {
+    throw createExitError('Usage: qapanda import-chat --provider <codex|claude> [--query <text> | --latest | --session-id <id>] [--repo <path>]', 2);
+  }
+
+  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const query = String(parsed.options.query || '').trim();
+  const selectionCount = Number(!!parsed.options.latest) + Number(!!parsed.options.sessionId) + Number(!!query);
+  if (selectionCount > 1) {
+    throw createExitError('--query cannot be combined with --latest or --session-id.', 2);
+  }
+
+  if (query) {
+    printImportChatList(await searchExternalChatSessions({
+      repoRoot: options.repoRoot,
+      provider,
+      query,
+      limit: 20,
+    }), { query });
+    return;
+  }
+
+  if (!parsed.options.latest && !parsed.options.sessionId) {
+    printImportChatList(await discoverExternalChatSessions({
+      repoRoot: options.repoRoot,
+      provider,
+      limit: 20,
+    }));
+    return;
+  }
+
+  const config = loadConfig(options.repoRoot);
+  await config.cloud.preload();
+  const { options: enriched } = applyConfigToOptions(options, config);
+
+  const targetSession = parsed.options.latest
+    ? (await discoverExternalChatSessions({
+        repoRoot: options.repoRoot,
+        provider,
+        limit: 1,
+      }))[0] || null
+    : null;
+  const sessionId = parsed.options.sessionId || (targetSession && targetSession.sessionId);
+  if (!sessionId) {
+    throw createExitError(`No ${provider} chats found for ${options.repoRoot}.`, 2);
+  }
+
+  const imported = await importExternalChatSession({
+    repoRoot: options.repoRoot,
+    stateRoot: options.stateRoot || defaultStateRoot(options.repoRoot || process.cwd()),
+    provider,
+    sessionId,
+    runOptions: enriched,
+  });
+
+  process.stdout.write(`Imported ${provider} session ${sessionId} into run ${imported.manifest.runId}\n`);
+  process.stdout.write(`Source: ${imported.manifest.importSource.filePath}\n`);
 }
 
 async function mcpCmd(argv) {
@@ -1010,6 +1111,7 @@ async function main(argv) {
   if (command === 'agents') { await listAgentsCmd(rest); return; }
   if (command === 'modes') { await listModesCmd(rest); return; }
   if (command === 'test') { await pandaTestCommand(rest); return; }
+  if (command === 'import-chat') { await importChatCommand(rest); return; }
   if (command === 'cloud') { await runCloudCommand(rest); return; }
   if (command === 'cloud-run') { await runCloudRunCommand(rest); return; }
   if (command === 'mcp') { await mcpCmd(rest); return; }

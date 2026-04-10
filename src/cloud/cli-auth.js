@@ -339,7 +339,7 @@ function resolveContextConfigInput(mode, explicitContextKey = null, contextLabel
   const contextKey = explicitContextKey == null ? null : String(explicitContextKey).trim() || null;
   const label = contextLabel == null ? null : String(contextLabel).trim() || null;
   if (contextMode === 'custom' && !contextKey) {
-    throw new Error('Custom repository contexts require a context key.');
+    throw new Error('Custom connected-project contexts require a context key.');
   }
   return {
     contextMode,
@@ -446,12 +446,12 @@ function resolveHostedCloudUrl(boundary, target, id = null) {
 }
 
 function resolveHostedRepositoryContextUrl(boundary, repositoryId, repositoryContextId = null) {
-  if (!repositoryId) throw new Error('Hosted repository page requires a repository id.');
+  if (!repositoryId) throw new Error('Hosted project page requires a project id.');
   const trim = boundary.config.appBaseUrl.replace(/\/$/, '');
   const query = repositoryContextId
     ? `?contextId=${encodeURIComponent(repositoryContextId)}`
     : '';
-  return `${trim}/app/repositories/${encodeURIComponent(repositoryId)}${query}`;
+  return `${trim}/app/projects/${encodeURIComponent(repositoryId)}${query}`;
 }
 
 function printCloudResult(value, json, stdout = process.stdout) {
@@ -462,15 +462,15 @@ function printCloudResult(value, json, stdout = process.stdout) {
 
 function printRepositoryIdentityStatus(repository, stdout = process.stdout) {
   if (!repository) return;
-  const label = repository.displayName || repository.repositorySlug || 'repository';
-  stdout.write(`Repository identity: ${label}\n`);
+  const label = repository.displayName || repository.repositorySlug || 'connected project';
+  stdout.write(`Connected project identity: ${label}\n`);
   if (repository.canonicalRemoteUrl) {
     stdout.write(`Canonical remote: ${repository.canonicalRemoteUrl}\n`);
   } else if (repository.kind === 'path_fallback') {
     stdout.write('Canonical remote: local path fallback\n');
-    stdout.write('Repository identity uses a local path fallback until this checkout has a shared remote.\n');
+    stdout.write('Connected-project identity uses a local path fallback until this checkout has a shared remote.\n');
   }
-  if (repository.repositoryKey) stdout.write(`Repository key: ${repository.repositoryKey}\n`);
+  if (repository.repositoryKey) stdout.write(`Project key: ${repository.repositoryKey}\n`);
   if (repository.contextKey) stdout.write(`Context key: ${repository.contextKey}\n`);
   if (repository.instanceKey) stdout.write(`Instance key: ${repository.instanceKey}\n`);
 }
@@ -720,7 +720,7 @@ async function runCloudCommand(argv, options = {}) {
         printCloudResult(result, true, stdout);
         return;
       }
-      stdout.write('Saved repository context for this checkout.\n');
+      stdout.write('Saved connected-project context for this checkout.\n');
       printRepositoryContextStatus(result, stdout);
       printRepositoryIdentityStatus(result.repository, stdout);
       return;
@@ -739,7 +739,7 @@ async function runCloudCommand(argv, options = {}) {
         printCloudResult(result, true, stdout);
         return;
       }
-      stdout.write(`Created named repository context ${contextKey} for this checkout.\n`);
+      stdout.write(`Created named connected-project context ${contextKey} for this checkout.\n`);
       printRepositoryContextStatus(result, stdout);
       printRepositoryIdentityStatus(result.repository, stdout);
       return;

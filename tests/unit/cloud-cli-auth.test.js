@@ -738,7 +738,7 @@ describe('runCloudCommand', () => {
     assert.match(stdout.toString(), /Sync - Healthy/);
     assert.match(stdout.toString(), /Context mode: branch/);
       assert.match(stdout.toString(), /Context label: feature\/cloud-status/);
-      assert.match(stdout.toString(), /Repository identity: cc-manager/);
+    assert.match(stdout.toString(), /Connected project identity: cc-manager/);
       assert.match(stdout.toString(), /Canonical remote: git:github\.com\/qa-panda\/cc-manager/);
     assert.match(stdout.toString(), /Context key: ctx:branch:feature-cloud-status/);
     assert.match(stdout.toString(), /Synced objects: 2 tests, 1 issue, 1 recipe/);
@@ -952,7 +952,7 @@ describe('runCloudCommand', () => {
     assert.match(stdout.toString(), /Switched QA Panda Cloud workspace to QA Team/);
   });
 
-  it('shows and saves repository context through the CLI command handler', async () => {
+  it('shows and saves connected-project context through the CLI command handler', async () => {
     const stdout = makeWriter();
     const savedUpdates = [];
     await runCloudCommand(['context', 'use', 'custom', 'release-worktree', '--label', 'Release worktree'], {
@@ -998,12 +998,12 @@ describe('runCloudCommand', () => {
       explicitContextKey: 'release-worktree',
       contextLabel: 'Release worktree',
     });
-    assert.match(stdout.toString(), /Saved repository context for this checkout/);
+    assert.match(stdout.toString(), /Saved connected-project context for this checkout/);
     assert.match(stdout.toString(), /Explicit context key: release-worktree/);
     assert.match(stdout.toString(), /Resolved context key: ctx:custom:release-worktree/);
   });
 
-  it('opens the current hosted repository context through the CLI command handler', async () => {
+  it('opens the current hosted project context through the CLI command handler', async () => {
     const stdout = makeWriter();
     let opened = null;
     await runCloudCommand(['context', 'open'], {
@@ -1084,8 +1084,8 @@ describe('runCloudCommand', () => {
       },
     });
 
-    assert.equal(opened, 'https://app.qapanda.localhost/app/repositories/repo-1?contextId=context-9');
-    assert.match(stdout.toString(), /Opened https:\/\/app\.qapanda\.localhost\/app\/repositories\/repo-1\?contextId=context-9/);
+    assert.equal(opened, 'https://app.qapanda.localhost/app/projects/repo-1?contextId=context-9');
+    assert.match(stdout.toString(), /Opened https:\/\/app\.qapanda\.localhost\/app\/projects\/repo-1\?contextId=context-9/);
   });
 });
 

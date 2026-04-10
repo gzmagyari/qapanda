@@ -76,6 +76,7 @@ const CARD_MAP = {
   stop_job:             { icon: '\u23F9\uFE0F', text: 'Job stopped', startText: 'Stopping job' },
   list_jobs:            { icon: '\uD83D\uDCCB', text: 'Jobs listed', startText: 'Listing jobs' },
   get_job:              { icon: '\uD83D\uDD0D', text: 'Job info', startText: 'Getting job info' },
+  sleep:                { icon: '\u23F3', text: 'Wait complete', startText: 'Waiting', field: 'duration_ms' },
 
   // ── QA Desktop ────────────────────────────
   snapshot_container:   { icon: '\uD83D\uDCF8', text: 'Snapshot saved', startText: 'Saving snapshot', field: 'name' },

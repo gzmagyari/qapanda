@@ -469,13 +469,13 @@
   function renderCloudRepositoryIdentity(loggedIn, repository) {
     if (cloudRepositoryState) {
       if (!loggedIn) {
-        cloudRepositoryState.textContent = 'Sign in to inspect the hosted repository identity for this checkout.';
+        cloudRepositoryState.textContent = 'Sign in to inspect the connected-project identity for this checkout.';
       } else if (!repository) {
-        cloudRepositoryState.textContent = 'Repository identity will appear here after the extension loads cloud sync status.';
+        cloudRepositoryState.textContent = 'Connected-project identity will appear here after the extension loads cloud sync status.';
       } else if (repository.kind === 'path_fallback') {
-        cloudRepositoryState.textContent = `Using a local path fallback for ${repository.displayName || 'this checkout'} until the repository has a shared remote.`;
+        cloudRepositoryState.textContent = `Using a local path fallback for ${repository.displayName || 'this checkout'} until this connected project has a shared remote.`;
       } else {
-        cloudRepositoryState.textContent = `Hosted sync resolves this checkout as ${repository.displayName || 'the current repository'} across machines.`;
+        cloudRepositoryState.textContent = `Hosted sync resolves this checkout to the connected project ${repository.displayName || 'for this workspace'} across machines.`;
       }
     }
     if (cloudRepositoryMeta) {
@@ -485,7 +485,7 @@
       } else if (repository && repository.kind === 'path_fallback') {
         details.push('Canonical remote local path fallback');
       }
-      if (repository && repository.repositoryKey) details.push(`Repository ${repository.repositoryKey}`);
+      if (repository && repository.repositoryKey) details.push(`Project key ${repository.repositoryKey}`);
       if (repository && repository.contextKey) details.push(`Context ${repository.contextKey}`);
       if (repository && repository.instanceKey) details.push(`Instance ${repository.instanceKey}`);
       cloudRepositoryMeta.textContent = details.join('\n');
@@ -500,11 +500,11 @@
       if (!loggedIn) {
         cloudObjectsState.textContent = 'Sign in to inspect synced tests, issues, and recipes for this checkout.';
       } else if (!runtime) {
-        cloudObjectsState.textContent = 'Checking synced repository objects...';
+        cloudObjectsState.textContent = 'Checking connected-project sync objects...';
       } else if (total === 0) {
         cloudObjectsState.textContent = 'No synced tests, issues, or recipes yet.';
       } else {
-        cloudObjectsState.textContent = `${counts.tests || 0} tests, ${counts.issues || 0} issues, and ${counts.recipes || 0} recipes are currently mirrored for this repository context.`;
+        cloudObjectsState.textContent = `${counts.tests || 0} tests, ${counts.issues || 0} issues, and ${counts.recipes || 0} recipes are currently mirrored for this connected-project context.`;
       }
     }
     if (cloudObjectsMeta) {
@@ -598,12 +598,12 @@
 
     if (cloudSyncState) {
       if (!loggedIn) {
-        cloudSyncState.textContent = 'Sign in to start repository sync for this workspace.';
+        cloudSyncState.textContent = 'Sign in to start connected-project sync for this workspace.';
       } else if (runtime) {
         const detail = runtime.badge && runtime.badge.detail ? runtime.badge.detail : runtime.indicator && runtime.indicator.detail;
         cloudSyncState.textContent = `${runtime.badge ? runtime.badge.label : 'Sync'}${detail ? ` — ${detail}` : ''}`;
       } else {
-        cloudSyncState.textContent = 'Preparing repository sync for this workspace.';
+        cloudSyncState.textContent = 'Preparing connected-project sync for this workspace.';
       }
     }
 
@@ -691,7 +691,7 @@
       } else if (contextMode === 'worktree') {
         cloudContextState.textContent = 'This checkout keeps a separate context per worktree path.';
       } else {
-        cloudContextState.textContent = 'This checkout shares synced objects with the default repository context.';
+        cloudContextState.textContent = 'This checkout shares synced objects with the default connected-project context.';
       }
     }
     if (cloudContextMeta) {
@@ -811,7 +811,7 @@
       const contextModeValue = cloudContextDraft.mode || 'shared';
       const explicitContextKey = String(cloudContextDraft.explicitContextKey || '').trim();
       const contextLabelValue = String(cloudContextDraft.contextLabel || '').trim();
-      cloudPendingAction = 'Saving repository context...';
+      cloudPendingAction = 'Saving connected-project context...';
       cloudNoticeText = '';
       setCloudAccountStatus(cloudPendingAction);
       renderCloudAccount();
@@ -828,7 +828,7 @@
       const explicitContextKey = String(cloudContextDraft.explicitContextKey || '').trim();
       if (!explicitContextKey) return;
       const contextLabelValue = String(cloudContextDraft.contextLabel || '').trim();
-      cloudPendingAction = 'Saving named repository context...';
+      cloudPendingAction = 'Saving named connected-project context...';
       cloudNoticeText = '';
       setCloudAccountStatus(cloudPendingAction);
       cloudContextDraft.mode = 'custom';
@@ -844,7 +844,7 @@
   }
   if (cloudContextOpen) {
     cloudContextOpen.addEventListener('click', () => {
-      cloudPendingAction = 'Opening hosted repository context...';
+      cloudPendingAction = 'Opening connected project in the app...';
       cloudNoticeText = '';
       setCloudAccountStatus(cloudPendingAction);
       renderCloudAccount();
@@ -3659,6 +3659,50 @@
     unstagedCount: 0,
     stagedCount: 0,
   };
+  let importChatPickerState = null;
+  let importChatSearchTimer = null;
+  let importChatSearchSeq = 0;
+
+  function clearImportChatSearchTimer() {
+    if (importChatSearchTimer) {
+      clearTimeout(importChatSearchTimer);
+      importChatSearchTimer = null;
+    }
+  }
+
+  function closeImportChatPicker() {
+    clearImportChatSearchTimer();
+    if (importChatPickerState && importChatPickerState.container && importChatPickerState.container.parentNode) {
+      importChatPickerState.container.parentNode.removeChild(importChatPickerState.container);
+    }
+    importChatPickerState = null;
+  }
+
+  function nextImportChatSearchRequestId() {
+    importChatSearchSeq += 1;
+    return 'import-chat-search-' + importChatSearchSeq;
+  }
+
+  function queueImportChatSearch(state, query) {
+    if (!state) return;
+    clearImportChatSearchTimer();
+    var requestId = nextImportChatSearchRequestId();
+    state.lastRequestId = requestId;
+    importChatSearchTimer = setTimeout(function() {
+      vscode.postMessage({
+        type: 'searchImportChats',
+        provider: state.provider || null,
+        query: String(query || ''),
+        requestId: requestId,
+      });
+    }, 180);
+  }
+
+  function importChatSearchPlaceholder(provider) {
+    if (provider === 'codex') return 'Search Codex chat messages...';
+    if (provider === 'claude') return 'Search Claude chat messages...';
+    return 'Search imported chat messages...';
+  }
 
   function saveState() {
     // Persist run ID, config, and desktop info per panel. Chat history is
@@ -3790,7 +3834,7 @@
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
     // chat history survives reloads via transcript.jsonl on disk.
-    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState'];
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'runHistory', 'importChatHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState'];
     if (skipped.includes(msg.type)) return;
     messageLog.push(msg);
   }
@@ -4059,11 +4103,12 @@
     if (config.loopMode !== undefined && loopToggle) loopToggle.checked = !!config.loopMode;
     if (config.loopObjective !== undefined && loopObjectiveInput) loopObjectiveInput.value = config.loopObjective || '';
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
+    syncClaudeUiVisibility(config);
     suppressTargetConfirm = true;
     if (config.chatTarget !== undefined && cfgChatTarget) {
       const desiredTarget = config.chatTarget || 'controller';
       const hasDesiredOption = Array.from(cfgChatTarget.options || []).some((option) => option.value === desiredTarget);
-      if (!hasDesiredOption && desiredTarget && desiredTarget !== 'controller' && desiredTarget !== 'claude') {
+      if (!hasDesiredOption && desiredTarget && desiredTarget !== 'controller') {
         _pendingChatTarget = desiredTarget;
       }
       cfgChatTarget.value = config.chatTarget;
@@ -4363,8 +4408,56 @@
   // Saved chatTarget from vscode.getState — used to restore after dropdown is populated
   let _pendingChatTarget = null;
 
+  function ensureSelectOption(selectEl, value, label) {
+    if (!selectEl) return;
+    const existing = Array.from(selectEl.options || []).find((option) => option.value === value);
+    if (existing) {
+      if (label) existing.textContent = label;
+      return;
+    }
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label || value;
+    selectEl.appendChild(option);
+  }
+
+  function syncClaudeUiVisibility(desired) {
+    desired = desired || {};
+    const claudeEnabled = !!(_featureFlags && _featureFlags.enableClaudeCli);
+    const desiredTarget = desired.chatTarget;
+    const desiredControllerCli = desired.controllerCli;
+    const desiredWorkerCli = desired.workerCli;
+
+    if (cfgChatTarget) {
+      const keepClaudeTarget = claudeEnabled || desiredTarget === 'claude' || _pendingChatTarget === 'claude' || cfgChatTarget.value === 'claude';
+      if (keepClaudeTarget) {
+        ensureSelectOption(cfgChatTarget, 'claude', 'Worker (Default)');
+      } else {
+        const claudeOpt = cfgChatTarget.querySelector('option[value="claude"]');
+        if (claudeOpt) claudeOpt.remove();
+        if (cfgChatTarget.value === 'claude') cfgChatTarget.value = 'controller';
+      }
+    }
+
+    [
+      { select: document.getElementById('cfg-controller-cli'), desiredValue: desiredControllerCli },
+      { select: document.getElementById('cfg-worker-cli'), desiredValue: desiredWorkerCli },
+    ].forEach(({ select, desiredValue }) => {
+      if (!select) return;
+      const keepClaude = claudeEnabled || desiredValue === 'claude' || select.value === 'claude';
+      if (keepClaude) {
+        ensureSelectOption(select, 'claude', 'Claude');
+      } else {
+        const claudeOpt = select.querySelector('option[value="claude"]');
+        if (claudeOpt) claudeOpt.remove();
+        if (select.value === 'claude') select.value = 'codex';
+      }
+    });
+  }
+
   function refreshTargetDropdown() {
     if (!cfgChatTarget) return;
+    syncClaudeUiVisibility();
     const currentValue = cfgChatTarget.value;
     // Remove existing agent options
     Array.from(cfgChatTarget.options).forEach(opt => {
@@ -6041,24 +6134,8 @@
       const skipBtn = document.getElementById('onboard-skip');
       if (skipBtn) skipBtn.style.display = 'none';
     }
-    // Hide Claude CLI options when Claude is disabled
-    if (!flags.enableClaudeCli) {
-      // Remove claude option from target dropdown
-      if (cfgChatTarget) {
-        const claudeOpt = cfgChatTarget.querySelector('option[value="claude"]');
-        if (claudeOpt) claudeOpt.remove();
-      }
-      // Remove claude options from controller/worker CLI dropdowns
-      const cfgControllerCliEl = document.getElementById('cfg-controller-cli');
-      const cfgWorkerCliEl = document.getElementById('cfg-worker-cli');
-      [cfgControllerCliEl, cfgWorkerCliEl].forEach(sel => {
-        if (!sel) return;
-        const opt = sel.querySelector('option[value="claude"]');
-        if (opt) opt.remove();
-        // Default to codex if claude was selected
-        if (sel.value === 'claude') sel.value = 'codex';
-      });
-    }
+    // Hide Claude UI when the feature is disabled, but preserve active/imported Claude selections.
+    syncClaudeUiVisibility();
   }
 
   const handlers = {
@@ -6818,6 +6895,155 @@
       autoScroll();
     },
 
+    importChatHistory(msg) {
+      clearWelcome();
+      if (msg.requestId && !importChatPickerState) {
+        return;
+      }
+      if (msg.requestId && importChatPickerState && importChatPickerState.lastRequestId && msg.requestId !== importChatPickerState.lastRequestId) {
+        return;
+      }
+
+      var state = importChatPickerState;
+      if (!state || !state.container || !state.container.isConnected) {
+        var old = messagesEl.querySelector('.run-history');
+        if (old) old.remove();
+        state = {
+          container: document.createElement('div'),
+          provider: null,
+          query: '',
+          lastRequestId: null,
+          searchInput: null,
+        };
+        state.container.className = 'run-history run-history-import';
+        importChatPickerState = state;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(msg, 'provider')) {
+        state.provider = msg.provider || null;
+      }
+      if (typeof msg.query === 'string') {
+        state.query = msg.query;
+      }
+      if (msg.requestId) {
+        state.lastRequestId = msg.requestId;
+      }
+      var sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
+      var pageSize = 5;
+      var shown = 0;
+      var hadSearchFocus = !!(state.searchInput && document.activeElement === state.searchInput);
+      var container = state.container;
+      container.innerHTML = '';
+
+      var header = document.createElement('div');
+      header.className = 'run-history-header';
+      var headerText = document.createElement('span');
+      headerText.textContent = 'Import Existing Chat';
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'run-history-close';
+      closeBtn.textContent = '\u2715';
+      closeBtn.addEventListener('click', function() { closeImportChatPicker(); });
+      header.appendChild(headerText);
+      header.appendChild(closeBtn);
+      container.appendChild(header);
+
+      var searchWrap = document.createElement('div');
+      searchWrap.className = 'run-history-search';
+      var searchInput = document.createElement('input');
+      searchInput.className = 'run-history-search-input';
+      searchInput.type = 'search';
+      searchInput.placeholder = importChatSearchPlaceholder(state.provider);
+      searchInput.value = state.query || '';
+      searchInput.setAttribute('aria-label', 'Search imported chat messages');
+      searchInput.addEventListener('input', function() {
+        state.query = this.value;
+        queueImportChatSearch(state, state.query);
+      });
+      searchWrap.appendChild(searchInput);
+      container.appendChild(searchWrap);
+      state.searchInput = searchInput;
+
+      if (sessions.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'run-history-empty';
+        empty.textContent = state.query
+          ? 'No chat messages matched "' + state.query + '".'
+          : 'No importable chats found.';
+        container.appendChild(empty);
+      } else {
+        var list = document.createElement('div');
+        list.className = 'run-history-list';
+        container.appendChild(list);
+
+        var moreBtn = null;
+
+        function createCard(session) {
+          var card = document.createElement('div');
+          card.className = 'run-history-card';
+          var titleEl = document.createElement('div');
+          titleEl.className = 'run-history-title';
+          titleEl.textContent = session.title || (session.provider + ' ' + session.sessionId);
+          var metaEl = document.createElement('div');
+          metaEl.className = 'run-history-meta';
+          var relative = _formatRelativeTime(session.updatedAt);
+          metaEl.textContent = session.provider + ' \u2022 ' + session.sessionId + (relative ? ' \u2022 ' + relative : '');
+          card.appendChild(titleEl);
+          card.appendChild(metaEl);
+          if (session.preview) {
+            var previewEl = document.createElement('div');
+            previewEl.className = 'run-history-meta';
+            previewEl.textContent = session.preview;
+            card.appendChild(previewEl);
+          }
+          if (session.matchPreview) {
+            var matchEl = document.createElement('div');
+            matchEl.className = 'run-history-match';
+            matchEl.textContent = 'Match: ' + session.matchPreview;
+            card.appendChild(matchEl);
+          }
+          card.setAttribute('data-provider', session.provider);
+          card.setAttribute('data-session-id', session.sessionId);
+          card.addEventListener('click', function() {
+            var selectedProvider = this.getAttribute('data-provider');
+            var selectedSessionId = this.getAttribute('data-session-id');
+            closeImportChatPicker();
+            vscode.postMessage({ type: 'userInput', text: '/import-chat ' + selectedProvider + ' ' + selectedSessionId });
+          });
+          return card;
+        }
+
+        function showMore() {
+          var end = Math.min(shown + pageSize, sessions.length);
+          for (var i = shown; i < end; i++) {
+            list.appendChild(createCard(sessions[i]));
+          }
+          shown = end;
+          if (shown < sessions.length) {
+            if (!moreBtn) {
+              moreBtn = document.createElement('button');
+              moreBtn.className = 'run-history-more';
+              moreBtn.addEventListener('click', showMore);
+              container.appendChild(moreBtn);
+            }
+            moreBtn.textContent = 'Show more (' + (sessions.length - shown) + ' remaining)';
+          } else if (moreBtn) {
+            moreBtn.remove();
+            moreBtn = null;
+          }
+        }
+
+        showMore();
+      }
+
+      if (!container.isConnected) {
+        messagesEl.appendChild(container);
+      }
+      if (hadSearchFocus) {
+        searchInput.focus();
+      }
+      autoScroll();
+    },
+
     rawEvent() {
       // Ignored in UI
     },
@@ -7059,6 +7285,7 @@
     { cmd: '/help', desc: 'Show help' },
     { cmd: '/new', desc: 'Start a new run' },
     { cmd: '/resume', desc: 'Attach to an existing run or alias' },
+    { cmd: '/import-chat', desc: 'Import a Codex or Claude chat into a new run' },
     { cmd: '/alias', desc: 'Save current run as an alias' },
     { cmd: '/unalias', desc: 'Remove a saved alias' },
     { cmd: '/aliases', desc: 'List saved aliases' },

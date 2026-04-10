@@ -886,7 +886,7 @@ When self-testing IS requested: the QA Panda app IS the app under test. Test it 
 ### Setup
 1. Start the web server: \`start_command\` with \`cd <repo-root> && npm run web\`
    If port 3000 is busy, stop the old one first: \`start_command\` with \`npx kill-port 3000\`, then start again
-2. Wait for "Ready: http://localhost:3000" (check with \`read_output\`)
+2. Wait for "Ready: http://localhost:3000" (check with \`read_output\`, using \`sleep\` between polls if it is still starting)
 3. Navigate to http://localhost:3000 using \`navigate_page\`
 4. Take a screenshot to see the initial state
 

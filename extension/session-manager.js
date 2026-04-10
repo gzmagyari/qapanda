@@ -4,6 +4,7 @@ const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } =
 const { closeInteractiveSessions } = require('./src/claude');
 const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./src/prompts');
 const { appendWizardDebug, summarizeForDebug } = require('./src/debug-log');
+const { searchExternalChatSessions } = require('./src/external-chat-search');
 const {
   WAIT_OPTIONS,
   defaultStateRoot,
@@ -16,6 +17,8 @@ const {
   saveManifest,
 } = require('./src/state');
 const { readText, summarizeError } = require('./src/utils');
+const { discoverExternalChatSessions } = require('./src/external-chat-discovery');
+const { importExternalChatSession } = require('./src/external-chat-import');
 const { controllerLabelFor, workerLabelFor } = require('./src/render');
 const {
   bindResumeAlias,
@@ -1097,6 +1100,76 @@ class SessionManager {
     return this._activeManifest;
   }
 
+  _buildImportRunOpts(provider) {
+    const opts = this._buildNewRunOpts();
+    if (provider === 'codex') {
+      opts.controllerCli = 'codex';
+      opts.chatTarget = 'controller';
+      return opts;
+    }
+    if (provider === 'claude') {
+      opts.workerCli = 'claude';
+      opts.chatTarget = 'claude';
+    }
+    return opts;
+  }
+
+  async _showImportableChats(provider = null) {
+    const sessions = await discoverExternalChatSessions({
+      repoRoot: this._repoRoot,
+      provider: provider || null,
+      limit: 20,
+    });
+    if (!sessions.length) {
+      this._renderer.banner('No matching external chats found for this repository.');
+      return;
+    }
+    this._postMessage({ type: 'importChatHistory', sessions, provider: provider || null, query: '' });
+  }
+
+  async _searchImportableChats(provider = null, query = '', requestId = null) {
+    const sessions = query
+      ? await searchExternalChatSessions({
+          repoRoot: this._repoRoot,
+          provider: provider || null,
+          query,
+          limit: 20,
+        })
+      : await discoverExternalChatSessions({
+          repoRoot: this._repoRoot,
+          provider: provider || null,
+          limit: 20,
+        });
+    this._postMessage({
+      type: 'importChatHistory',
+      sessions,
+      provider: provider || null,
+      query: query || '',
+      requestId: requestId == null ? null : requestId,
+    });
+  }
+
+  async _importChatSession(provider, sessionId) {
+    await this._resetAttachedRunForLaunch();
+    const imported = await importExternalChatSession({
+      repoRoot: this._repoRoot,
+      stateRoot: this._stateRoot,
+      provider,
+      sessionId,
+      runOptions: this._buildImportRunOpts(provider),
+    });
+    const ok = await this.reattachRun(imported.manifest.runId, { suppressUi: true });
+    if (!ok) {
+      throw new Error(`Imported run ${imported.manifest.runId} could not be reattached.`);
+    }
+    await this._bindConfiguredResumeAliases();
+    this.syncAttachedRunState();
+    await this.sendTranscript();
+    await this.sendProgress();
+    await this.sendReviewState(true);
+    this._renderer.banner(`Imported ${provider === 'codex' ? 'Codex' : 'Claude'} session ${sessionId} into ${imported.manifest.runId}.`);
+  }
+
   /**
    * Try to reattach to a previously saved run by ID.
    * Returns true if successful, false if the run no longer exists.
@@ -1435,6 +1508,16 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'searchImportChats') {
+      const provider = msg.provider ? String(msg.provider).trim().toLowerCase() : '';
+      const query = String(msg.query || '').trim();
+      if (provider && provider !== 'codex' && provider !== 'claude') {
+        return;
+      }
+      await this._searchImportableChats(provider || null, query, msg.requestId);
+      return;
+    }
+
     if (msg.type === 'reviewStateRequest') {
       await this.sendReviewState(true);
       return;
@@ -1639,6 +1722,7 @@ class SessionManager {
         '  /help                          Show this help\n' +
         '  /new <message>                 Start a new run\n' +
         '  /resume [run-id-or-alias]      Attach to an existing run or alias\n' +
+        '  /import-chat [provider]        Import a Codex or Claude chat into a new run\n' +
         '  /alias <name>                  Save the current run under an alias\n' +
         '  /unalias <name>                Remove a saved resume alias\n' +
         '  /aliases                       List saved resume aliases\n' +
@@ -1784,6 +1868,22 @@ class SessionManager {
       this._renderer.requestStarted(this._activeManifest.runId);
       await this.sendProgress();
       this._restoreWaitTimer();
+      return;
+    }
+
+    if (command === '/import-chat') {
+      const parts = rest ? rest.split(/\s+/).filter(Boolean) : [];
+      const provider = parts[0] ? String(parts[0]).trim().toLowerCase() : '';
+      const sessionId = parts[1] ? String(parts[1]).trim() : '';
+      if (parts.length > 2 || (provider && provider !== 'codex' && provider !== 'claude')) {
+        this._renderer.banner('Usage: /import-chat [codex|claude] [session-id]');
+        return;
+      }
+      if (!sessionId) {
+        await this._showImportableChats(provider || null);
+        return;
+      }
+      await this._importChatSession(provider, sessionId);
       return;
     }
 

@@ -81,7 +81,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <div class="cloud-entry-eyebrow">Optional Sign-In</div>
         <h2>Use QA Panda with or without an account</h2>
         <p class="cloud-entry-copy">
-          Sign in to enable hosted sync, shared issues and tests, and cloud notifications for this repository. You can also continue locally as a guest exactly like today.
+          Sign in to enable connected-project sync, shared issues and tests, and cloud notifications for this checkout. You can also continue locally as a guest exactly like today.
         </p>
         <div class="cloud-entry-actions">
           <button class="mcp-btn mcp-btn-primary" id="cloud-entry-login" type="button">Sign In</button>
@@ -109,6 +109,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             <span class="toolbar-label">TARGET</span>
             <select id="cfg-chat-target">
               <option value="controller">Orchestrator</option>
+              <option value="claude">Worker (Default)</option>
               <option value="agent-QA-Browser">QA Browser</option>
             </select>
           </div>
@@ -411,22 +412,22 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </div>
             <div class="settings-item settings-item-stack">
               <div class="settings-item-info">
-                <div class="settings-item-name">Repository Sync</div>
+                <div class="settings-item-name">Connected Project Sync</div>
                 <div class="settings-item-desc" id="cloud-sync-state">Sync state will appear here after the extension loads cloud status.</div>
               </div>
               <div class="cloud-account-meta" id="cloud-sync-meta"></div>
             </div>
             <div class="settings-item settings-item-stack">
               <div class="settings-item-info">
-                <div class="settings-item-name">Repository Identity</div>
-                <div class="settings-item-desc" id="cloud-repository-state">The canonical repository identity for this checkout will appear here after the extension loads cloud status.</div>
+                <div class="settings-item-name">Connected Project Identity</div>
+                <div class="settings-item-desc" id="cloud-repository-state">The connected-project identity for this checkout will appear here after the extension loads cloud status.</div>
               </div>
               <div class="cloud-account-meta" id="cloud-repository-meta"></div>
             </div>
               <div class="settings-item settings-item-stack">
                 <div class="settings-item-info">
-                  <div class="settings-item-name">Repository Context</div>
-                <div class="settings-item-desc" id="cloud-context-state">This checkout can stay in the shared repository context or use a named override context.</div>
+                  <div class="settings-item-name">Connected Project Context</div>
+                <div class="settings-item-desc" id="cloud-context-state">This checkout can stay in the shared connected-project context or use a named override context.</div>
               </div>
               <div class="cloud-account-links">
                 <select class="mcp-input" id="cloud-context-mode">
