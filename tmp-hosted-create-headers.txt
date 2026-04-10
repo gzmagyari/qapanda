@@ -1,0 +1,8 @@
+HTTP/1.1 307 Temporary Redirect
+Alt-Svc: h3=":443"; ma=2592000
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Location: https://app.qapanda.localhost/app/projects/966db186-da73-453d-be87-4adce19019d7?project_created=1
+Server: Caddy
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+Transfer-Encoding: chunked
+

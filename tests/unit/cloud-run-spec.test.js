@@ -7,7 +7,10 @@ const Module = require('node:module');
 
 const {
   CLOUD_RUN_SPEC_VERSION,
+  buildDirectCloudRunPrompt,
+  buildCloudRunOptions,
   createCloudRunEventBridge,
+  detectCloudRunExecutionIssue,
   loadCloudRunSpec,
   validateCloudRunSpec,
   writeCloudRunArtifacts,
@@ -45,6 +48,23 @@ function createSpecFile(overrides = {}) {
 test('validateCloudRunSpec accepts the documented v1 shape', () => {
   const { spec } = createSpecFile();
   assert.equal(validateCloudRunSpec(spec).version, CLOUD_RUN_SPEC_VERSION);
+});
+
+test('buildCloudRunOptions launches direct cloud runs through the QA-Browser agent instead of print mode', () => {
+  const { spec } = createSpecFile();
+  const options = buildCloudRunOptions(spec, {});
+  assert.equal(options.agent, 'QA-Browser');
+  assert.equal(options.print, false);
+  assert.equal(options.cloudRunSpec.targetUrl, 'https://example.test/login');
+});
+
+test('buildDirectCloudRunPrompt includes hosted target context for browser QA runs', () => {
+  const { spec } = createSpecFile();
+  const prompt = buildDirectCloudRunPrompt(spec);
+  assert.match(prompt, /Check the login form\./);
+  assert.match(prompt, /Hosted run context:/);
+  assert.match(prompt, /Target URL: https:\/\/example\.test\/login/);
+  assert.match(prompt, /Browser preset: desktop_chrome/);
 });
 
 test('validateCloudRunSpec accepts optional hosted workflow metadata blocks', () => {
@@ -192,6 +212,47 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
     assert.ok(fs.existsSync(path.join(outputDir, 'screenshots', 'screenshot-001.png')));
     assert.ok(artifacts.some((artifact) => artifact.artifactType === 'report_json'));
     assert.ok(artifacts.some((artifact) => artifact.artifactType === 'screenshot'));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('createCloudRunEventBridge forwards raw worker json lines into cloud-run events', async () => {
+  const { spec } = createSpecFile();
+  const events = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    events.push(String(chunk).trim());
+    return true;
+  };
+  try {
+    const bridge = createCloudRunEventBridge(spec);
+    await bridge({
+      source: 'worker-json',
+      rawLine: '{"type":"thread.started","thread_id":"real-session"}',
+      parsed: { type: 'thread.started', thread_id: 'real-session' },
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(events.length, 1);
+  const rawEvent = parseCliRawEventLine(events[0]);
+  assert.equal(rawEvent.type, 'session.note');
+  assert.equal(rawEvent.source, 'worker-json');
+  assert.equal(rawEvent.parsed.type, 'thread.started');
+});
+
+test('detectCloudRunExecutionIssue flags fake codex sessions in manifest events', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-cloud-run-events-'));
+  const eventsPath = path.join(tempDir, 'events.jsonl');
+  fs.writeFileSync(eventsPath, '{"source":"worker-json","rawLine":"{\\"type\\":\\"thread.started\\",\\"thread_id\\":\\"fake-codex-session-0001\\"}"}\n', 'utf8');
+  try {
+    const issue = await detectCloudRunExecutionIssue({
+      files: {
+        events: eventsPath,
+      },
+    });
+    assert.match(issue, /fake codex shim/i);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -447,11 +508,13 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
     const { main } = require('../../src/cli');
     await main(['cloud-run', '--spec', specPath, '--raw-events', '--controller-codex-mode', 'cli']);
     assert.equal(calls.prepareNewRun.length, 1);
-    assert.equal(calls.prepareNewRun[0].message, 'Check the login form.');
+    assert.match(calls.prepareNewRun[0].message, /Check the login form\./);
+    assert.match(calls.prepareNewRun[0].message, /Target URL: https:\/\/example\.test\/login/);
     assert.equal(calls.prepareNewRun[0].options.rawEvents, true);
     assert.equal(calls.prepareNewRun[0].options.controllerCodexMode, 'cli');
     assert.equal(calls.runDirectWorkerTurn.length, 1);
-    assert.equal(calls.runDirectWorkerTurn[0].options.userMessage, 'Check the login form.');
+    assert.match(calls.runDirectWorkerTurn[0].options.userMessage, /Check the login form\./);
+    assert.equal(calls.runDirectWorkerTurn[0].options.agentId, 'QA-Browser');
     assert.equal(typeof calls.runDirectWorkerTurn[0].options.onEvent, 'function');
     assert.deepEqual(calls.requestStarted, ['run_123']);
     assert.deepEqual(calls.summary, []);

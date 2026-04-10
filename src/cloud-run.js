@@ -171,12 +171,14 @@ function loadCloudRunSpec(specPath) {
 }
 
 function buildCloudRunOptions(spec, cliOptions = {}) {
+  const useDirectBrowserAgent = !(spec && spec.workflowDefinition);
   return {
     repoRoot: cliOptions.repoRoot ? path.resolve(cliOptions.repoRoot) : process.cwd(),
     stateRoot: cliOptions.stateRoot ? path.resolve(cliOptions.stateRoot) : undefined,
     runId: spec.runId,
     controllerCodexMode: cliOptions.controllerCodexMode || undefined,
-    print: true,
+    agent: useDirectBrowserAgent ? 'QA-Browser' : undefined,
+    print: false,
     rawEvents: Boolean(cliOptions.rawEvents),
     quiet: Boolean(cliOptions.quiet),
     noMcpInject: Boolean(cliOptions.noMcpInject),
@@ -198,6 +200,29 @@ function buildCloudRunOptions(spec, cliOptions = {}) {
       workflowSecretRefs: spec.workflowSecretRefs,
     },
   };
+}
+
+function buildDirectCloudRunPrompt(spec) {
+  const prompt = String(spec && spec.prompt ? spec.prompt : '').trim();
+  const contextLines = [];
+  if (spec && spec.targetUrl) {
+    contextLines.push(`- Target URL: ${spec.targetUrl}`);
+  }
+  if (spec && spec.targetType) {
+    contextLines.push(`- Target type: ${spec.targetType}`);
+  }
+  if (spec && spec.browserPreset) {
+    contextLines.push(`- Browser preset: ${spec.browserPreset}`);
+  }
+  if (contextLines.length === 0) {
+    return prompt;
+  }
+  return [
+    prompt,
+    '',
+    'Hosted run context:',
+    ...contextLines,
+  ].join('\n');
 }
 
 function emitCloudRunRawEvent(event) {
@@ -239,6 +264,39 @@ function createCloudRunEventBridge(spec, options = {}) {
       });
       return;
     }
+    if (event.source === 'worker-json' || event.source === 'controller-json') {
+      const payload = {
+        source: event.source,
+        rawLine: typeof event.rawLine === 'string' ? redactValue(event.rawLine) : null,
+        parsed: event.parsed ? redactValue(event.parsed) : null,
+      };
+      const parsedType = payload.parsed && typeof payload.parsed.type === 'string'
+        ? payload.parsed.type
+        : null;
+      emitCloudRunRawEvent({
+        type: 'session.note',
+        phase: event.source === 'controller-json' ? 'planning' : 'execution',
+        message: parsedType
+          ? `${event.source}: ${parsedType}`
+          : `${event.source}: ${payload.rawLine || 'raw event'}`,
+        source: event.source,
+        rawLine: payload.rawLine,
+        parsed: payload.parsed,
+      });
+      return;
+    }
+    if (event.source === 'worker-stderr' || event.source === 'controller-stderr') {
+      const redactedText = redactValue(event.text);
+      emitCloudRunRawEvent({
+        type: 'session.note',
+        phase: 'execution',
+        message: typeof redactedText === 'string' && redactedText.trim()
+          ? `${event.source}: ${redactedText.trim()}`
+          : `${event.source}: stderr output`,
+        source: event.source,
+      });
+      return;
+    }
     if (event.source === 'worker-result') {
       const redactedText = redactValue(event.text);
       emitCloudRunRawEvent({
@@ -260,6 +318,17 @@ function createCloudRunEventBridge(spec, options = {}) {
       });
     }
   };
+}
+
+async function detectCloudRunExecutionIssue(manifest) {
+  const eventLogPath = manifest && manifest.files ? manifest.files.events : null;
+  if (!eventLogPath) return null;
+  const eventLog = await readText(eventLogPath, '');
+  if (!eventLog) return null;
+  if (/fake-codex-session-\d+/i.test(eventLog) || /fake-codex 0\.0\.1/i.test(eventLog)) {
+    return 'Hosted cloud-run used the local fake codex shim instead of a real Codex session.';
+  }
+  return null;
 }
 
 function screenshotArtifactsFromEntry(entry, fallbackIndex) {
@@ -386,8 +455,10 @@ async function writeCloudRunArtifacts(manifest, spec) {
 module.exports = {
   CLOUD_RUN_ARG_SPEC,
   CLOUD_RUN_SPEC_VERSION,
+  buildDirectCloudRunPrompt,
   buildCloudRunOptions,
   createCloudRunEventBridge,
+  detectCloudRunExecutionIssue,
   emitCloudRunRawEvent,
   loadCloudRunSpec,
   validateCloudRunSpec,

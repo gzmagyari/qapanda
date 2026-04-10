@@ -55,8 +55,10 @@ const {
 } = require('./cloud/workflow-hosted-runs');
 const {
   CLOUD_RUN_ARG_SPEC,
+  buildDirectCloudRunPrompt,
   buildCloudRunOptions,
   createCloudRunEventBridge,
+  detectCloudRunExecutionIssue,
   emitCloudRunRawEvent,
   loadCloudRunSpec,
   writeCloudRunArtifacts,
@@ -770,11 +772,15 @@ async function runCloudRunCommand(argv) {
   try {
     const manifest = spec.workflowDefinition
       ? await runPreparedHostedWorkflowCloudRun(spec, options)
-      : await runPreparedOneShot(spec.prompt, options, {
+      : await runPreparedOneShot(buildDirectCloudRunPrompt(spec), options, {
           preloadCloud: false,
           onEvent: createCloudRunEventBridge(spec),
           printSummary: false,
         });
+    const executionIssue = await detectCloudRunExecutionIssue(manifest);
+    if (executionIssue) {
+      throw new Error(executionIssue);
+    }
     const artifacts = await writeCloudRunArtifacts(manifest, spec);
     for (const artifact of artifacts) {
       emitCloudRunRawEvent({

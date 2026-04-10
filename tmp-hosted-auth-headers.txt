@@ -1,0 +1,49 @@
+HTTP/1.1 302 Found
+Alt-Svc: h3=":443"; ma=2592000
+Content-Length: 218
+Content-Type: application/json; charset=utf-8
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Location: https://api.qapanda.localhost/v1/auth/provider/callback?code=stub.eyJzdWJqZWN0Ijoic3R1YnxhbGV4LWNoZW4iLCJlbWFpbCI6ImFsZXguY2hlbkBxYXBhbmRhLmxvY2FsIiwibmFtZSI6IkFsZXggQ2hlbiJ9&state=provider_zxmj4941wzg
+Server: Caddy
+X-Qapanda-Request-Id: req_rx4cl4aj
+
+HTTP/1.1 302 Found
+Alt-Svc: h3=":443"; ma=2592000
+Content-Length: 158
+Content-Type: application/json; charset=utf-8
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Location: https://app.qapanda.localhost/auth/callback?grant_code=qpg_e8FTO9rU8OD_fmco8y7XEmo_P0YyfrXa&return_to=%2Fapp%2Fprojects%2Fnew%3Ftype%3Dhosted
+Server: Caddy
+X-Qapanda-Request-Id: req_z04liknz
+
+HTTP/1.1 307 Temporary Redirect
+Alt-Svc: h3=":443"; ma=2592000
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Location: https://app.qapanda.localhost/auth/complete?return_to=%2Fapp%2Fprojects%2Fnew%3Ftype%3Dhosted
+Server: Caddy
+Set-Cookie: qp_access=qpa_fec-rQeXBt2fvtGVE0wKywOBoGLNqhfN; Path=/; Expires=Fri, 10 Apr 2026 22:28:34 GMT; Domain=qapanda.localhost; Secure; HttpOnly; SameSite=lax
+Set-Cookie: qp_refresh=qpr_DNbl9oARrdvRyIOMD-Th1nv3417xnc0a; Path=/; Expires=Sun, 10 May 2026 14:28:34 GMT; Domain=qapanda.localhost; Secure; HttpOnly; SameSite=lax
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+Transfer-Encoding: chunked
+
+HTTP/1.1 307 Temporary Redirect
+Alt-Svc: h3=":443"; ma=2592000
+Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate
+Content-Type: text/html; charset=utf-8
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Location: /app/projects/new?type=hosted
+Server: Caddy
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, Accept-Encoding
+X-Powered-By: Next.js
+Transfer-Encoding: chunked
+
+HTTP/1.1 200 OK
+Alt-Svc: h3=":443"; ma=2592000
+Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate
+Content-Type: text/html; charset=utf-8
+Date: Fri, 10 Apr 2026 14:28:34 GMT
+Server: Caddy
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, Accept-Encoding
+X-Powered-By: Next.js
+Transfer-Encoding: chunked
+
