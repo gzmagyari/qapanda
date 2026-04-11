@@ -14,6 +14,7 @@ const readline = require('node:readline');
 const { spawnArgs, killProcessTree } = require('./process-utils');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 const { appendWizardDebug, summarizeForDebug } = require('./debug-log');
+const { buildIsolatedCodexEnv } = require('./codex-home');
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
@@ -46,19 +47,10 @@ class CodexAppServerConnection {
       repoRoot: this._cwd,
     });
 
-    // Build a clean env: strip ELECTRON_RUN_AS_NODE, use isolated CODEX_HOME
-    const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = { ...process.env, ...this._env };
-    const codexHome = path.join(os.tmpdir(), 'cc-codex-appserver-home');
-    const realCodexHome = path.join(os.homedir(), '.codex');
-    try {
-      fs.mkdirSync(codexHome, { recursive: true });
-      for (const f of ['auth.json', 'cap_sid']) {
-        const src = path.join(realCodexHome, f);
-        const dst = path.join(codexHome, f);
-        if (fs.existsSync(src)) fs.copyFileSync(src, dst);
-      }
-    } catch {}
-    cleanEnv.CODEX_HOME = codexHome;
+    const cleanEnv = buildIsolatedCodexEnv(this._manifest || null, 'cc-codex-appserver-home', {
+      ...process.env,
+      ...this._env,
+    });
 
     this._intentionalKill = false;
     const args = ['app-server', ...this._configArgs];
@@ -527,6 +519,7 @@ function getOrCreateConnection(manifest) {
     model: manifest.controller.model,
     configArgs,
   });
+  conn._manifest = manifest;
   conn._mcpFingerprint = mcpFingerprint;
   conn._connectionKey = key;
   conn._panelId = manifest.panelId || null;

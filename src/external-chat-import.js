@@ -24,6 +24,18 @@ function importSessionKey(provider, sessionId) {
   return `import:${provider}:${sessionId}`;
 }
 
+function getImportedCodexSessionId(manifest) {
+  if (!manifest || !manifest.importSource || manifest.importSource.provider !== 'codex') {
+    return null;
+  }
+  const value = String(manifest.importSource.sessionId || '').trim();
+  return value || null;
+}
+
+function isCodexCliBackend(cli) {
+  return String(cli || '').trim().toLowerCase() === 'codex';
+}
+
 function safeText(value) {
   return value == null ? '' : String(value);
 }
@@ -125,7 +137,7 @@ function buildTranscriptEntries(normalized) {
 function buildImportedRunOptions(baseOptions, provider) {
   const options = {
     ...(baseOptions || {}),
-    chatTarget: provider === 'claude' ? 'claude' : 'controller',
+    chatTarget: (baseOptions && baseOptions.chatTarget) || (provider === 'claude' ? 'claude' : 'controller'),
   };
   if (provider === 'codex') {
     options.controllerCli = 'codex';
@@ -143,7 +155,6 @@ async function writeJsonl(filePath, entries) {
 
 function seedImportedContinuationState(manifest, normalized) {
   if (normalized.provider === 'codex') {
-    manifest.chatTarget = 'controller';
     manifest.controller.cli = 'codex';
     manifest.controller.sessionId = normalized.sessionId;
     manifest.controller.appServerThreadId = normalized.sessionId;
@@ -221,5 +232,7 @@ async function importExternalChatSession(options = {}) {
 
 module.exports = {
   buildImportedRunOptions,
+  getImportedCodexSessionId,
   importExternalChatSession,
+  isCodexCliBackend,
 };

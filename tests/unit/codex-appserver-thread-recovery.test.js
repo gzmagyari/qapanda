@@ -5,6 +5,8 @@ const {
   workerThreadNeedsRecovery,
   workerThreadNeedsForkOnReconnect,
   ensureWorkerAppServerThread,
+  forkImportedCodexWorkerSession,
+  seedImportedCodexWorkerThread,
 } = require('../../src/codex-worker');
 const {
   controllerThreadNeedsForkOnReconnect,
@@ -109,6 +111,84 @@ test('ensureWorkerAppServerThread resumes already-healed worker threads without 
 
   assert.equal(action, 'resumed');
   assert.deepEqual(calls, [['resumeThread', 'healthy-thread']]);
+});
+
+test('seedImportedCodexWorkerThread seeds untouched worker sessions from imported Codex runs', () => {
+  const session = {
+    sessionId: 'random-worker-session',
+    hasStarted: false,
+    appServerThreadId: null,
+    approvalPolicy: 'never',
+    threadSandbox: 'danger-full-access',
+  };
+
+  const changed = seedImportedCodexWorkerThread(session, 'imported-thread-1');
+
+  assert.equal(changed, true);
+  assert.equal(session.sessionId, 'imported-thread-1');
+  assert.equal(session.appServerThreadId, 'imported-thread-1');
+  assert.equal(session.approvalPolicy, null);
+  assert.equal(session.threadSandbox, null);
+});
+
+test('forkImportedCodexWorkerSession forks imported Codex sessions for CLI-backed agents', async () => {
+  const calls = [];
+  const sessionState = {
+    sessionId: 'temporary-worker-session',
+    hasStarted: false,
+    appServerThreadId: null,
+  };
+  const manifest = {
+    runId: 'run-1',
+    repoRoot: '/repo',
+    worker: { model: 'gpt-5.4' },
+    importSource: {
+      provider: 'codex',
+      sessionId: 'imported-thread-1',
+    },
+  };
+  const banners = [];
+  const renderer = { banner: (text) => banners.push(text) };
+  const fakeConn = {
+    async ensureConnected() {
+      calls.push(['ensureConnected']);
+    },
+    async forkThread(threadId, options) {
+      calls.push(['forkThread', threadId, options]);
+      return 'forked-thread-1';
+    },
+  };
+
+  const forked = await forkImportedCodexWorkerSession({
+    manifest,
+    agentConfig: { model: 'gpt-5.4' },
+    sessionState,
+    sessionKey: 'dev',
+    sessionLabel: 'Developer',
+    renderer,
+    connectionFactory: (connManifest) => {
+      calls.push(['connectionFactory', connManifest.runId, connManifest.controller.bin, connManifest.controller.model]);
+      return fakeConn;
+    },
+    closeConnectionFn: async (connectionKey) => {
+      calls.push(['closeConnection', connectionKey]);
+    },
+  });
+
+  assert.equal(forked, 'forked-thread-1');
+  assert.deepEqual(calls, [
+    ['connectionFactory', 'run-1-import-fork-dev', 'codex', 'gpt-5.4'],
+    ['ensureConnected'],
+    ['forkThread', 'imported-thread-1', { approvalPolicy: 'never', sandbox: 'danger-full-access' }],
+    ['closeConnection', 'run-1-import-fork-dev'],
+  ]);
+  assert.equal(sessionState.sessionId, 'forked-thread-1');
+  assert.equal(sessionState.appServerThreadId, 'forked-thread-1');
+  assert.equal(sessionState.hasStarted, true);
+  assert.equal(sessionState.approvalPolicy, 'never');
+  assert.equal(sessionState.threadSandbox, 'danger-full-access');
+  assert.equal(banners.length, 1);
+  assert.match(banners[0], /Recovered Developer session into a writable Codex thread\./);
 });
 
 test('workerThreadNeedsForkOnReconnect flags trusted threads when the app-server connection changed', () => {

@@ -371,9 +371,13 @@ async function listRunManifests(stateRoot) {
         continue;
       }
       const runDir = path.join(runsRoot, entry.name);
-      const manifest = await readJson(manifestPath(runDir), null);
-      if (manifest) {
-        manifests.push(manifest);
+      try {
+        const manifest = await readJson(manifestPath(runDir), null);
+        if (manifest) {
+          manifests.push(manifest);
+        }
+      } catch {
+        // Skip corrupt/unreadable manifests so one bad run does not break resume/listing.
       }
     }
     manifests.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));

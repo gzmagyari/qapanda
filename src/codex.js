@@ -9,6 +9,7 @@ const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts')
 const { countJsonlLinesSync, countTranscriptLinesSync } = require('./transcript');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 const { appendManifestDebug, summarizeForDebug } = require('./debug-log');
+const { buildIsolatedCodexEnv } = require('./codex-home');
 
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
@@ -178,24 +179,9 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
   const args = buildCodexArgs(manifest, loop);
   let discoveredSessionId = manifest.controller.sessionId;
 
-  // Strip ELECTRON_RUN_AS_NODE and use a clean CODEX_HOME with auth but no MCPs
-  // so only our explicitly passed MCP servers are loaded (not kanban, memory, etc. from config.toml)
-  const path = require('path');
-  const fs = require('fs');
-  const os = require('os');
-  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
-  const codexHome = path.join(os.tmpdir(), 'cc-codex-controller-home');
-  const realCodexHome = path.join(os.homedir(), '.codex');
-  try {
-    fs.mkdirSync(codexHome, { recursive: true });
-    // Copy auth files but not config.toml (which has MCP definitions)
-    for (const f of ['auth.json', 'cap_sid']) {
-      const src = path.join(realCodexHome, f);
-      const dst = path.join(codexHome, f);
-      if (fs.existsSync(src)) fs.copyFileSync(src, dst);
-    }
-  } catch {}
-  cleanEnv.CODEX_HOME = codexHome;
+  // Use a clean CODEX_HOME so only explicitly passed MCP servers are loaded,
+  // but keep imported session state available for external Codex chat recovery.
+  const cleanEnv = buildIsolatedCodexEnv(manifest, 'cc-codex-controller-home');
 
   const result = await spawnStreamingProcess({
     command: manifest.controller.bin,

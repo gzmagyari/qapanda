@@ -38,6 +38,9 @@ describe('Import chat search', () => {
     const startCount = wv.messages.length;
     input.value = 'critical files';
     input.dispatchEvent(new wv.window.Event('input', { bubbles: true }));
+    const status = wv.document.querySelector('.run-history-search-status');
+    assert.ok(status, 'search status should render');
+    assert.match(status.textContent, /Searching chat messages/i);
     await new Promise((resolve) => wv.window.setTimeout(resolve, 220));
     await wv.flush();
 

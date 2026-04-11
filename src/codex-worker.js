@@ -10,6 +10,8 @@ const { lookupAgentConfig } = require('./state');
 const { getOrCreateConnection } = require('./codex-app-server');
 const { MCP_STARTUP_TIMEOUT_SEC, mcpToolTimeoutSec } = require('./mcp-timeouts');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const { getImportedCodexSessionId, isCodexCliBackend } = require('./external-chat-import');
+const { buildIsolatedCodexEnv } = require('./codex-home');
 
 /**
  * Build args for Codex used as a worker backend.
@@ -123,6 +125,77 @@ function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
 
+function sessionNeedsImportedCodexSeed(session) {
+  return !!(
+    session &&
+    session.hasStarted !== true &&
+    !session.appServerThreadId
+  );
+}
+
+function seedImportedCodexWorkerThread(session, importedSessionId) {
+  if (!importedSessionId || !sessionNeedsImportedCodexSeed(session)) {
+    return false;
+  }
+  session.sessionId = importedSessionId;
+  session.appServerThreadId = importedSessionId;
+  session.approvalPolicy = null;
+  session.threadSandbox = null;
+  return true;
+}
+
+async function forkImportedCodexWorkerSession({
+  manifest,
+  agentConfig,
+  sessionState,
+  sessionKey,
+  sessionLabel,
+  renderer,
+  connectionFactory = getOrCreateConnection,
+  closeConnectionFn = null,
+}) {
+  const importedSessionId = getImportedCodexSessionId(manifest);
+  if (!importedSessionId || !sessionNeedsImportedCodexSeed(sessionState)) {
+    return null;
+  }
+
+  const tempConnectionKey = `${manifest.runId}-import-fork-${sessionKey || 'default'}`;
+  const connManifest = {
+    runId: tempConnectionKey,
+    repoRoot: manifest.repoRoot,
+    panelId: manifest.panelId || null,
+    chromeDebugPort: manifest.chromeDebugPort,
+    extensionDir: manifest.extensionDir,
+    controllerMcpServers: null,
+    controller: {
+      bin: 'codex',
+      model: (agentConfig && agentConfig.model) || (manifest.worker && manifest.worker.model) || null,
+    },
+  };
+
+  const { closeConnection } = require('./codex-app-server');
+  const conn = connectionFactory(connManifest);
+  try {
+    await conn.ensureConnected();
+    const forkedThreadId = await conn.forkThread(importedSessionId, {
+      approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
+      sandbox: DESIRED_APP_SERVER_SANDBOX,
+    });
+    sessionState.sessionId = forkedThreadId;
+    sessionState.appServerThreadId = forkedThreadId;
+    sessionState.approvalPolicy = DESIRED_APP_SERVER_APPROVAL_POLICY;
+    sessionState.threadSandbox = DESIRED_APP_SERVER_SANDBOX;
+    sessionState.hasStarted = true;
+    if (renderer && typeof renderer.banner === 'function') {
+      renderer.banner(`Recovered ${sessionLabel || 'worker'} session into a writable Codex thread.`);
+    }
+    return forkedThreadId;
+  } finally {
+    const close = closeConnectionFn || closeConnection;
+    await close(tempConnectionKey).catch(() => {});
+  }
+}
+
 function _workerUsesChromeDevtools(mcpServers) {
   return Object.keys(mcpServers || {}).some((name) =>
     String(name).includes('chrome-devtools') || String(name).includes('chrome_devtools')
@@ -216,6 +289,8 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     agentSession = manifest.worker.agentSessions[agentId];
   }
 
+  const sessionState = agentSession || manifest.worker;
+
   // Determine binary and display label
   const workerBin = (agentConfig && agentConfig.cli) || manifest.worker.bin || 'codex';
   const agentName = agentConfig && agentConfig.name;
@@ -254,6 +329,17 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
     }
   }
 
+  if (isCodexCliBackend(workerBin)) {
+    await forkImportedCodexWorkerSession({
+      manifest,
+      agentConfig,
+      sessionState,
+      sessionKey: agentId || 'default',
+      sessionLabel: agentName || (agentId || 'worker'),
+      renderer,
+    });
+  }
+
   let spawnCommand = workerBin;
   let args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession });
   if (isRemoteCli(workerBin) && desktop) {
@@ -268,21 +354,9 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   let discoveredSessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
   let finalResultText = '';
 
-  // Strip ELECTRON_RUN_AS_NODE and use a clean CODEX_HOME with auth but no MCPs
-  // so only our explicitly passed MCP servers are loaded
-  const { ELECTRON_RUN_AS_NODE: _, ...cleanEnv } = process.env;
-  const codexHome = require('path').join(require('os').tmpdir(), 'cc-codex-home');
-  const realCodexHome = require('path').join(require('os').homedir(), '.codex');
-  try {
-    require('fs').mkdirSync(codexHome, { recursive: true });
-    // Copy auth files but not config.toml (which has MCP definitions)
-    for (const f of ['auth.json', 'cap_sid']) {
-      const src = require('path').join(realCodexHome, f);
-      const dst = require('path').join(codexHome, f);
-      if (require('fs').existsSync(src)) require('fs').copyFileSync(src, dst);
-    }
-  } catch {}
-  cleanEnv.CODEX_HOME = codexHome;
+  // Use a clean CODEX_HOME so only explicitly passed MCP servers are loaded,
+  // but keep imported session state available for external Codex chat recovery.
+  const cleanEnv = buildIsolatedCodexEnv(manifest, 'cc-codex-home');
   // Codex doesn't exit after turn.completed — use a local abort controller to force-kill
   // Codex doesn't exit after turn.completed — use local abort to force-kill
   const localAbort = new AbortController();
@@ -479,6 +553,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
     repoRoot: manifest.repoRoot,
     chromeDebugPort: manifest.chromeDebugPort,
     extensionDir: manifest.extensionDir,
+    importSource: manifest.importSource || null,
     prestartKeys: manifest.workerPrestartKey ? [manifest.workerPrestartKey] : [],
     controllerMcpServers: workerMcpServers,
     controller: {
@@ -508,6 +583,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
     };
   }
   const agentSession = manifest.worker.agentSessions[sessionKey];
+  seedImportedCodexWorkerThread(agentSession, getImportedCodexSessionId(manifest));
   const _dbgFile = require('path').join(require('os').tmpdir(), 'cc-appserver-debug.log');
   try { require('fs').appendFileSync(_dbgFile, `[${new Date().toISOString()}] codex-worker: workerConnKey=${workerConnKey} baseMcpKeys=${JSON.stringify(Object.keys(baseMcpServers))} agentMcpKeys=${JSON.stringify(Object.keys(agentMcps))} mergedKeys=${JSON.stringify(Object.keys(workerMcpServers))} panelId=${manifest.panelId || null} chromeDebugPort=${manifest.chromeDebugPort} boundBrowserPort=${agentSession && agentSession.boundBrowserPort != null ? agentSession.boundBrowserPort : null} agentId=${agentId} agentCli=${agentConfig && agentConfig.cli}\n`); } catch {}
 
@@ -665,6 +741,8 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
 module.exports = {
   buildCodexWorkerArgs,
   ensureWorkerAppServerThread,
+  forkImportedCodexWorkerSession,
+  seedImportedCodexWorkerThread,
   workerThreadNeedsForkOnReconnect,
   workerThreadNeedsRecovery,
   runCodexWorkerTurn,

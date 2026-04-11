@@ -61,6 +61,16 @@ function validateAiProfile(value) {
   };
 }
 
+function validateRuntimeApiConfig(value) {
+  const config = expectOptionalObject(value, 'runtimeApiConfig');
+  if (!config) return null;
+  return {
+    source: expectRequiredString(config.source, 'runtimeApiConfig.source'),
+    provider: expectRequiredString(config.provider, 'runtimeApiConfig.provider'),
+    model: expectRequiredString(config.model, 'runtimeApiConfig.model'),
+  };
+}
+
 function validateWorkflowDefinition(value) {
   const definition = expectOptionalObject(value, 'workflowDefinition');
   if (!definition) return null;
@@ -131,6 +141,7 @@ function validateCloudRunSpec(input) {
     targetType: expectOptionalString(input.targetType, 'targetType'),
     browserPreset: expectOptionalString(input.browserPreset, 'browserPreset'),
     aiProfile: validateAiProfile(input.aiProfile),
+    runtimeApiConfig: validateRuntimeApiConfig(input.runtimeApiConfig),
     workflowDefinition: validateWorkflowDefinition(input.workflowDefinition),
     workflowProfile: validateWorkflowProfile(input.workflowProfile),
     workflowInputs: validateWorkflowInputs(input.workflowInputs),
@@ -172,11 +183,22 @@ function loadCloudRunSpec(specPath) {
 
 function buildCloudRunOptions(spec, cliOptions = {}) {
   const useDirectBrowserAgent = !(spec && spec.workflowDefinition);
+  const runtimeApiConfig = spec.runtimeApiConfig
+    ? {
+        provider: spec.runtimeApiConfig.provider,
+        model: spec.runtimeApiConfig.model,
+      }
+    : null;
   return {
     repoRoot: cliOptions.repoRoot ? path.resolve(cliOptions.repoRoot) : process.cwd(),
     stateRoot: cliOptions.stateRoot ? path.resolve(cliOptions.stateRoot) : undefined,
     runId: spec.runId,
     controllerCodexMode: cliOptions.controllerCodexMode || undefined,
+    controllerCli: runtimeApiConfig ? 'api' : undefined,
+    workerCli: runtimeApiConfig ? 'api' : undefined,
+    apiConfig: runtimeApiConfig,
+    controllerApiConfig: runtimeApiConfig,
+    workerApiConfig: runtimeApiConfig,
     agent: useDirectBrowserAgent ? 'QA-Browser' : undefined,
     print: false,
     rawEvents: Boolean(cliOptions.rawEvents),
@@ -194,6 +216,7 @@ function buildCloudRunOptions(spec, cliOptions = {}) {
       targetType: spec.targetType,
       browserPreset: spec.browserPreset,
       aiProfile: spec.aiProfile,
+      runtimeApiConfig: spec.runtimeApiConfig,
       workflowDefinition: spec.workflowDefinition,
       workflowProfile: spec.workflowProfile,
       workflowInputs: spec.workflowInputs,
@@ -361,6 +384,72 @@ function screenshotArtifactsFromEntry(entry, fallbackIndex) {
   return artifacts;
 }
 
+function normalizeTokenCount(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.trunc(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.trunc(parsed);
+    }
+  }
+  return 0;
+}
+
+function extractMeasuredUsageFromTranscriptEntries(entries) {
+  const sessions = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry || entry.kind !== 'backend_event') continue;
+    const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : {};
+    const source = typeof payload.source === 'string' ? payload.source : null;
+    if (!source || !source.endsWith('-api')) continue;
+    const sessionKey = typeof entry.sessionKey === 'string' && entry.sessionKey.trim()
+      ? entry.sessionKey.trim()
+      : source;
+    const existing = sessions.get(sessionKey) || {
+      sessionKey,
+      source,
+      provider: null,
+      model: null,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+    if (typeof payload.provider === 'string' && payload.provider.trim()) {
+      existing.provider = payload.provider.trim();
+    }
+    if (typeof payload.model === 'string' && payload.model.trim()) {
+      existing.model = payload.model.trim();
+    }
+    if (payload.totalUsage && typeof payload.totalUsage === 'object') {
+      const promptTokens = normalizeTokenCount(payload.totalUsage.promptTokens);
+      const completionTokens = normalizeTokenCount(payload.totalUsage.completionTokens);
+      existing.promptTokens = Math.max(existing.promptTokens, promptTokens);
+      existing.completionTokens = Math.max(existing.completionTokens, completionTokens);
+      existing.totalTokens = existing.promptTokens + existing.completionTokens;
+    }
+    sessions.set(sessionKey, existing);
+  }
+
+  const normalizedSessions = Array.from(sessions.values())
+    .filter((entry) => entry.totalTokens > 0)
+    .sort((left, right) => left.sessionKey.localeCompare(right.sessionKey));
+  if (normalizedSessions.length === 0) {
+    return null;
+  }
+  const totals = normalizedSessions.reduce((acc, entry) => ({
+    promptTokens: acc.promptTokens + entry.promptTokens,
+    completionTokens: acc.completionTokens + entry.completionTokens,
+    totalTokens: acc.totalTokens + entry.totalTokens,
+  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+  return {
+    source: 'transcript_backend_events_v1',
+    totals,
+    sessions: normalizedSessions,
+  };
+}
+
 async function writeCloudRunArtifacts(manifest, spec) {
   const outputDir = path.resolve(spec.outputDir);
   const runFilesDir = path.join(outputDir, 'run-files');
@@ -402,6 +491,7 @@ async function writeCloudRunArtifacts(manifest, spec) {
       }
     })
     .filter(Boolean);
+  const measuredUsage = extractMeasuredUsageFromTranscriptEntries(transcriptEntries);
 
   const screenshotArtifacts = [];
   let screenshotIndex = 1;
@@ -425,6 +515,7 @@ async function writeCloudRunArtifacts(manifest, spec) {
     targetType: spec.targetType,
     browserPreset: spec.browserPreset,
     aiProfile: spec.aiProfile,
+    runtimeApiConfig: spec.runtimeApiConfig,
     workflowDefinition: spec.workflowDefinition,
     workflowProfile: spec.workflowProfile,
     workflowInputs: spec.workflowInputs,
@@ -432,6 +523,7 @@ async function writeCloudRunArtifacts(manifest, spec) {
     status: manifest.status,
     stopReason: manifest.stopReason || null,
     summary: manifest.transcriptSummary || null,
+    measuredUsage,
     generatedAt: nowIso(),
     runDir: manifest.runDir,
   };
@@ -459,6 +551,7 @@ module.exports = {
   buildCloudRunOptions,
   createCloudRunEventBridge,
   detectCloudRunExecutionIssue,
+  extractMeasuredUsageFromTranscriptEntries,
   emitCloudRunRawEvent,
   loadCloudRunSpec,
   validateCloudRunSpec,

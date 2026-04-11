@@ -174,3 +174,76 @@ test('session-manager searchImportChats searches inside repo-matching chat messa
     delete require.cache[smPath];
   }
 });
+
+test('session-manager preserves a Codex-backed agent target for imported Codex chats', async () => {
+  const tmp = createTempDir();
+  const homeDir = path.join(tmp.root, 'home');
+  const sessionId = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  delete require.cache[smPath];
+
+  try {
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+    writeText(
+      path.join(homeDir, '.codex', 'sessions', '2026', '04', '09', `rollout-2026-04-09T12-00-00-${sessionId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: '2026-04-09T12:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: sessionId,
+            timestamp: '2026-04-09T12:00:00.000Z',
+            cwd: tmp.root,
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-04-09T12:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Continue this as Developer' }],
+          },
+        }),
+        '',
+      ].join('\n'),
+    );
+
+    const { SessionManager } = require(smPath);
+    const posted = [];
+    const renderer = stubRenderer();
+    const session = new SessionManager(renderer, {
+      repoRoot: tmp.root,
+      stateRoot: tmp.ccDir,
+      postMessage: (msg) => posted.push(msg),
+      extensionPath: extDir,
+    });
+    session.setAgents({
+      system: {},
+      global: {},
+      project: {
+        dev: { name: 'Developer', cli: 'codex' },
+      },
+    });
+    session.applyConfig({ chatTarget: 'agent-dev' });
+
+    try {
+      await session.handleMessage({ type: 'userInput', text: `/import-chat codex ${sessionId}` });
+
+      assert.ok(session.getRunId(), 'import should attach a run');
+      assert.equal(session._activeManifest.chatTarget, 'agent-dev');
+      assert.equal(session._hasExistingSessionForTarget('agent-dev'), true);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    if (previousHome == null) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile == null) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    tmp.cleanup();
+    delete require.cache[smPath];
+  }
+});

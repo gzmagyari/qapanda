@@ -640,6 +640,12 @@ html, body {
   outline: none;
   border-color: var(--vscode-focusBorder, #007fd4);
 }
+.run-history-search-status {
+  min-height: 16px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
 .run-history-title {
   font-size: 13px;
   color: var(--vscode-editor-foreground);

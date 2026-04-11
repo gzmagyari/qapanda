@@ -6914,6 +6914,8 @@
           query: '',
           lastRequestId: null,
           searchInput: null,
+          searchStatusEl: null,
+          searching: false,
         };
         state.container.className = 'run-history run-history-import';
         importChatPickerState = state;
@@ -6928,6 +6930,7 @@
       if (msg.requestId) {
         state.lastRequestId = msg.requestId;
       }
+      state.searching = false;
       var sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
       var pageSize = 5;
       var shown = 0;
@@ -6957,11 +6960,26 @@
       searchInput.setAttribute('aria-label', 'Search imported chat messages');
       searchInput.addEventListener('input', function() {
         state.query = this.value;
+        state.searching = true;
+        if (state.searchStatusEl) {
+          state.searchStatusEl.textContent = state.query
+            ? 'Searching chat messages...'
+            : 'Loading recent chats...';
+        }
         queueImportChatSearch(state, state.query);
       });
       searchWrap.appendChild(searchInput);
+      var searchStatus = document.createElement('div');
+      searchStatus.className = 'run-history-search-status';
+      if (state.searching) {
+        searchStatus.textContent = state.query
+          ? 'Searching chat messages...'
+          : 'Loading recent chats...';
+      }
+      searchWrap.appendChild(searchStatus);
       container.appendChild(searchWrap);
       state.searchInput = searchInput;
+      state.searchStatusEl = searchStatus;
 
       if (sessions.length === 0) {
         var empty = document.createElement('div');

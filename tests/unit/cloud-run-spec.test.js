@@ -11,6 +11,7 @@ const {
   buildCloudRunOptions,
   createCloudRunEventBridge,
   detectCloudRunExecutionIssue,
+  extractMeasuredUsageFromTranscriptEntries,
   loadCloudRunSpec,
   validateCloudRunSpec,
   writeCloudRunArtifacts,
@@ -169,6 +170,30 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
     [
       JSON.stringify({
         v: 2,
+        kind: 'backend_event',
+        sessionKey: 'worker-default',
+        payload: {
+          source: 'worker-api',
+          type: 'start',
+          provider: 'openai',
+          model: 'gpt-5',
+        },
+      }),
+      JSON.stringify({
+        v: 2,
+        kind: 'backend_event',
+        sessionKey: 'worker-default',
+        payload: {
+          source: 'worker-api',
+          type: 'complete',
+          totalUsage: {
+            promptTokens: 1200,
+            completionTokens: 300,
+          },
+        },
+      }),
+      JSON.stringify({
+        v: 2,
         kind: 'tool_result',
         result: {
           content: [
@@ -202,6 +227,9 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
     const artifacts = await writeCloudRunArtifacts(manifest, spec);
     const outputDir = spec.outputDir;
     assert.ok(fs.existsSync(path.join(outputDir, 'run-report.json')));
+    const report = JSON.parse(fs.readFileSync(path.join(outputDir, 'run-report.json'), 'utf8'));
+    assert.equal(report.measuredUsage.totals.totalTokens, 1500);
+    assert.equal(report.measuredUsage.sessions[0].provider, 'openai');
     assert.ok(fs.existsSync(path.join(outputDir, 'session.log')));
     assert.ok(fs.existsSync(path.join(outputDir, 'evidence-bundle.json')));
     assert.ok(fs.existsSync(path.join(outputDir, 'run-files', 'manifest.json')));
@@ -215,6 +243,38 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('extractMeasuredUsageFromTranscriptEntries aggregates backend token usage from transcript events', () => {
+  const usage = extractMeasuredUsageFromTranscriptEntries([
+    {
+      v: 2,
+      kind: 'backend_event',
+      sessionKey: 'worker-default',
+      payload: {
+        source: 'worker-api',
+        type: 'start',
+        provider: 'openai',
+        model: 'gpt-5',
+      },
+    },
+    {
+      v: 2,
+      kind: 'backend_event',
+      sessionKey: 'worker-default',
+      payload: {
+        source: 'worker-api',
+        type: 'complete',
+        totalUsage: {
+          promptTokens: 800,
+          completionTokens: 200,
+        },
+      },
+    },
+  ]);
+  assert.equal(usage.totals.totalTokens, 1000);
+  assert.equal(usage.sessions[0].provider, 'openai');
+  assert.equal(usage.sessions[0].model, 'gpt-5');
 });
 
 test('createCloudRunEventBridge forwards raw worker json lines into cloud-run events', async () => {

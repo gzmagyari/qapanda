@@ -18,7 +18,11 @@ const {
 } = require('./src/state');
 const { readText, summarizeError } = require('./src/utils');
 const { discoverExternalChatSessions } = require('./src/external-chat-discovery');
-const { importExternalChatSession } = require('./src/external-chat-import');
+const {
+  getImportedCodexSessionId,
+  importExternalChatSession,
+  isCodexCliBackend,
+} = require('./src/external-chat-import');
 const { controllerLabelFor, workerLabelFor } = require('./src/render');
 const {
   bindResumeAlias,
@@ -280,17 +284,49 @@ class SessionManager {
     return (agent && agent.name) || agentId;
   }
 
+  _effectiveCliForChatTarget(target, agentsOverride = null) {
+    const manifest = this._activeManifest;
+    if (!target || target === 'controller') {
+      return (manifest && manifest.controller && manifest.controller.cli) || this._controllerCli || 'codex';
+    }
+    if (target === 'claude') {
+      return (manifest && manifest.worker && manifest.worker.cli) || this._workerCli || 'codex';
+    }
+    if (!target.startsWith('agent-')) return null;
+    const agentId = target.slice('agent-'.length);
+    const agents = agentsOverride || this._enabledAgents();
+    const agent = agents && agents[agentId];
+    return (agent && agent.cli) || (manifest && manifest.worker && manifest.worker.cli) || this._workerCli || 'codex';
+  }
+
+  _targetCanContinueImportedCodexSession(target, agentsOverride = null) {
+    return !!getImportedCodexSessionId(this._activeManifest) && isCodexCliBackend(this._effectiveCliForChatTarget(target, agentsOverride));
+  }
+
   _hasExistingSessionForTarget(target) {
     if (!this._activeManifest) return false;
     if (!target || target === 'controller') {
-      return true;
+      return !!(
+        (this._activeManifest.controller && this._activeManifest.controller.sessionId) ||
+        (this._activeManifest.controller && this._activeManifest.controller.appServerThreadId) ||
+        this._targetCanContinueImportedCodexSession(target)
+      );
     }
     if (target === 'claude') {
-      return !!(this._activeManifest.worker && this._activeManifest.worker.hasStarted);
+      const defaultSession = (((this._activeManifest.worker || {}).agentSessions || {}).default) || null;
+      return !!(
+        (this._activeManifest.worker && this._activeManifest.worker.hasStarted) ||
+        (defaultSession && (defaultSession.hasStarted || defaultSession.appServerThreadId)) ||
+        this._targetCanContinueImportedCodexSession(target)
+      );
     }
     if (!target.startsWith('agent-')) return false;
     const agentId = target.slice('agent-'.length);
-    return !!(((this._activeManifest.worker || {}).agentSessions || {})[agentId] || {}).hasStarted;
+    const agentSession = (((this._activeManifest.worker || {}).agentSessions || {})[agentId]) || null;
+    return !!(
+      (agentSession && (agentSession.hasStarted || agentSession.appServerThreadId)) ||
+      this._targetCanContinueImportedCodexSession(target)
+    );
   }
 
   _bannerChatTargetState(target, reason = 'switch') {
@@ -1104,7 +1140,9 @@ class SessionManager {
     const opts = this._buildNewRunOpts();
     if (provider === 'codex') {
       opts.controllerCli = 'codex';
-      opts.chatTarget = 'controller';
+      opts.chatTarget = isCodexCliBackend(this._effectiveCliForChatTarget(this._chatTarget))
+        ? this._chatTarget
+        : 'controller';
       return opts;
     }
     if (provider === 'claude') {
