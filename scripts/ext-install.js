@@ -23,6 +23,7 @@ const vsixPath = path.join(repoRoot, 'extension', 'qapanda.vsix');
 const extensionsRoot = path.join(os.homedir(), '.vscode', 'extensions');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'extension', 'package.json'), 'utf8'));
 const expectedInstalledId = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`;
+const expectedDirName = `${packageJson.publisher}.${packageJson.name}-${packageJson.version}`;
 const codeCliPath = resolveCodeCli();
 
 function log(message) {
@@ -91,14 +92,30 @@ function runCode(args, { allowFailure = false } = {}) {
         encoding: 'utf8',
         stdio: 'pipe',
         shell: true,
+        timeout: 30000,
       })
     : cp.spawnSync(codeCliPath, args, {
         cwd: repoRoot,
         encoding: 'utf8',
         stdio: 'pipe',
         shell: false,
+        timeout: 30000,
       });
   if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      const isInstallCommand = args.includes('--install-extension');
+      if (isInstallCommand) {
+        const currentDir = path.join(extensionsRoot, expectedDirName);
+        if (fs.existsSync(currentDir) && isVsCodeRunning()) {
+          throw new Error(
+            `Timed out waiting for VS Code CLI to finish: ${commandText}\n` +
+            `Current extension directory still present: ${currentDir}\n` +
+            'VS Code appears to still be holding the installed extension open. Close VS Code and rerun the install.'
+          );
+        }
+      }
+      throw new Error(`Timed out waiting for VS Code CLI to finish: ${commandText}`);
+    }
     throw result.error;
   }
   if (result.status !== 0 && !allowFailure) {
@@ -107,6 +124,25 @@ function runCode(args, { allowFailure = false } = {}) {
   if (result.stdout && result.stdout.trim()) log(result.stdout.trim());
   if (result.stderr && result.stderr.trim()) log(result.stderr.trim());
   return result;
+}
+
+function isVsCodeRunning() {
+  if (process.platform === 'win32') {
+    const result = cp.spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq Code.exe', '/FO', 'CSV', '/NH'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    const output = String(result.stdout || '').trim();
+    return !!output && !output.includes('No tasks are running');
+  }
+  const result = cp.spawnSync('ps', ['-A', '-o', 'comm='], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: 'pipe',
+  });
+  const lines = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.some((line) => /(^|\/)(code|code-insiders)$/i.test(line));
 }
 
 function removeStaleExtensionDirs() {
@@ -118,13 +154,25 @@ function removeStaleExtensionDirs() {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!LEGACY_DIR_PREFIXES.some((prefix) => entry.name.startsWith(prefix))) continue;
+    if (entry.name === expectedDirName) {
+      log(`Keeping current extension directory ${entry.name}`);
+      continue;
+    }
     const fullPath = path.join(extensionsRoot, entry.name);
     if (dryRun) {
       log(`[dry-run] remove ${fullPath}`);
       continue;
     }
-    fs.rmSync(fullPath, { recursive: true, force: true });
-    log(`Removed stale extension directory ${entry.name}`);
+    try {
+      fs.rmSync(fullPath, { recursive: true, force: true });
+      log(`Removed stale extension directory ${entry.name}`);
+    } catch (error) {
+      if (error && ['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) {
+        log(`Skipped locked extension directory ${entry.name} (${error.code})`);
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

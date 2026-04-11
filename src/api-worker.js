@@ -5,6 +5,11 @@
  */
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
 const { resolveRuntimeApiProvider } = require('./api-provider-registry');
+const {
+  appendApiResponseLog,
+  createStreamApiLogHooks,
+  workerApiLogFiles,
+} = require('./api-io-log');
 const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
@@ -230,16 +235,64 @@ async function runApiWorkerTurn({
     const textParts = [];
     let toolCalls = null;
     let usage = null;
+    let finishReason = null;
+    let finishReasons = [];
+    const apiLogFiles = workerApiLogFiles(workerRecord, loop, iterations);
+    const apiLogHooks = createStreamApiLogHooks(manifest, apiLogFiles, {
+      requestId: request.id,
+      loopIndex: loop.index,
+      iteration: iterations,
+      agentId: isCustomAgent ? agentId : null,
+      provider: providerId,
+      model,
+      baseURL,
+      thinking,
+      messageCount: Array.isArray(messages) ? messages.length : 0,
+      toolCount: Array.isArray(tools) ? tools.length : 0,
+    });
 
-    for await (const event of client.streamChat(messages, tools, { thinking, signal: abortSignal })) {
-      if (event.type === 'text') {
-        textParts.push(event.content);
-        renderer.streamMarkdown(label, event.content);
-      } else if (event.type === 'done') {
-        toolCalls = event.toolCalls;
-        usage = event.usage;
-        if (event.text) renderer.flushStream();
+    try {
+      for await (const event of client.streamChat(messages, tools, {
+        thinking,
+        signal: abortSignal,
+        ...apiLogHooks,
+      })) {
+        if (event.type === 'text') {
+          textParts.push(event.content);
+          renderer.streamMarkdown(label, event.content);
+        } else if (event.type === 'done') {
+          toolCalls = event.toolCalls;
+          usage = event.usage;
+          finishReason = event.finishReason || null;
+          finishReasons = Array.isArray(event.finishReasons) ? event.finishReasons : [];
+          if (apiLogFiles && apiLogFiles.responseFile) {
+            await appendApiResponseLog(manifest, apiLogFiles.responseFile, {
+              type: 'done',
+              requestId: request.id,
+              loopIndex: loop.index,
+              iteration: iterations,
+              finishReason,
+              finishReasons,
+              textLength: (event.text || '').length,
+              toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0,
+              toolCalls,
+              usage,
+            });
+          }
+          if (event.text) renderer.flushStream();
+        }
       }
+    } catch (error) {
+      if (apiLogFiles && apiLogFiles.responseFile) {
+        await appendApiResponseLog(manifest, apiLogFiles.responseFile, {
+          type: 'error',
+          requestId: request.id,
+          loopIndex: loop.index,
+          iteration: iterations,
+          message: error && error.message ? String(error.message) : String(error),
+        });
+      }
+      throw error;
     }
 
     const responseText = textParts.join('');

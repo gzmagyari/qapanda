@@ -99,6 +99,30 @@ describe('LLMClient streaming', () => {
     assert.ok(deltas.length > 0, 'should have tool_call_delta events');
     assert.equal(deltas[0].name, 'read_file');
   });
+
+  it('captures finish reason and raw request/chunk hooks', async () => {
+    const client = makeClient(() => ({ text: 'done' }));
+    let requestPayload = null;
+    let chunkCount = 0;
+    const events = [];
+    for await (const event of client.streamChat(
+      [{ role: 'user', content: 'hi' }],
+      null,
+      {
+        onRequest: async (payload) => { requestPayload = payload; },
+        onChunk: async () => { chunkCount += 1; },
+      }
+    )) {
+      events.push(event);
+    }
+    const done = events.find(e => e.type === 'done');
+    assert.equal(done.finishReason, 'stop');
+    assert.deepEqual(done.finishReasons, ['stop']);
+    assert.ok(requestPayload, 'should capture request payload');
+    assert.equal(requestPayload.mode, 'stream');
+    assert.equal(requestPayload.params.model, 'test-model');
+    assert.ok(chunkCount > 0, 'should capture raw chunks');
+  });
 });
 
 describe('LLMClient non-streaming', () => {
@@ -124,6 +148,23 @@ describe('LLMClient non-streaming', () => {
     const client = makeClient(() => ({ text: 'hi', usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }));
     const result = await client.chat([{ role: 'user', content: 'hi' }]);
     assert.equal(result.usage.totalTokens, 7);
+  });
+
+  it('captures finish reason and raw request/response hooks', async () => {
+    const client = makeClient(() => ({ text: 'ok' }));
+    let requestPayload = null;
+    let responsePayload = null;
+    const result = await client.chat(
+      [{ role: 'user', content: 'hi' }],
+      null,
+      {
+        onRequest: async (payload) => { requestPayload = payload; },
+        onResponse: async (payload) => { responsePayload = payload; },
+      }
+    );
+    assert.equal(result.finishReason, 'stop');
+    assert.ok(requestPayload, 'should capture request payload');
+    assert.ok(responsePayload, 'should capture response payload');
   });
 });
 

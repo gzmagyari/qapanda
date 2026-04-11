@@ -63,7 +63,7 @@ function makeRenderer() {
   };
 }
 
-function makeWorkerRecord() { return {}; }
+function makeWorkerRecord(overrides = {}) { return { ...overrides }; }
 function noopEmit() {}
 
 function transcriptEntries(manifest) {
@@ -90,6 +90,40 @@ describe('API Worker — simple text response', () => {
     assert.equal(result.resultText, 'I found 3 files in the project.');
     assert.equal(result.exitCode, 0);
     assert.ok(renderer.output.some(o => o.type === 'stream'), 'should have streamed text');
+  });
+
+  it('writes per-iteration API request/response logs with finish reason', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const manifest = makeManifest(() => ({ text: 'logged response' }));
+    const renderer = makeRenderer();
+    const loopDir = path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'requests', 'r-log', 'loop-0001');
+    fs.mkdirSync(loopDir, { recursive: true });
+    const workerRecord = makeWorkerRecord({
+      promptFile: path.join(loopDir, 'worker.prompt.txt'),
+    });
+
+    const result = await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r-log' },
+      loop: { index: 1, controller: { promptFile: path.join(loopDir, 'controller.prompt.txt') } },
+      workerRecord,
+      prompt: 'log this API call',
+      renderer,
+      emitEvent: noopEmit,
+    });
+
+    assert.equal(result.resultText, 'logged response');
+    const requestLogPath = path.join(loopDir, 'worker.api.iter-0001.request.json');
+    const responseLogPath = path.join(loopDir, 'worker.api.iter-0001.response.jsonl');
+    assert.equal(fs.existsSync(requestLogPath), true, 'should write request log');
+    assert.equal(fs.existsSync(responseLogPath), true, 'should write response log');
+    const requestLog = JSON.parse(fs.readFileSync(requestLogPath, 'utf8'));
+    assert.equal(requestLog.provider, 'custom');
+    assert.equal(requestLog.model, 'test-model');
+    const responseLines = fs.readFileSync(responseLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const doneLine = responseLines.find((line) => line.type === 'done');
+    assert.ok(doneLine, 'should include done summary');
+    assert.equal(doneLine.finishReason, 'stop');
   });
 });
 

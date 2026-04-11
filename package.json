@@ -1,6 +1,6 @@
 {
   "name": "qapanda",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Interactive manager CLI that uses Codex to control Claude Code",
   "bin": {
     "qapanda": "./bin/qapanda.js"
@@ -26,7 +26,7 @@
     "ext:copy-src": "node -e \"const fs=require('fs');const p=require('path');function cp(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=p.join(s,e.name),dp=p.join(d,e.name);e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}}cp('src','extension/src');const cd='extension/claude-parser';fs.mkdirSync(cd,{recursive:true});for(const f of['index.js','parse-stream.js','package.json'])fs.copyFileSync(p.join('claude-parser',f),p.join(cd,f));cp('qa-desktop','extension/qa-desktop');cp('resources','extension/resources');cp('prompts','extension/prompts')\"",
     "ext:build": "node -e \"const fs=require('fs');try{fs.rmSync('extension/cc-manager.vsix',{force:true})}catch{}\" && npm run ext:copy-src && cd extension && npx @vscode/vsce package --allow-missing-repository -o qapanda.vsix",
     "ext:install": "npm run ext:build && node scripts/ext-install.js",
-    "deploy": "npm run ext:build && node scripts/ext-install.js && npm install -g .",
+    "deploy": "npm run ext:build && node scripts/ext-install.js && npm link",
     "platform:cloud:pack": "node scripts/platform-cloud/pack-client-safe-packages.js",
     "platform:cloud:install": "node scripts/platform-cloud/install-client-safe-packages.js",
     "platform:cloud:verify-imports": "node scripts/platform-cloud/verify-client-safe-imports.mjs",

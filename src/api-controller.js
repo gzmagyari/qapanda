@@ -5,8 +5,13 @@
  */
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
 const { resolveRuntimeApiProvider } = require('./api-provider-registry');
+const {
+  appendApiResponseLog,
+  controllerApiLogFiles,
+  createStreamApiLogHooks,
+} = require('./api-io-log');
 const { buildControllerPrompt } = require('./prompts');
-const { controllerDecisionSchema, validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
+const { validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
 const { writeText } = require('./utils');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
@@ -26,7 +31,6 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   const prompt = buildControllerPrompt(manifest, request);
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
-  // Resolve API config: controller manifest config → global config
   const apiConfig = manifest.controller.apiConfig || manifest.apiConfig || {};
   const providerId = apiConfig.provider || 'openrouter';
   const resolvedProvider = resolveRuntimeApiProvider(providerId);
@@ -40,7 +44,6 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
     : ((resolvedProvider.legacy ? apiConfig.baseURL : (apiConfig.baseURL || resolvedProvider.baseURL)) || null);
   const model = apiConfig.model || defaultModelForProvider(providerId);
   const thinking = apiConfig.thinking || null;
-  // Note: controller doesn't have per-agent overrides — it's always manifest-level
 
   if (!model) {
     throw new Error(`No default model configured for provider "${provider}". Specify a model explicitly.`);
@@ -51,33 +54,64 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   emitEvent({ source: 'controller-api', type: 'start', model, provider: providerId });
   renderer.controller('Thinking about the next step.');
 
-  // Stream the response — collect text
   const textParts = [];
-  for await (const event of client.streamChat(
-    [{ role: 'user', content: prompt }],
-    null,
-    {
-      thinking,
-      signal: abortSignal,
-      response_format: { type: 'json_object' },
+  const apiLogFiles = controllerApiLogFiles(loop);
+  const apiLogHooks = createStreamApiLogHooks(manifest, apiLogFiles, {
+    requestId: request.id,
+    loopIndex: loop.index,
+    provider: providerId,
+    model,
+    baseURL,
+    thinking,
+    messageCount: 1,
+    toolCount: 0,
+  });
+
+  try {
+    for await (const event of client.streamChat(
+      [{ role: 'user', content: prompt }],
+      null,
+      {
+        thinking,
+        signal: abortSignal,
+        response_format: { type: 'json_object' },
+        ...apiLogHooks,
+      }
+    )) {
+      if (event.type === 'text') {
+        textParts.push(event.content);
+      } else if (event.type === 'done' && apiLogFiles && apiLogFiles.responseFile) {
+        await appendApiResponseLog(manifest, apiLogFiles.responseFile, {
+          type: 'done',
+          requestId: request.id,
+          loopIndex: loop.index,
+          finishReason: event.finishReason || null,
+          finishReasons: Array.isArray(event.finishReasons) ? event.finishReasons : [],
+          textLength: (event.text || '').length,
+          toolCallCount: Array.isArray(event.toolCalls) ? event.toolCalls.length : 0,
+          usage: event.usage || null,
+        });
+      }
     }
-  )) {
-    if (event.type === 'text') {
-      textParts.push(event.content);
-    } else if (event.type === 'done') {
-      // done
+  } catch (error) {
+    if (apiLogFiles && apiLogFiles.responseFile) {
+      await appendApiResponseLog(manifest, apiLogFiles.responseFile, {
+        type: 'error',
+        requestId: request.id,
+        loopIndex: loop.index,
+        message: error && error.message ? String(error.message) : String(error),
+      });
     }
+    throw error;
   }
 
   const responseText = textParts.join('');
 
-  // Parse and validate the decision
   let decision;
   try {
     const parsed = parsePossiblyFencedJson(responseText);
     decision = validateControllerDecision(parsed);
   } catch (err) {
-    // If parsing fails, try to extract JSON from the response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -91,7 +125,6 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   }
 
   emitEvent({ source: 'controller-api', type: 'decision', action: decision.action, agentId: decision.agent_id });
-
   return { prompt, decision, sessionId: null };
 }
 

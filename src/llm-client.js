@@ -72,6 +72,12 @@ class LLMClient {
     }
     this._applyThinking(params, options.thinking);
     this._applyCaching(params, messages);
+    if (typeof options.onRequest === 'function') {
+      await options.onRequest({
+        mode: 'stream',
+        params: _cloneForLog(params),
+      });
+    }
 
     const stream = await this.client.chat.completions.create(params, {
       signal: options.signal,
@@ -80,11 +86,18 @@ class LLMClient {
     const pending = {};
     const textParts = [];
     let usage = null;
+    const finishReasons = [];
 
     for await (const chunk of stream) {
+      if (typeof options.onChunk === 'function') {
+        await options.onChunk(_cloneForLog(chunk));
+      }
       if (chunk.usage) usage = chunk.usage;
       const choice = chunk.choices && chunk.choices[0];
       if (!choice) continue;
+      if (choice.finish_reason != null) {
+        finishReasons.push(choice.finish_reason);
+      }
 
       const delta = choice.delta;
       if (delta && delta.content) {
@@ -129,6 +142,8 @@ class LLMClient {
       type: 'done',
       text: textParts.join(''),
       toolCalls,
+      finishReason: finishReasons.length > 0 ? finishReasons[finishReasons.length - 1] : null,
+      finishReasons,
       usage: usage ? {
         promptTokens: usage.prompt_tokens,
         completionTokens: usage.completion_tokens,
@@ -155,16 +170,26 @@ class LLMClient {
     }
     this._applyThinking(params, options.thinking);
     this._applyCaching(params, messages);
+    if (typeof options.onRequest === 'function') {
+      await options.onRequest({
+        mode: 'chat',
+        params: _cloneForLog(params),
+      });
+    }
 
     const response = await this.client.chat.completions.create(params, {
       signal: options.signal,
     });
+    if (typeof options.onResponse === 'function') {
+      await options.onResponse(_cloneForLog(response));
+    }
 
     const choice = response.choices && response.choices[0];
     const message = choice && choice.message;
     return {
       text: message ? (message.content || '') : '',
       toolCalls: message && message.tool_calls ? message.tool_calls : null,
+      finishReason: choice ? (choice.finish_reason || null) : null,
       usage: response.usage ? {
         promptTokens: response.usage.prompt_tokens,
         completionTokens: response.usage.completion_tokens,
@@ -197,6 +222,15 @@ class LLMClient {
     } else if (this.provider === 'openrouter' && this.model && this.model.includes('anthropic')) {
       params.cache_control_injection_points = [{ location: 'message', index: -1 }];
     }
+  }
+}
+
+function _cloneForLog(value) {
+  if (value == null) return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
   }
 }
 
