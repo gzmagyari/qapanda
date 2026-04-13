@@ -22,6 +22,17 @@ function makeClient(handler) {
   });
 }
 
+function makeProviderClient(provider, model, handler, extra = {}) {
+  if (handler) mock.setHandler(handler);
+  return new LLMClient({
+    provider,
+    apiKey: 'test-key',
+    baseURL: mock.url + (provider === 'anthropic' ? '' : '/v1'),
+    model,
+    ...extra,
+  });
+}
+
 describe('LLMClient streaming', () => {
   it('streams text chunks correctly', async () => {
     const client = makeClient(() => ({ text: 'Hello world from the API' }));
@@ -212,6 +223,108 @@ describe('LLMClient thinking config', () => {
     });
     await client.chat([{ role: 'user', content: 'hi' }], null, { thinking: 'high' });
     assert.equal(capturedParams.reasoning_effort, 'high');
+  });
+});
+
+describe('LLMClient prompt caching config', () => {
+  it('applies OpenAI prompt cache fields', async () => {
+    let capturedParams;
+    const client = makeProviderClient('openai', 'gpt-4.1', (_req, body) => {
+      capturedParams = body;
+      return { text: 'ok' };
+    });
+    await client.chat(
+      [{ role: 'user', content: 'hi' }],
+      null,
+      {
+        promptCache: {
+          promptCacheKey: 'qapanda:test',
+          promptCacheRetention: '24h',
+          cacheMode: 'automatic',
+          cacheSupport: 'supported',
+        },
+      }
+    );
+    assert.equal(capturedParams.prompt_cache_key, 'qapanda:test');
+    assert.equal(capturedParams.prompt_cache_retention, '24h');
+  });
+
+  it('applies OpenRouter Claude top-level cache control', async () => {
+    let capturedParams;
+    const client = makeProviderClient('openrouter', 'anthropic/claude-sonnet-4.6', (_req, body) => {
+      capturedParams = body;
+      return { text: 'ok' };
+    });
+    await client.chat(
+      [{ role: 'user', content: 'hi' }],
+      null,
+      {
+        promptCache: {
+          cacheControl: { type: 'ephemeral', ttl: '1h' },
+          cacheMode: 'native',
+          cacheSupport: 'supported',
+        },
+      }
+    );
+    assert.deepEqual(capturedParams.cache_control, { type: 'ephemeral', ttl: '1h' });
+    assert.equal(capturedParams.provider, undefined);
+  });
+
+  it('applies Gemini cached_content through extra_body', async () => {
+    let capturedParams;
+    const client = makeProviderClient('gemini', 'gemini-2.5-flash', (_req, body) => {
+      capturedParams = body;
+      return { text: 'ok' };
+    });
+    await client.chat(
+      [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
+      null,
+      {
+        promptCache: {
+          cacheMode: 'explicit',
+          cacheSupport: 'supported',
+          geminiCachedContentName: 'cachedContents/demo',
+        },
+      }
+    );
+    assert.equal(
+      capturedParams.extra_body.extra_body.google.cached_content,
+      'cachedContents/demo'
+    );
+  });
+
+  it('uses native Anthropic cache control and usage normalization', async () => {
+    const client = makeProviderClient('anthropic', 'claude-sonnet-4.6');
+    let capturedParams = null;
+    client.client.messages.create = async (params) => {
+      capturedParams = params;
+      return {
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'ok' }],
+        usage: {
+          input_tokens: 12,
+          output_tokens: 5,
+          cache_read_input_tokens: 40,
+          cache_creation_input_tokens: 80,
+        },
+      };
+    };
+    const result = await client.chat(
+      [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
+      null,
+      {
+        promptCache: {
+          cacheControl: { type: 'ephemeral', ttl: '1h' },
+          cacheMode: 'native',
+          cacheSupport: 'supported',
+        },
+      }
+    );
+    assert.deepEqual(capturedParams.cache_control, { type: 'ephemeral', ttl: '1h' });
+    assert.equal(capturedParams.system, 'sys');
+    assert.equal(result.usage.cachedTokens, 40);
+    assert.equal(result.usage.cacheWriteTokens, 80);
+    assert.equal(result.usage.uncachedTailTokens, 12);
   });
 });
 

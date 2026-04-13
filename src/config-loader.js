@@ -38,6 +38,22 @@ function projectAgentsPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'ag
 function projectModesPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'modes.json'); }
 function projectMcpPath(repoRoot) { return path.join(repoRoot, '.qpanda', 'mcp.json'); }
 
+function attachMcpConfigMetadata(configMap, configDir, scope) {
+  const result = {};
+  for (const [name, value] of Object.entries(configMap || {})) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      result[name] = value;
+      continue;
+    }
+    result[name] = {
+      ...value,
+      __configDir: configDir,
+      __configScope: scope,
+    };
+  }
+  return result;
+}
+
 /**
  * Find the resources directory containing system-agents.json and system-modes.json.
  * Checks: provided path, project root/resources/, __dirname/../resources/
@@ -119,8 +135,10 @@ function loadMergedModes(repoRoot, resourcesDir) {
 // ── MCP servers ──────────────────────────────────────────────────
 
 function loadMergedMcpServers(repoRoot) {
-  const globalMcp = readJsonFile(globalMcpPath());
-  const projectMcp = readJsonFile(projectMcpPath(repoRoot));
+  const globalPath = globalMcpPath();
+  const projectPath = projectMcpPath(repoRoot);
+  const globalMcp = attachMcpConfigMetadata(readJsonFile(globalPath), path.dirname(globalPath), 'global');
+  const projectMcp = attachMcpConfigMetadata(readJsonFile(projectPath), path.dirname(projectPath), 'project');
   return { global: globalMcp, project: projectMcp };
 }
 

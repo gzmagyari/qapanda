@@ -1,4 +1,6 @@
 const path = require('node:path');
+const fs = require('node:fs/promises');
+const os = require('node:os');
 
 const { loadFeatureFlags } = require('./feature-flags');
 const _flags = loadFeatureFlags(null, process.cwd());
@@ -37,6 +39,8 @@ const {
   loadOnboarding,
   isOnboardingComplete,
 } = require('./config-loader');
+const { resolveRuntimeApiProvider } = require('./api-provider-registry');
+const { resolveApiKey } = require('./llm-client');
 const { mcpServersForRole } = require('./mcp-injector');
 const {
   bindResumeAlias,
@@ -46,6 +50,7 @@ const {
 } = require('./named-workspaces');
 const { createCloudBoundary } = require('./cloud');
 const { runCloudCommand, CLOUD_COMMAND_USAGE } = require('./cloud/cli-auth');
+const { closeAll: closeAllMcpToolBridge } = require('./mcp-tool-bridge');
 const {
   createHostedWorkflowRedactor,
   materializeHostedWorkflowRun,
@@ -96,6 +101,7 @@ Common options:
   --save-resume-as <alias>           Save this run under a resume alias
   --mode <id>                        Select mode (quick-test, auto-test, quick-dev, auto-dev, auto-dev-test)
   --agent <id>                       Direct to specific agent (bypasses controller)
+  --agent-cli <backend>              Override the selected direct agent backend for this run
   --test-env <browser${_flags.enableRemoteDesktop ? '|computer' : ''}>      Test environment for modes
   --print                            One-shot: run single turn, print result, exit
   --controller-cli <codex|api${_flags.enableClaudeCli ? '|claude' : ''}>    Controller CLI backend
@@ -193,6 +199,7 @@ const TEST_SPEC = {
   'output': { key: 'outputPath', kind: 'value' },
   'fail-fast': { key: 'failFast', kind: 'boolean' },
   'agent': { key: 'agent', kind: 'value' },
+  'agent-cli': { key: 'agentCli', kind: 'value' },
 };
 const DOCTOR_SPEC = { 'codex-bin': { key: 'codexBin', kind: 'value' }, 'claude-bin': { key: 'claudeBin', kind: 'value' } };
 const IMPORT_CHAT_SPEC = {
@@ -247,6 +254,38 @@ function normalizeOptions(options) {
   };
 }
 
+function fallbackStateRootForRepo(repoRoot) {
+  const repoName = path.basename(path.resolve(repoRoot || process.cwd())) || 'repo';
+  return path.join(os.tmpdir(), 'qapanda-state', repoName);
+}
+
+async function canCreateStateRoot(stateRoot) {
+  const probeDir = path.join(stateRoot, `.state-probe-${Date.now().toString(36)}`);
+  try {
+    await fs.mkdir(probeDir, { recursive: true });
+    await fs.rm(probeDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveWritableStateRootForNewRun(options, rootDescriptor) {
+  if (options.stateRootExplicit && options.stateRoot) {
+    return path.resolve(options.stateRoot);
+  }
+  const defaultStateDir = path.resolve(rootDescriptor && rootDescriptor.stateRoot
+    ? rootDescriptor.stateRoot
+    : defaultStateRoot(options.repoRoot || process.cwd()));
+  if (await canCreateStateRoot(defaultStateDir)) {
+    return defaultStateDir;
+  }
+  if (rootDescriptor && rootDescriptor.kind !== 'repo') {
+    return defaultStateDir;
+  }
+  return fallbackStateRootForRepo(options.repoRoot || process.cwd());
+}
+
 async function resolveCliRootDescriptor(options) {
   if (options.workspace) {
     if (!_flags.enablePersonalWorkspaces) {
@@ -265,7 +304,8 @@ async function applyRootDescriptorToOptions(options) {
     options: {
       ...normalized,
       repoRoot: rootDescriptor.repoRoot,
-      stateRoot: normalized.stateRoot ? path.resolve(normalized.stateRoot) : rootDescriptor.stateRoot,
+      stateRoot: rootDescriptor.stateRoot || normalized.stateRoot || defaultStateRoot(rootDescriptor.repoRoot),
+      stateRootExplicit: Boolean(normalized.stateRoot),
       workspaceName: rootDescriptor.workspaceName || null,
       rootKind: rootDescriptor.kind,
       rootIdentity: rootDescriptor.rootIdentity,
@@ -303,6 +343,51 @@ async function ensureBinaryAvailable(binary) {
   return (result.stdout || result.stderr).trim();
 }
 
+function isClaudeCli(cli) {
+  return cli === 'claude';
+}
+
+function isCodexCli(cli) {
+  return cli === 'codex';
+}
+
+function cloneAgentsWithDirectCliOverride(allAgents, directAgent, agentCliOverride) {
+  if (!directAgent || !agentCliOverride) {
+    return allAgents;
+  }
+  const agentConfig = allAgents[directAgent];
+  if (!agentConfig) {
+    throw new Error(`Unknown agent: ${directAgent}. Use qapanda agents to see available agents.`);
+  }
+  return {
+    ...allAgents,
+    [directAgent]: {
+      ...agentConfig,
+      cli: agentCliOverride,
+    },
+  };
+}
+
+function ensureDirectAgentApiRuntimeReady(directAgent, directAgentConfig, options) {
+  if (!directAgent || !directAgentConfig || directAgentConfig.cli !== 'api') {
+    return;
+  }
+  const apiConfig = options.workerApiConfig || options.apiConfig || {};
+  const providerId = directAgentConfig.provider || apiConfig.provider || 'openrouter';
+  const resolvedProvider = resolveRuntimeApiProvider(providerId);
+  if (!resolvedProvider) {
+    throw new Error(`Unknown API provider "${providerId}" configured for direct agent "${directAgent}".`);
+  }
+  const apiKey = resolveApiKey(resolvedProvider.id, apiConfig.apiKey);
+  if (apiKey) {
+    return;
+  }
+  const configuredVia = resolvedProvider.envKey
+    ? `set ${resolvedProvider.envKey} or ~/.qpanda/settings.json apiKeys.${resolvedProvider.id}`
+    : `set ~/.qpanda/settings.json apiKeys.${resolvedProvider.id}`;
+  throw new Error(`Missing API key for provider "${resolvedProvider.id}" used by direct agent "${directAgent}". Configure a key before running QA Panda in API mode: ${configuredVia}.`);
+}
+
 // ── Config loading ───────────────────────────────────────────────
 
 function loadConfig(repoRoot) {
@@ -323,26 +408,35 @@ function applyApiConfigToOptions(options, agents) {
   const anyApi = options.controllerCli === 'api' || options.workerCli === 'api' || anyAgentUsesApi;
   if (!anyApi) return;
 
+  const baseApiConfig = options.apiConfig && typeof options.apiConfig === 'object' ? options.apiConfig : {};
+  const baseControllerApiConfig = options.controllerApiConfig && typeof options.controllerApiConfig === 'object'
+    ? options.controllerApiConfig
+    : baseApiConfig;
+  const baseWorkerApiConfig = options.workerApiConfig && typeof options.workerApiConfig === 'object'
+    ? options.workerApiConfig
+    : baseApiConfig;
   const shared = {
-    provider: options.apiProvider || (options.apiConfig && options.apiConfig.provider) || 'openrouter',
-    baseURL: options.apiBaseUrl || (options.apiConfig && options.apiConfig.baseURL) || '',
+    provider: options.apiProvider || baseApiConfig.provider || 'openrouter',
+    baseURL: options.apiBaseUrl || baseApiConfig.baseURL || '',
   };
 
-  options.apiConfig = { ...(options.apiConfig || {}), ...shared };
+  options.apiConfig = { ...baseApiConfig, ...shared };
 
   if (options.controllerCli === 'api') {
     options.controllerApiConfig = {
+      ...baseControllerApiConfig,
       ...shared,
-      model: options.controllerModel || '',
-      thinking: options.controllerThinking || '',
+      model: options.controllerModel || baseControllerApiConfig.model || '',
+      thinking: options.controllerThinking || baseControllerApiConfig.thinking || '',
     };
   }
 
   if (options.workerCli === 'api' || anyAgentUsesApi) {
     options.workerApiConfig = {
+      ...baseWorkerApiConfig,
       ...shared,
-      model: options.workerModel || '',
-      thinking: options.workerThinking || '',
+      model: options.workerModel || baseWorkerApiConfig.model || '',
+      thinking: options.workerThinking || baseWorkerApiConfig.thinking || '',
     };
   }
 }
@@ -384,9 +478,10 @@ function applyConfigToOptions(options, config) {
     }
   }
 
-  // Load all agents into manifest
-  options.agents = allAgents;
-  applyApiConfigToOptions(options, allAgents);
+  // Load all agents into manifest, applying any direct-agent CLI override before persistence.
+  const resolvedAgents = cloneAgentsWithDirectCliOverride(allAgents, directAgent, options.agentCli);
+  options.agents = resolvedAgents;
+  applyApiConfigToOptions(options, resolvedAgents);
 
   // Auto-inject system MCPs (unless disabled)
   if (!options.noMcpInject) {
@@ -622,26 +717,34 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
     await config.cloud.preload();
   }
   const { options: enriched, directAgent } = applyConfigToOptions(normalizedOptions, config);
+  const directAgentConfig = directAgent ? enriched.agents[directAgent] : null;
+  const directAgentCli = directAgentConfig && typeof directAgentConfig.cli === 'string'
+    ? directAgentConfig.cli
+    : null;
+  ensureDirectAgentApiRuntimeReady(directAgent, directAgentConfig, enriched);
 
   // Verify CLIs — only check binaries that are actually configured
-  const controllerIsCodex = !enriched.controllerCli || enriched.controllerCli === 'codex' || enriched.controllerCli === 'qa-remote-codex';
-  const controllerIsClaude = enriched.controllerCli === 'claude' || enriched.controllerCli === 'qa-remote-claude';
-  const workerIsCodex = !enriched.workerCli || enriched.workerCli === 'codex' || enriched.workerCli === 'qa-remote-codex';
-  const workerIsClaude = enriched.workerCli === 'claude' || enriched.workerCli === 'qa-remote-claude';
+  const controllerIsCodex = !enriched.controllerCli || isCodexCli(enriched.controllerCli);
+  const controllerIsClaude = isClaudeCli(enriched.controllerCli);
+  const workerIsCodex = !enriched.workerCli || isCodexCli(enriched.workerCli);
+  const workerIsClaude = isClaudeCli(enriched.workerCli);
   if (controllerIsCodex && !directAgent) {
     await ensureBinaryAvailable(enriched.codexBin || 'codex');
   }
-  if (controllerIsClaude || workerIsClaude) {
+  if (controllerIsClaude || (!directAgent && workerIsClaude) || isClaudeCli(directAgentCli)) {
     await ensureBinaryAvailable(enriched.claudeBin || 'claude');
-  } else if (directAgent && workerIsCodex) {
+  } else if (directAgent && isCodexCli(directAgentCli)) {
     await ensureBinaryAvailable(enriched.codexBin || 'codex');
   }
 
   // Auto-start Chrome if needed (for agents with chrome-devtools MCP)
   let chromeSession = null;
   if (!enriched.noChrome) {
-    chromeSession = await ensureChromeIfNeeded(directAgent, config.allAgents, enriched);
-    if (chromeSession && chromeSession.port) enriched.chromeDebugPort = chromeSession.port;
+    chromeSession = await ensureChromeIfNeeded(directAgent, enriched.agents, enriched);
+    if (chromeSession && chromeSession.port) {
+      enriched.chromeDebugPort = chromeSession.port;
+      enriched.chromeOwnerPanelId = chromeSession.panelId || null;
+    }
   }
 
   let manifest;
@@ -663,12 +766,22 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
   }
 
   if (!manifest) {
-    manifest = await prepareNewRun(message, enriched);
+    const writableStateRoot = await resolveWritableStateRootForNewRun(normalizedOptions, {
+      kind: normalizedOptions.rootKind,
+      stateRoot: normalizedOptions.stateRoot,
+    });
+    manifest = await prepareNewRun(message, {
+      ...enriched,
+      stateRoot: writableStateRoot,
+    });
     manifest.resumeToken = pendingResumeAlias || normalizedOptions.saveResumeAs || manifest.resumeToken || null;
   }
 
   // Pass Chrome port to manifest for placeholder replacement in buildClaudeArgs
   if (enriched.chromeDebugPort) manifest.chromeDebugPort = enriched.chromeDebugPort;
+  if (Object.prototype.hasOwnProperty.call(enriched, 'chromeOwnerPanelId')) {
+    manifest.chromeOwnerPanelId = enriched.chromeOwnerPanelId || null;
+  }
 
   const renderer = new Renderer({ rawEvents: manifest.settings.rawEvents, quiet: manifest.settings.quiet });
   renderer.requestStarted(manifest.runId);
@@ -683,6 +796,7 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
     }
   } finally {
     renderer.close();
+    await closeAllMcpToolBridge();
     await closeCliRunConnections(manifest.runId);
     if (chromeSession && chromeSession.autoStarted && chromeSession.panelId) {
       try { require('../extension/chrome-manager').killChrome(chromeSession.panelId); } catch {}
@@ -734,7 +848,14 @@ async function runPreparedHostedWorkflowCloudRun(spec, options) {
     await ensureBinaryAvailable(enriched.claudeBin || 'claude');
   }
 
-  const manifest = await prepareNewRun(workflowContext.launchInstruction, enriched);
+  const writableStateRoot = await resolveWritableStateRootForNewRun(normalizedOptions, {
+    kind: normalizedOptions.rootKind,
+    stateRoot: normalizedOptions.stateRoot,
+  });
+  const manifest = await prepareNewRun(workflowContext.launchInstruction, {
+    ...enriched,
+    stateRoot: writableStateRoot,
+  });
   const renderer = new Renderer({ rawEvents: manifest.settings.rawEvents, quiet: manifest.settings.quiet });
   manifest.cloudRunSpec = sanitizeHostedWorkflowCloudRunSpec(enriched.cloudRunSpec || {});
   setHostedWorkflowExecutionContext(manifest, workflowContext);
@@ -751,6 +872,7 @@ async function runPreparedHostedWorkflowCloudRun(spec, options) {
     throw error;
   } finally {
     renderer.close();
+    await closeAllMcpToolBridge();
     await bindResumeAliasIfRequested(manifest, normalizedOptions);
     await saveManifest(manifest);
   }
@@ -829,6 +951,7 @@ async function resumeRun(argv) {
     }
   } finally {
     renderer.close();
+    await closeAllMcpToolBridge();
     await bindResumeAliasIfRequested(manifest, options);
     await saveManifest(manifest);
   }

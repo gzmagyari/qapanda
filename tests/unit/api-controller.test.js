@@ -11,7 +11,6 @@ let tmpDir;
 before(async () => {
   mock = await createMockServer();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-apic-test-'));
-  // Create minimal state files the controller prompt builder expects
   fs.mkdirSync(path.join(tmpDir, '.qpanda', 'runs', 'test-run'), { recursive: true });
 });
 after(async () => {
@@ -31,12 +30,14 @@ function makeManifest(handler) {
       model: null,
       sessionId: null,
       lastSeenChatLine: 0,
+      lastSeenTranscriptLine: 0,
       apiConfig: {
         provider: 'custom',
         apiKey: 'test',
         baseURL: mock.url + '/v1',
         model: 'test-model',
       },
+      apiSystemPromptSnapshot: null,
     },
     apiConfig: {
       provider: 'custom',
@@ -44,7 +45,7 @@ function makeManifest(handler) {
       baseURL: mock.url + '/v1',
       model: 'test-model',
     },
-    worker: { cli: 'api', bin: 'api' },
+    worker: { cli: 'api', bin: 'api', hasStarted: false, sessionId: null },
     agents: {
       dev: { name: 'Developer', description: 'Dev agent' },
       'QA-Browser': { name: 'QA Engineer', description: 'QA agent' },
@@ -56,6 +57,8 @@ function makeManifest(handler) {
     files: { events: path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'events.jsonl') },
     counters: { request: 1, loop: 1, controllerTurn: 0, workerTurn: 0 },
     requests: [],
+    stopReason: null,
+    selfTesting: false,
   };
 }
 
@@ -70,7 +73,7 @@ function makeRenderer() {
   };
 }
 
-describe('API Controller — valid delegate decision', () => {
+describe('API Controller - valid delegate decision', () => {
   it('returns a delegate decision', async () => {
     const { runApiControllerTurn } = require('../../src/api-controller');
     const decision = JSON.stringify({
@@ -86,7 +89,7 @@ describe('API Controller — valid delegate decision', () => {
 
     const result = await runApiControllerTurn({
       manifest,
-      request: { id: 'r1', message: 'test login', loopIndex: 0, workerResults: [], loops: [] },
+      request: { id: 'r1', userMessage: 'test login', startedAt: 'now', loops: [], latestWorkerResult: null },
       loop: { controller: { promptFile: path.join(tmpDir, 'prompt.txt') } },
       renderer,
       emitEvent: () => {},
@@ -98,7 +101,7 @@ describe('API Controller — valid delegate decision', () => {
   });
 });
 
-describe('API Controller — valid stop decision', () => {
+describe('API Controller - valid stop decision', () => {
   it('returns a stop decision', async () => {
     const { runApiControllerTurn } = require('../../src/api-controller');
     const decision = JSON.stringify({
@@ -114,7 +117,7 @@ describe('API Controller — valid stop decision', () => {
 
     const result = await runApiControllerTurn({
       manifest,
-      request: { id: 'r1', message: 'test', loopIndex: 0, workerResults: [], loops: [] },
+      request: { id: 'r1', userMessage: 'test', startedAt: 'now', loops: [], latestWorkerResult: null },
       loop: { controller: { promptFile: path.join(tmpDir, 'prompt2.txt') } },
       renderer,
       emitEvent: () => {},
@@ -125,7 +128,7 @@ describe('API Controller — valid stop decision', () => {
   });
 });
 
-describe('API Controller — JSON in fenced code block', () => {
+describe('API Controller - JSON in fenced code block', () => {
   it('extracts JSON from markdown fences', async () => {
     const { runApiControllerTurn } = require('../../src/api-controller');
     const fenced = '```json\n' + JSON.stringify({
@@ -141,7 +144,7 @@ describe('API Controller — JSON in fenced code block', () => {
 
     const result = await runApiControllerTurn({
       manifest,
-      request: { id: 'r1', message: 'fix', loopIndex: 0, workerResults: [], loops: [] },
+      request: { id: 'r1', userMessage: 'fix', startedAt: 'now', loops: [], latestWorkerResult: null },
       loop: { controller: { promptFile: path.join(tmpDir, 'prompt3.txt') } },
       renderer,
       emitEvent: () => {},
@@ -152,7 +155,7 @@ describe('API Controller — JSON in fenced code block', () => {
   });
 });
 
-describe('API Controller — invalid response', () => {
+describe('API Controller - invalid response', () => {
   it('throws on non-JSON response', async () => {
     const { runApiControllerTurn } = require('../../src/api-controller');
     const manifest = makeManifest(() => ({ text: 'I am not sure what to do next.' }));
@@ -161,12 +164,55 @@ describe('API Controller — invalid response', () => {
     await assert.rejects(
       () => runApiControllerTurn({
         manifest,
-        request: { id: 'r1', message: 'test', loopIndex: 0, workerResults: [], loops: [] },
+        request: { id: 'r1', userMessage: 'test', startedAt: 'now', loops: [], latestWorkerResult: null },
         loop: { controller: { promptFile: path.join(tmpDir, 'prompt4.txt') } },
         renderer,
         emitEvent: () => {},
       }),
       (err) => err.message.includes('no JSON')
     );
+  });
+});
+
+describe('API Controller - stable system snapshot', () => {
+  it('reuses the first controller system prompt snapshot across turns', async () => {
+    const { runApiControllerTurn } = require('../../src/api-controller');
+    const seenSystemPrompts = [];
+    const manifest = makeManifest((_req, body) => {
+      seenSystemPrompts.push(body.messages[0].content);
+      return {
+        text: JSON.stringify({
+          action: 'stop',
+          agent_id: null,
+          claude_message: null,
+          controller_messages: ['done'],
+          stop_reason: 'done',
+          progress_updates: [],
+        }),
+      };
+    });
+    const renderer = makeRenderer();
+
+    await runApiControllerTurn({
+      manifest,
+      request: { id: 'r1', userMessage: 'first', startedAt: 'now', loops: [], latestWorkerResult: null },
+      loop: { controller: { promptFile: path.join(tmpDir, 'prompt5.txt') } },
+      renderer,
+      emitEvent: () => {},
+    });
+
+    manifest.controller.extraInstructions = 'Changed later';
+
+    await runApiControllerTurn({
+      manifest,
+      request: { id: 'r2', userMessage: 'second', startedAt: 'later', loops: [], latestWorkerResult: null },
+      loop: { controller: { promptFile: path.join(tmpDir, 'prompt6.txt') } },
+      renderer,
+      emitEvent: () => {},
+    });
+
+    assert.equal(seenSystemPrompts.length, 2);
+    assert.equal(seenSystemPrompts[0], seenSystemPrompts[1]);
+    assert.doesNotMatch(seenSystemPrompts[1], /Changed later/);
   });
 });

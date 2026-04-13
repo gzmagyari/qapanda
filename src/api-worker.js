@@ -14,10 +14,17 @@ const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
+const { buildPromptCacheContext } = require('./prompt-cache');
 const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
 const { compactApiSessionHistory } = require('./api-compaction');
+const {
+  buildGeminiCacheUsage,
+  geminiCacheSessionKey,
+  readGeminiCacheEntry,
+  refreshGeminiCacheEntry,
+} = require('./gemini-cache-store');
 const {
   appendTranscriptRecord,
   buildSessionReplay,
@@ -29,6 +36,7 @@ const {
   transcriptBackend,
   workerSessionKey,
 } = require('./transcript');
+const http = require('node:http');
 
 const _apiBrowserDebugLog = require('node:path').join(require('node:os').tmpdir(), 'cc-appserver-debug.log');
 function _apiBrowserDbg(msg) {
@@ -45,20 +53,89 @@ function parseToolInput(argumentsValue) {
   }
 }
 
-/**
- * Run a single API worker turn with streaming and multi-turn tool calling.
- *
- * @param {object} opts
- * @param {object} opts.manifest - Run manifest
- * @param {object} opts.request - Current request
- * @param {object} opts.loop - Current loop
- * @param {object} opts.workerRecord - Worker record to populate
- * @param {string} opts.prompt - User/controller prompt for this turn
- * @param {object} opts.renderer - Renderer for streaming output
- * @param {function} opts.emitEvent - Event logger
- * @param {AbortSignal} [opts.abortSignal] - Abort signal
- * @param {string} [opts.agentId] - Agent ID
- */
+function _httpGetJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout: 3000 }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy(new Error('timeout'));
+    });
+  });
+}
+
+async function probeChromeDebugPort(port, { httpGet = _httpGetJson } = {}) {
+  const normalizedPort = Number(port);
+  if (!Number.isFinite(normalizedPort) || normalizedPort <= 0) {
+    return { alive: false, port: null, version: null };
+  }
+  try {
+    const version = await httpGet(`http://127.0.0.1:${normalizedPort}/json/version`);
+    return { alive: true, port: normalizedPort, version: version || null };
+  } catch {
+    return { alive: false, port: normalizedPort, version: null };
+  }
+}
+
+async function recoverChromeDevtoolsSession(
+  manifest,
+  agentSession,
+  { toolName = null, error = null, httpGet = _httpGetJson, chromeManager = null } = {},
+) {
+  const boundPort = Number(
+    manifest && manifest.chromeDebugPort != null
+      ? manifest.chromeDebugPort
+      : (agentSession && agentSession.boundBrowserPort != null ? agentSession.boundBrowserPort : null)
+  );
+  if (!Number.isFinite(boundPort) || boundPort <= 0) {
+    _apiBrowserDbg(`chrome recovery skipped: missing bound port tool=${toolName || 'unknown'} error=${error && error.message ? error.message : error || ''}`);
+    return { recovered: false, action: 'missing-port', port: null };
+  }
+
+  const probe = await probeChromeDebugPort(boundPort, { httpGet });
+  if (probe.alive) {
+    _apiBrowserDbg(`chrome recovery reconnect-only: tool=${toolName || 'unknown'} port=${boundPort}`);
+    return { recovered: true, action: 'reconnect-client', port: boundPort };
+  }
+
+  const ownerPanelId = manifest && manifest.chromeOwnerPanelId ? String(manifest.chromeOwnerPanelId) : '';
+  if (!ownerPanelId) {
+    _apiBrowserDbg(`chrome recovery skipped: dead port without owner panel tool=${toolName || 'unknown'} port=${boundPort}`);
+    return { recovered: false, action: 'missing-owner-panel', port: boundPort };
+  }
+
+  const manager = chromeManager || require('../extension/chrome-manager');
+  try {
+    try {
+      manager.killChrome(ownerPanelId);
+    } catch {}
+    const restarted = await manager.ensureChrome(ownerPanelId, { port: boundPort });
+    if (!restarted || Number(restarted.port) !== boundPort) {
+      _apiBrowserDbg(`chrome recovery failed restart: tool=${toolName || 'unknown'} port=${boundPort} restartedPort=${restarted && restarted.port != null ? restarted.port : 'null'}`);
+      return { recovered: false, action: 'restart-failed', port: boundPort };
+    }
+    manifest.chromeDebugPort = boundPort;
+    manifest.worker.boundBrowserPort = boundPort;
+    if (agentSession && typeof agentSession === 'object') {
+      agentSession.boundBrowserPort = boundPort;
+    }
+    _apiBrowserDbg(`chrome recovery restarted same port: tool=${toolName || 'unknown'} panelId=${ownerPanelId} port=${boundPort}`);
+    return { recovered: true, action: 'restart-browser', port: boundPort, panelId: ownerPanelId };
+  } catch (recoveryError) {
+    _apiBrowserDbg(`chrome recovery exception: tool=${toolName || 'unknown'} panelId=${ownerPanelId} port=${boundPort} error=${recoveryError && recoveryError.message ? recoveryError.message : recoveryError}`);
+    return { recovered: false, action: 'restart-exception', port: boundPort, panelId: ownerPanelId };
+  }
+}
+
 async function runApiWorkerTurn({
   manifest,
   request,
@@ -77,14 +154,12 @@ async function runApiWorkerTurn({
   const agentConfig = isCustomAgent ? lookupAgentConfig(manifest.agents, agentId) : null;
   const agentName = agentConfig ? agentConfig.name : null;
   const label = workerLabelFor('api', agentName);
-  // Temporarily override renderer workerLabel for this agent turn (same as codex-worker)
   const prevWorkerLabel = renderer.workerLabel;
   renderer.workerLabel = label;
   const manifestSessionKey = agentId || 'default';
   const localSessionKey = workerSessionKey(agentId);
   const backend = transcriptBackend('worker', 'api');
 
-  // Resolve API config: agent-level overrides → manifest worker config → manifest global
   const apiConfig = manifest.worker.apiConfig || manifest.apiConfig || {};
   const providerId = (agentConfig && agentConfig.provider) || apiConfig.provider || 'openrouter';
   const resolvedProvider = resolveRuntimeApiProvider(providerId);
@@ -104,20 +179,6 @@ async function runApiWorkerTurn({
   }
 
   const client = new LLMClient({ provider, apiKey, baseURL, model });
-
-  // Build system prompt
-  const promptsDirs = buildPromptsDirs(manifest.repoRoot);
-  let systemPrompt = buildAgentWorkerSystemPrompt(
-    agentConfig,
-    manifest.selfTesting
-      ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts, repoRoot: manifest.repoRoot }
-      : { repoRoot: manifest.repoRoot },
-    promptsDirs
-  );
-
-  systemPrompt += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file — Read files\n- builtin_tools__write_file — Write/create files\n- builtin_tools__edit_file — Edit files (find and replace)\n- builtin_tools__run_command — Execute shell commands\n- builtin_tools__list_directory — List directory contents\n- builtin_tools__glob_search — Find files by pattern\n- builtin_tools__grep_search — Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
-
-  // Load ALL tools through unified bridge (cached — won't reconnect if config unchanged)
   const allMcpServers = { ...(manifest.workerMcpServers || {}), ...((agentConfig && agentConfig.mcps) || {}) };
   _apiBrowserDbg(`api-worker tools panelId=${manifest.panelId || null} chromeDebugPort=${manifest.chromeDebugPort || null} agentId=${agentId || 'default'} mcpKeys=${JSON.stringify(Object.keys(allMcpServers || {}))}`);
   if (manifest.chromeDebugPort) {
@@ -134,6 +195,19 @@ async function runApiWorkerTurn({
   if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
   const agentSession = ensureWorkerSessionState(manifest.worker.agentSessions[manifestSessionKey]);
   manifest.worker.agentSessions[manifestSessionKey] = agentSession;
+  const promptsDirs = buildPromptsDirs(manifest.repoRoot);
+  if (!agentSession.apiSystemPromptSnapshot) {
+    let built = buildAgentWorkerSystemPrompt(
+      agentConfig,
+      manifest.selfTesting
+        ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts, repoRoot: manifest.repoRoot }
+        : { repoRoot: manifest.repoRoot },
+      promptsDirs
+    );
+    built += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file â€” Read files\n- builtin_tools__write_file â€” Write/create files\n- builtin_tools__edit_file â€” Edit files (find and replace)\n- builtin_tools__run_command â€” Execute shell commands\n- builtin_tools__list_directory â€” List directory contents\n- builtin_tools__glob_search â€” Find files by pattern\n- builtin_tools__grep_search â€” Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
+    agentSession.apiSystemPromptSnapshot = built.replaceAll('\u00e2\u20ac\u201d', '-');
+  }
+  const systemPrompt = agentSession.apiSystemPromptSnapshot;
   if (manifest.chromeDebugPort != null) {
     agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
     manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
@@ -171,6 +245,14 @@ async function runApiWorkerTurn({
   const canonicalHistoryAvailable = hasTranscriptV2(replayEntries);
 
   let messages;
+  let fullMessages = null;
+  let cacheContext = buildPromptCacheContext({
+    providerId,
+    model,
+    runId: manifest.runId,
+    sessionKey: localSessionKey,
+    purpose: 'worker',
+  });
   if (canonicalHistoryAvailable) {
     messages = null;
   } else if (Array.isArray(agentSession.apiMessages) && agentSession.apiMessages.length > 0) {
@@ -178,16 +260,28 @@ async function runApiWorkerTurn({
       ? agentSession.apiMessages.slice(1)
       : agentSession.apiMessages;
     messages = [{ role: 'system', content: systemPrompt }, ...legacyHistory, { role: 'user', content: prompt }];
+    fullMessages = messages;
   } else {
     messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt },
     ];
+    fullMessages = messages;
   }
 
   async function buildCanonicalMessages({ forceCompact = false } = {}) {
     if (!manifest.files || !manifest.files.transcript) {
-      return [{ role: 'system', content: systemPrompt }];
+      return {
+        messages: [{ role: 'system', content: systemPrompt }],
+        fullMessages: [{ role: 'system', content: systemPrompt }],
+        cacheContext: buildPromptCacheContext({
+          providerId,
+          model,
+          runId: manifest.runId,
+          sessionKey: localSessionKey,
+          purpose: 'worker',
+        }),
+      };
     }
     if (typeof compactSessionHistory === 'function') {
       await compactSessionHistory({
@@ -207,10 +301,47 @@ async function runApiWorkerTurn({
       });
     }
     const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
-    return [
+    const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey);
+    const completeMessages = [
       { role: 'system', content: systemPrompt },
-      ...buildSessionReplay(refreshedEntries, localSessionKey),
+      ...replayMessages,
     ];
+    let nextMessages = completeMessages;
+    let nextCacheContext = buildPromptCacheContext({
+      providerId,
+      model,
+      runId: manifest.runId,
+      sessionKey: localSessionKey,
+      purpose: 'worker',
+    });
+    if (providerId === 'gemini') {
+      const cacheEntry = await readGeminiCacheEntry(
+        manifest,
+        geminiCacheSessionKey({
+          purpose: 'worker',
+          sessionKey: localSessionKey,
+          model,
+        })
+      );
+      const cacheUsage = buildGeminiCacheUsage(cacheEntry, completeMessages.slice(1));
+      nextMessages = [
+        { role: 'system', content: systemPrompt },
+        ...cacheUsage.uncachedMessages,
+      ];
+      nextCacheContext = buildPromptCacheContext({
+        providerId,
+        model,
+        runId: manifest.runId,
+        sessionKey: localSessionKey,
+        purpose: 'worker',
+        geminiCachedContentName: cacheUsage.cachedContentName,
+      });
+    }
+    return {
+      messages: nextMessages,
+      fullMessages: completeMessages,
+      cacheContext: nextCacheContext,
+    };
   }
 
   emitEvent({ source: 'worker-api', type: 'start', agentId, model, provider: providerId });
@@ -218,7 +349,7 @@ async function runApiWorkerTurn({
 
   let iterations = 0;
   let finalText = '';
-  let totalUsage = { promptTokens: 0, completionTokens: 0 };
+  const totalUsage = { promptTokens: 0, completionTokens: 0 };
 
   while (true) {
     iterations++;
@@ -229,7 +360,10 @@ async function runApiWorkerTurn({
     }
 
     if (canonicalHistoryAvailable) {
-      messages = await buildCanonicalMessages();
+      const canonical = await buildCanonicalMessages();
+      messages = canonical.messages;
+      fullMessages = canonical.fullMessages;
+      cacheContext = canonical.cacheContext;
     }
 
     const textParts = [];
@@ -249,12 +383,17 @@ async function runApiWorkerTurn({
       thinking,
       messageCount: Array.isArray(messages) ? messages.length : 0,
       toolCount: Array.isArray(tools) ? tools.length : 0,
+      cacheSupport: cacheContext.cacheSupport,
+      cacheMode: cacheContext.cacheMode,
+      promptCacheKey: cacheContext.promptCacheKey || null,
+      cachedContentName: cacheContext.geminiCachedContentName || null,
     });
 
     try {
       for await (const event of client.streamChat(messages, tools, {
         thinking,
         signal: abortSignal,
+        promptCache: cacheContext,
         ...apiLogHooks,
       })) {
         if (event.type === 'text') {
@@ -273,6 +412,10 @@ async function runApiWorkerTurn({
               iteration: iterations,
               finishReason,
               finishReasons,
+              cacheSupport: cacheContext.cacheSupport,
+              cacheMode: cacheContext.cacheMode,
+              promptCacheKey: cacheContext.promptCacheKey || null,
+              cachedContentName: cacheContext.geminiCachedContentName || null,
               textLength: (event.text || '').length,
               toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0,
               toolCalls,
@@ -289,6 +432,10 @@ async function runApiWorkerTurn({
           requestId: request.id,
           loopIndex: loop.index,
           iteration: iterations,
+          cacheSupport: cacheContext.cacheSupport,
+          cacheMode: cacheContext.cacheMode,
+          promptCacheKey: cacheContext.promptCacheKey || null,
+          cachedContentName: cacheContext.geminiCachedContentName || null,
           message: error && error.message ? String(error.message) : String(error),
         });
       }
@@ -316,6 +463,23 @@ async function runApiWorkerTurn({
           payload: { role: 'assistant', content: finalText },
         });
         await appendTranscriptRecord(manifest, assistantEntry);
+        emitEvent({ source: 'worker-api', type: 'assistant_message', text: finalText });
+      }
+      if (providerId === 'gemini' && canonicalHistoryAvailable) {
+        const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
+        const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey);
+        await refreshGeminiCacheEntry({
+          manifest,
+          cacheKey: geminiCacheSessionKey({
+            purpose: 'worker',
+            sessionKey: localSessionKey,
+            model,
+          }),
+          apiKey,
+          model,
+          systemPrompt,
+          messages: replayMessages,
+        });
       }
       break;
     }
@@ -339,6 +503,9 @@ async function runApiWorkerTurn({
       text: responseText || '',
       payload: assistantMessage,
     }));
+    if (responseText) {
+      emitEvent({ source: 'worker-api', type: 'assistant_message', text: responseText });
+    }
 
     for (const tc of toolCalls) {
       const toolName = tc.function.name;
@@ -346,7 +513,7 @@ async function runApiWorkerTurn({
       const toolArgs = tc.function.arguments;
       const parsedInput = parseToolInput(toolArgs);
       const argsPreview = parsedInput.path || parsedInput.command || parsedInput.pattern || '';
-      const cardId = tc.id ? `api-${tc.id}` : `api-${request.id}-${iterations}-${messages.length}`;
+      const cardId = tc.id ? `api-${tc.id}` : `api-${request.id}-${iterations}-${(fullMessages && fullMessages.length) || 0}`;
 
       const isChromeDevtools = toolName.includes('chrome_devtools') || toolName.includes('chrome-devtools');
       const isComputerUse = isChromeDevtools || toolName.includes('computer_control') || toolName.includes('computer-control');
@@ -356,7 +523,7 @@ async function runApiWorkerTurn({
         renderer.claude(`Calling ${toolName}${argsPreview ? ': ' + argsPreview : ''}`);
       }
 
-      emitEvent({ source: 'worker-api', type: 'tool_call', name: toolName, args: toolArgs });
+      emitEvent({ source: 'worker-api', type: 'tool_call', name: toolName, args: toolArgs, input: parsedInput });
       await appendTranscriptRecord(manifest, createTranscriptRecord({
         kind: 'tool_call',
         sessionKey: localSessionKey,
@@ -371,7 +538,11 @@ async function runApiWorkerTurn({
         payload: tc,
       }));
 
-      const result = await executeTool(tc, allMcpServers, manifest.repoRoot);
+      const result = await executeTool(tc, allMcpServers, manifest.repoRoot, {
+        onRecoverChromeDevtools: async ({ toolName: recoverToolName, error }) => {
+          await recoverChromeDevtoolsSession(manifest, agentSession, { toolName: recoverToolName, error });
+        },
+      });
       const toolResultEntry = createTranscriptRecord({
         kind: 'tool_result',
         sessionKey: localSessionKey,
@@ -403,6 +574,7 @@ async function runApiWorkerTurn({
         source: 'worker-api',
         type: 'tool_result',
         name: toolName,
+        summary: summarizeToolResult(result),
         resultLength: JSON.stringify(result).length,
       });
     }
@@ -440,4 +612,8 @@ async function runApiWorkerTurn({
   };
 }
 
-module.exports = { runApiWorkerTurn };
+module.exports = {
+  runApiWorkerTurn,
+  probeChromeDebugPort,
+  recoverChromeDevtoolsSession,
+};

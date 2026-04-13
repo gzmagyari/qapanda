@@ -10,7 +10,12 @@ const {
   controllerApiLogFiles,
   createStreamApiLogHooks,
 } = require('./api-io-log');
-const { buildControllerPrompt } = require('./prompts');
+const {
+  buildApiControllerSystemPrompt,
+  buildApiControllerUserPrompt,
+  buildControllerPrompt,
+} = require('./prompts');
+const { buildPromptCacheContext } = require('./prompt-cache');
 const { validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
 const { writeText } = require('./utils');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
@@ -50,6 +55,18 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   }
 
   const client = new LLMClient({ provider, apiKey, baseURL, model });
+  if (!manifest.controller.apiSystemPromptSnapshot) {
+    manifest.controller.apiSystemPromptSnapshot = buildApiControllerSystemPrompt(manifest);
+  }
+  const systemPrompt = manifest.controller.apiSystemPromptSnapshot;
+  const userPrompt = buildApiControllerUserPrompt(manifest, request);
+  const cacheContext = buildPromptCacheContext({
+    providerId,
+    model,
+    runId: manifest.runId,
+    sessionKey: 'controller:main',
+    purpose: 'controller',
+  });
 
   emitEvent({ source: 'controller-api', type: 'start', model, provider: providerId });
   renderer.controller('Thinking about the next step.');
@@ -63,18 +80,25 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
     model,
     baseURL,
     thinking,
-    messageCount: 1,
+    messageCount: 2,
     toolCount: 0,
+    cacheSupport: cacheContext.cacheSupport,
+    cacheMode: cacheContext.cacheMode,
+    promptCacheKey: cacheContext.promptCacheKey || null,
   });
 
   try {
     for await (const event of client.streamChat(
-      [{ role: 'user', content: prompt }],
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
       null,
       {
         thinking,
         signal: abortSignal,
         response_format: { type: 'json_object' },
+        promptCache: cacheContext,
         ...apiLogHooks,
       }
     )) {
@@ -87,6 +111,9 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
           loopIndex: loop.index,
           finishReason: event.finishReason || null,
           finishReasons: Array.isArray(event.finishReasons) ? event.finishReasons : [],
+          cacheSupport: cacheContext.cacheSupport,
+          cacheMode: cacheContext.cacheMode,
+          promptCacheKey: cacheContext.promptCacheKey || null,
           textLength: (event.text || '').length,
           toolCallCount: Array.isArray(event.toolCalls) ? event.toolCalls.length : 0,
           usage: event.usage || null,

@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const { ensureDir, nowIso, pathExists, readText, writeJson, writeText } = require('./utils');
 const { redactHostedWorkflowValue, sanitizeHostedWorkflowCloudRunSpec } = require('./cloud/workflow-hosted-runs');
+const { extractTextFromClaudeContent, formatToolCall } = require('./events');
 
 const CLOUD_RUN_SPEC_VERSION = 'qapanda.cloud-run/v1';
 
@@ -11,6 +12,7 @@ const CLOUD_RUN_ARG_SPEC = {
   'spec': { key: 'specPath', kind: 'value' },
   'repo': { key: 'repoRoot', kind: 'value' },
   'state-dir': { key: 'stateRoot', kind: 'value' },
+  'agent-cli': { key: 'agentCli', kind: 'value' },
   'controller-codex-mode': { key: 'controllerCodexMode', kind: 'value' },
   'raw-events': { key: 'rawEvents', kind: 'boolean' },
   'quiet': { key: 'quiet', kind: 'boolean' },
@@ -68,6 +70,8 @@ function validateRuntimeApiConfig(value) {
     source: expectRequiredString(config.source, 'runtimeApiConfig.source'),
     provider: expectRequiredString(config.provider, 'runtimeApiConfig.provider'),
     model: expectRequiredString(config.model, 'runtimeApiConfig.model'),
+    apiKey: expectOptionalString(config.apiKey, 'runtimeApiConfig.apiKey'),
+    baseURL: expectOptionalString(config.baseURL, 'runtimeApiConfig.baseURL'),
   };
 }
 
@@ -157,7 +161,7 @@ function validateCloudRunSpec(input) {
       fail(`workflowInputs.${fieldId}`, 'must not include secret field values; use workflowSecretRefs instead.');
     }
   }
-  return sanitizeHostedWorkflowCloudRunSpec(validated);
+  return validated;
 }
 
 function loadCloudRunSpec(specPath) {
@@ -187,12 +191,15 @@ function buildCloudRunOptions(spec, cliOptions = {}) {
     ? {
         provider: spec.runtimeApiConfig.provider,
         model: spec.runtimeApiConfig.model,
+        apiKey: spec.runtimeApiConfig.apiKey || undefined,
+        baseURL: spec.runtimeApiConfig.baseURL || undefined,
       }
     : null;
   return {
     repoRoot: cliOptions.repoRoot ? path.resolve(cliOptions.repoRoot) : process.cwd(),
     stateRoot: cliOptions.stateRoot ? path.resolve(cliOptions.stateRoot) : undefined,
     runId: spec.runId,
+    agentCli: cliOptions.agentCli || undefined,
     controllerCodexMode: cliOptions.controllerCodexMode || undefined,
     controllerCli: runtimeApiConfig ? 'api' : undefined,
     workerCli: runtimeApiConfig ? 'api' : undefined,
@@ -227,24 +234,26 @@ function buildCloudRunOptions(spec, cliOptions = {}) {
 
 function buildDirectCloudRunPrompt(spec) {
   const prompt = String(spec && spec.prompt ? spec.prompt : '').trim();
-  const contextLines = [];
+  const instructionLines = [];
   if (spec && spec.targetUrl) {
-    contextLines.push(`- Target URL: ${spec.targetUrl}`);
+    instructionLines.push(`Use this exact target URL for the test: ${spec.targetUrl}`);
+    instructionLines.push('Do not try to discover the app URL from the repository or environment unless the page fails to load.');
+    instructionLines.push('Start by opening that URL in the browser and testing there.');
   }
   if (spec && spec.targetType) {
-    contextLines.push(`- Target type: ${spec.targetType}`);
+    instructionLines.push(`Target type: ${spec.targetType}`);
   }
   if (spec && spec.browserPreset) {
-    contextLines.push(`- Browser preset: ${spec.browserPreset}`);
+    instructionLines.push(`Browser preset: ${spec.browserPreset}`);
   }
-  if (contextLines.length === 0) {
+  if (instructionLines.length === 0) {
     return prompt;
   }
   return [
-    prompt,
+    'Hosted run execution requirements:',
+    ...instructionLines.map((line) => `- ${line}`),
     '',
-    'Hosted run context:',
-    ...contextLines,
+    prompt,
   ].join('\n');
 }
 
@@ -252,8 +261,277 @@ function emitCloudRunRawEvent(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
+function buildLiveAssistantMessage(actor, label, text) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) return null;
+  return {
+    kind: 'assistant_message',
+    actor,
+    label,
+    text: trimmed,
+  };
+}
+
+function buildLiveToolCall(actor, label, toolName, input, options = {}) {
+  const normalizedInput = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const summary = formatToolCall(toolName, normalizedInput);
+  const server = typeof options.server === 'string' && options.server ? options.server : null;
+  const serverText = server || '';
+  const isChromeDevtools = serverText.includes('chrome-devtools') || serverText.includes('chrome_devtools') || String(toolName || '').includes('chrome-devtools') || String(toolName || '').includes('chrome_devtools');
+  const isComputerUse = isChromeDevtools || serverText.includes('computer-control') || serverText.includes('computer_control') || String(toolName || '').includes('computer-control') || String(toolName || '').includes('computer_control');
+  return {
+    kind: 'tool_call',
+    actor,
+    label,
+    toolName,
+    summary,
+    state: options.state || 'started',
+    server,
+    input: normalizedInput,
+    isComputerUse,
+    isChromeDevtools,
+  };
+}
+
+function buildLiveToolResult(actor, label, toolName, summary) {
+  const trimmed = typeof summary === 'string' ? summary.trim() : '';
+  return {
+    kind: 'tool_result',
+    actor,
+    label,
+    toolName,
+    summary: trimmed || `Finished ${toolName}`,
+    state: 'completed',
+  };
+}
+
+function buildLiveSystemNote(actor, label, text, source = null) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) return null;
+  return {
+    kind: 'system_note',
+    actor,
+    label,
+    text: trimmed,
+    source,
+  };
+}
+
+function emitCloudRunDetailEvent({ phase, message, liveItem, source, rawLine, parsed }) {
+  if (!liveItem) return;
+  emitCloudRunRawEvent({
+    type: 'session.note',
+    phase,
+    message,
+    _streamDetail: true,
+    liveItem,
+    source: source || undefined,
+    rawLine: rawLine || undefined,
+    parsed: parsed || undefined,
+  });
+}
+
+function normalizeToolInput(input) {
+  if (!input) return {};
+  if (typeof input === 'object' && !Array.isArray(input)) return input;
+  if (typeof input === 'string') {
+    try {
+      return JSON.parse(input);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function summarizeToolResultPayload(output) {
+  if (output == null) return 'Tool completed.';
+  if (typeof output === 'string') {
+    const trimmed = output.trim();
+    return trimmed || 'Tool completed.';
+  }
+  if (typeof output === 'object') {
+    if (typeof output.summary === 'string' && output.summary.trim()) return output.summary.trim();
+    if (typeof output.text === 'string' && output.text.trim()) return output.text.trim();
+    if (Array.isArray(output.content) && output.content.length > 0) {
+      const textBlock = output.content.find((block) => block && typeof block.text === 'string' && block.text.trim());
+      if (textBlock && typeof textBlock.text === 'string') return textBlock.text.trim();
+      const imageBlock = output.content.find((block) => block && block.type === 'image');
+      if (imageBlock) return 'Tool returned an image.';
+    }
+  }
+  return 'Tool completed.';
+}
+
+function detailFromApiEvent(event, spec) {
+  const actor = String(event.source || '').startsWith('controller') ? 'controller' : 'worker';
+  const label = actor === 'controller' ? 'Orchestrator' : spec.title;
+  if (event.type === 'assistant_message') {
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: typeof event.text === 'string' && event.text.trim() ? event.text.trim() : `${label} replied.`,
+      liveItem: buildLiveAssistantMessage(actor, label, event.text),
+    };
+  }
+  if (event.type === 'tool_call') {
+    const toolName = typeof event.name === 'string' ? event.name : 'tool';
+    const input = normalizeToolInput(event.args || event.input);
+    const liveItem = buildLiveToolCall(actor, label, toolName, input, { state: 'started' });
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: liveItem.summary,
+      liveItem,
+    };
+  }
+  if (event.type === 'tool_result') {
+    const toolName = typeof event.name === 'string' ? event.name : 'tool';
+    const summary = summarizeToolResultPayload(event.summary || event.resultSummary || event.result);
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: summary,
+      liveItem: buildLiveToolResult(actor, label, toolName, summary),
+    };
+  }
+  if (event.type === 'start') {
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: actor === 'worker' && event.provider && event.model
+        ? `Using ${event.provider}/${event.model}`
+        : `${label} started.`,
+      liveItem: buildLiveSystemNote(actor, label, actor === 'worker' && event.provider && event.model ? `Using ${event.provider}/${event.model}` : `${label} started.`, event.source),
+    };
+  }
+  if (event.type === 'complete') {
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: `${label} completed the current turn.`,
+      liveItem: buildLiveSystemNote(actor, label, `${label} completed the current turn.`, event.source),
+    };
+  }
+  return null;
+}
+
+function detailFromStructuredJsonEvent(event, spec, pendingClaudeTools) {
+  const actor = event.source === 'controller-json' ? 'controller' : 'worker';
+  const label = actor === 'controller' ? 'Orchestrator' : spec.title;
+  const parsed = event.parsed && typeof event.parsed === 'object' ? event.parsed : null;
+  if (!parsed || typeof parsed.type !== 'string') return null;
+
+  if (parsed.type === 'assistant_message' || parsed.type === 'assistant') {
+    const text = extractTextFromClaudeContent(parsed.message && parsed.message.content ? parsed.message.content : parsed.content);
+    if (text && text.trim()) {
+      return {
+        phase: actor === 'controller' ? 'planning' : 'execution',
+        message: text.trim(),
+        liveItem: buildLiveAssistantMessage(actor, label, text),
+      };
+    }
+  }
+
+  if (parsed.type === 'item.agentMessage.delta' && typeof parsed.text === 'string' && parsed.text.trim()) {
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: parsed.text.trim(),
+      liveItem: buildLiveAssistantMessage(actor, label, parsed.text),
+    };
+  }
+
+  if (parsed.type === 'result_message' || parsed.type === 'result') {
+    const text = typeof parsed.result === 'string'
+      ? parsed.result
+      : typeof parsed.result?.text === 'string'
+        ? parsed.result.text
+        : extractTextFromClaudeContent(parsed.message && parsed.message.content ? parsed.message.content : parsed.content);
+    if (text && text.trim()) {
+      return {
+        phase: actor === 'controller' ? 'planning' : 'execution',
+        message: text.trim(),
+        liveItem: buildLiveAssistantMessage(actor, label, text),
+      };
+    }
+  }
+
+  if ((parsed.type === 'item.started' || parsed.type === 'item.completed') && parsed.item && typeof parsed.item === 'object') {
+    const input = normalizeToolInput(parsed.item.arguments || parsed.item.args || { path: parsed.item.path, command: parsed.item.command, query: parsed.item.query });
+    const toolName = parsed.item.type === 'mcp_tool_call'
+      ? (parsed.item.tool || 'MCP tool')
+      : parsed.item.type === 'command_execution'
+        ? 'command_execution'
+        : parsed.item.type === 'web_search'
+          ? 'web_search'
+          : parsed.item.type === 'file_change'
+            ? 'file_change'
+            : null;
+    if (!toolName) {
+      return null;
+    }
+    if (parsed.type === 'item.started') {
+      const liveItem = buildLiveToolCall(actor, label, toolName, input, {
+        state: 'started',
+        server: parsed.item.server || null,
+      });
+      return {
+        phase: actor === 'controller' ? 'planning' : 'execution',
+        message: liveItem.summary,
+        liveItem,
+      };
+    }
+    const output = typeof parsed.item.output === 'string'
+      ? normalizeToolInput(parsed.item.output)
+      : (parsed.item.output || parsed.item.result || {});
+    const summary = summarizeToolResultPayload(output);
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: summary,
+      liveItem: buildLiveToolResult(actor, label, toolName, summary),
+    };
+  }
+
+  if (parsed.type === 'stream_event' && parsed.event && typeof parsed.event === 'object') {
+    const streamEvent = parsed.event;
+    const stateKey = `${event.source}:${String(streamEvent.index ?? 'default')}`;
+    if (streamEvent.type === 'content_block_start' && streamEvent.content_block && streamEvent.content_block.type === 'tool_use') {
+      pendingClaudeTools.set(stateKey, {
+        name: streamEvent.content_block.name || 'tool',
+        inputJson: '',
+      });
+      return null;
+    }
+    if (streamEvent.type === 'content_block_delta' && streamEvent.delta && streamEvent.delta.type === 'input_json_delta') {
+      const pending = pendingClaudeTools.get(stateKey);
+      if (pending) {
+        pending.inputJson += streamEvent.delta.partial_json || '';
+      }
+      return null;
+    }
+    if (streamEvent.type === 'content_block_stop') {
+      const pending = pendingClaudeTools.get(stateKey);
+      if (!pending) return null;
+      pendingClaudeTools.delete(stateKey);
+      const input = normalizeToolInput(pending.inputJson);
+      const liveItem = buildLiveToolCall(actor, label, pending.name, input, { state: 'started' });
+      return {
+        phase: actor === 'controller' ? 'planning' : 'execution',
+        message: liveItem.summary,
+        liveItem,
+      };
+    }
+  }
+
+  if (parsed.type === 'error') {
+    return {
+      phase: actor === 'controller' ? 'planning' : 'execution',
+      message: parsed.message || parsed.error || `${label} reported an error.`,
+      liveItem: buildLiveSystemNote(actor, label, parsed.message || parsed.error || `${label} reported an error.`, event.source),
+    };
+  }
+
+  return null;
+}
+
 function createCloudRunEventBridge(spec, options = {}) {
   const redactValue = typeof options.redactValue === 'function' ? options.redactValue : (value) => value;
+  const pendingClaudeTools = new Map();
   return async (event) => {
     if (!event || typeof event !== 'object') return;
     if (event.source === 'launch-claude' || event.source === 'launch-claude-direct') {
@@ -267,12 +545,14 @@ function createCloudRunEventBridge(spec, options = {}) {
     }
     if (event.source === 'controller-message') {
       const redactedText = redactValue(event.text);
-      emitCloudRunRawEvent({
-        type: 'session.note',
+      const noteText = typeof redactedText === 'string' && redactedText.trim()
+        ? redactedText.trim()
+        : 'QA Panda updated the run plan.';
+      emitCloudRunDetailEvent({
         phase: 'planning',
-        message: typeof redactedText === 'string' && redactedText.trim()
-          ? redactedText.trim()
-          : 'QA Panda updated the run plan.',
+        message: noteText,
+        liveItem: buildLiveSystemNote('controller', 'Orchestrator', noteText, event.source),
+        source: event.source,
       });
       return;
     }
@@ -287,11 +567,41 @@ function createCloudRunEventBridge(spec, options = {}) {
       });
       return;
     }
+    if (event.source === 'worker-api' || event.source === 'controller-api') {
+      const redactedEvent = redactValue(event);
+      const detail = detailFromApiEvent(redactedEvent, spec);
+      if (!detail) return;
+      emitCloudRunDetailEvent({
+        phase: detail.phase,
+        message: detail.message,
+        liveItem: detail.liveItem,
+        source: event.source,
+        parsed: redactedEvent,
+      });
+      return;
+    }
     if (event.source === 'worker-json' || event.source === 'controller-json') {
+      const redactedEvent = redactValue({
+        ...event,
+        rawLine: typeof event.rawLine === 'string' ? event.rawLine : null,
+        parsed: event.parsed ? event.parsed : null,
+      });
+      const detail = detailFromStructuredJsonEvent(redactedEvent, spec, pendingClaudeTools);
+      if (detail) {
+        emitCloudRunDetailEvent({
+          phase: detail.phase,
+          message: detail.message,
+          liveItem: detail.liveItem,
+          source: event.source,
+          rawLine: redactedEvent.rawLine,
+          parsed: redactedEvent.parsed,
+        });
+        return;
+      }
       const payload = {
         source: event.source,
-        rawLine: typeof event.rawLine === 'string' ? redactValue(event.rawLine) : null,
-        parsed: event.parsed ? redactValue(event.parsed) : null,
+        rawLine: typeof redactedEvent.rawLine === 'string' ? redactedEvent.rawLine : null,
+        parsed: redactedEvent.parsed || null,
       };
       const parsedType = payload.parsed && typeof payload.parsed.type === 'string'
         ? payload.parsed.type

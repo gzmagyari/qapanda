@@ -56,6 +56,8 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@google/genai": "^1.49.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@xterm/headless": "^5.0.0",
     "node-pty": "^1.0.0",

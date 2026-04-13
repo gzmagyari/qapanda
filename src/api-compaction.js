@@ -1,6 +1,12 @@
 const { LLMClient, resolveApiKey, defaultModelForProvider } = require('./llm-client');
 const { resolveRuntimeApiProvider } = require('./api-provider-registry');
 const {
+  appendApiResponseLog,
+  compactionApiLogFiles,
+  createStreamApiLogHooks,
+} = require('./api-io-log');
+const { buildPromptCacheContext } = require('./prompt-cache');
+const {
   appendTranscriptRecord,
   buildSessionReplay,
   createTranscriptRecord,
@@ -163,6 +169,10 @@ function cloneMessage(message) {
 }
 
 async function generateCompactionSummary({
+  manifest,
+  sessionKey,
+  requestId,
+  loopIndex,
   provider,
   apiKey,
   baseURL,
@@ -185,6 +195,29 @@ async function generateCompactionSummary({
     baseURL: resolvedBaseURL,
     model,
   });
+  const cacheContext = buildPromptCacheContext({
+    providerId: provider,
+    model,
+    runId: manifest && manifest.runId,
+    sessionKey,
+    purpose: 'compaction',
+  });
+  const logFiles = manifest
+    ? compactionApiLogFiles(manifest, { requestId, loopIndex, sessionKey })
+    : null;
+  const logHooks = createStreamApiLogHooks(manifest, logFiles, {
+    requestId,
+    loopIndex,
+    provider,
+    model,
+    baseURL: resolvedBaseURL,
+    thinking,
+    messageCount: 2,
+    toolCount: 0,
+    cacheSupport: cacheContext.cacheSupport,
+    cacheMode: cacheContext.cacheMode,
+    promptCacheKey: cacheContext.promptCacheKey || null,
+  });
   const response = await client.chat([
     {
       role: 'system',
@@ -197,7 +230,25 @@ async function generateCompactionSummary({
       role: 'user',
       content: inputText,
     },
-  ], null, { thinking, signal });
+  ], null, {
+    thinking,
+    signal,
+    promptCache: cacheContext,
+    onRequest: logHooks.onRequest,
+  });
+  if (logFiles && logFiles.responseFile) {
+    await appendApiResponseLog(manifest, logFiles.responseFile, {
+      type: 'done',
+      requestId,
+      loopIndex,
+      cacheSupport: cacheContext.cacheSupport,
+      cacheMode: cacheContext.cacheMode,
+      promptCacheKey: cacheContext.promptCacheKey || null,
+      finishReason: response && response.finishReason ? response.finishReason : null,
+      textLength: response && response.text ? response.text.length : 0,
+      usage: response && response.usage ? response.usage : null,
+    });
+  }
   return String((response && response.text) || '').trim();
 }
 
@@ -239,7 +290,10 @@ async function compactApiSessionHistory({
   }
 
   const imageLines = imagePreservationInfo(entries, sessionKey);
-  const preservedLines = imageLines.preservedLines;
+  const preservedLines = new Set(imageLines.preservedLines);
+  if (candidates[0] && candidates[0].__lineNumber) {
+    preservedLines.add(candidates[0].__lineNumber);
+  }
   const excludedRecentLines = new Set(
     Array.from(imageLines.allLines).filter((lineNumber) => !preservedLines.has(lineNumber))
   );
@@ -263,6 +317,10 @@ async function compactApiSessionHistory({
   }
 
   const summary = await generateCompactionSummary({
+    manifest,
+    sessionKey,
+    requestId,
+    loopIndex,
     provider,
     apiKey,
     baseURL,

@@ -41,6 +41,19 @@ function controllerApiLogFiles(loop) {
   };
 }
 
+function compactionApiLogFiles(manifest, { requestId = null, loopIndex = null, sessionKey = 'session' } = {}) {
+  if (!manifest || !manifest.runDir) return null;
+  const safeSessionKey = String(sessionKey || 'session').replace(/[^a-zA-Z0-9_-]+/g, '-');
+  const compactionDir = path.join(manifest.runDir, 'compaction');
+  const requestSuffix = requestId ? `.req-${requestId}` : '';
+  const loopSuffix = Number.isFinite(loopIndex) ? `.loop-${String(loopIndex).padStart(4, '0')}` : '';
+  const baseName = `${safeSessionKey}${requestSuffix}${loopSuffix}`;
+  return {
+    requestFile: path.join(compactionDir, `${baseName}.request.json`),
+    responseFile: path.join(compactionDir, `${baseName}.response.jsonl`),
+  };
+}
+
 async function writeApiRequestLog(manifest, filePath, payload) {
   if (!filePath) return;
   const sanitized = redactHostedWorkflowValue(manifest, safeClone(payload));
@@ -77,6 +90,7 @@ function createStreamApiLogHooks(manifest, files, meta = {}) {
 
 module.exports = {
   appendApiResponseLog,
+  compactionApiLogFiles,
   controllerApiLogFiles,
   createStreamApiLogHooks,
   workerApiLogFiles,

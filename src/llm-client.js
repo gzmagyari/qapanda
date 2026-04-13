@@ -1,8 +1,10 @@
 /**
- * Multi-provider LLM client using OpenAI SDK.
- * Supports OpenAI, Anthropic, OpenRouter, Google Gemini, and any OpenAI-compatible endpoint.
+ * Multi-provider LLM client.
+ * OpenAI/OpenRouter/Gemini/custom use the OpenAI SDK compatibility path.
+ * Anthropic uses the native Messages API so prompt caching works correctly.
  */
 const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 const {
   API_PROVIDER_MODELS: PROVIDER_MODELS,
   API_PROVIDER_THINKING: THINKING_TIERS,
@@ -14,6 +16,10 @@ const {
   providerCatalogKey,
   resolveApiProvider,
 } = require('./api-provider-registry');
+const {
+  normalizeAnthropicUsage,
+  normalizeOpenAiCompatibleUsage,
+} = require('./prompt-cache');
 
 // Provider definitions
 const PROVIDERS = {
@@ -32,46 +38,40 @@ const ANTHROPIC_THINKING_BUDGETS = {
 };
 
 class LLMClient {
-  /**
-   * @param {object} opts
-   * @param {string} opts.provider - Provider key (openai, anthropic, openrouter, gemini, custom)
-   * @param {string} opts.apiKey - API key
-   * @param {string} [opts.baseURL] - Custom base URL (overrides provider default)
-   * @param {string} opts.model - Model name
-   */
   constructor({ provider, apiKey, baseURL, model }) {
     const providerConfig = PROVIDERS[provider] || PROVIDERS.custom;
     this.provider = provider || 'custom';
     this.model = model;
-    this.client = new OpenAI({
-      apiKey: apiKey || process.env[providerConfig.envKey] || 'dummy',
-      baseURL: baseURL || providerConfig.baseURL,
-    });
+    if (this.provider === 'anthropic') {
+      this.client = new Anthropic({
+        apiKey: apiKey || process.env[providerConfig.envKey] || 'dummy',
+        baseURL: baseURL || providerConfig.baseURL,
+      });
+    } else {
+      this.client = new OpenAI({
+        apiKey: apiKey || process.env[providerConfig.envKey] || 'dummy',
+        baseURL: baseURL || providerConfig.baseURL,
+      });
+    }
   }
 
-  /**
-   * Stream a chat completion. Yields events as they arrive.
-   * @param {Array} messages - OpenAI-format messages
-   * @param {Array} [tools] - OpenAI-format tool definitions
-   * @param {object} [options] - { thinking, response_format, signal }
-   * @yields {{ type: 'text', content: string } | { type: 'tool_call', index, id, name, args } | { type: 'done', text, toolCalls, usage }}
-   */
   async *streamChat(messages, tools, options = {}) {
-    const params = {
-      model: this.model,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-    if (tools && tools.length > 0) {
-      params.tools = tools;
-      params.tool_choice = options.tool_choice || 'auto';
+    if (this.provider === 'anthropic') {
+      yield* this._streamAnthropic(messages, tools, options);
+      return;
     }
-    if (options.response_format) {
-      params.response_format = options.response_format;
+    yield* this._streamOpenAiCompatible(messages, tools, options);
+  }
+
+  async chat(messages, tools, options = {}) {
+    if (this.provider === 'anthropic') {
+      return this._chatAnthropic(messages, tools, options);
     }
-    this._applyThinking(params, options.thinking);
-    this._applyCaching(params, messages);
+    return this._chatOpenAiCompatible(messages, tools, options);
+  }
+
+  async *_streamOpenAiCompatible(messages, tools, options = {}) {
+    const params = this._buildOpenAiCompatibleParams(messages, tools, options, 'stream');
     if (typeof options.onRequest === 'function') {
       await options.onRequest({
         mode: 'stream',
@@ -144,32 +144,12 @@ class LLMClient {
       toolCalls,
       finishReason: finishReasons.length > 0 ? finishReasons[finishReasons.length - 1] : null,
       finishReasons,
-      usage: usage ? {
-        promptTokens: usage.prompt_tokens,
-        completionTokens: usage.completion_tokens,
-        totalTokens: usage.total_tokens,
-      } : null,
+      usage: normalizeOpenAiCompatibleUsage(usage, options.promptCache || {}),
     };
   }
 
-  /**
-   * Non-streaming chat completion.
-   * @returns {{ text, toolCalls, usage }}
-   */
-  async chat(messages, tools, options = {}) {
-    const params = {
-      model: this.model,
-      messages,
-    };
-    if (tools && tools.length > 0) {
-      params.tools = tools;
-      params.tool_choice = options.tool_choice || 'auto';
-    }
-    if (options.response_format) {
-      params.response_format = options.response_format;
-    }
-    this._applyThinking(params, options.thinking);
-    this._applyCaching(params, messages);
+  async _chatOpenAiCompatible(messages, tools, options = {}) {
+    const params = this._buildOpenAiCompatibleParams(messages, tools, options, 'chat');
     if (typeof options.onRequest === 'function') {
       await options.onRequest({
         mode: 'chat',
@@ -190,21 +170,147 @@ class LLMClient {
       text: message ? (message.content || '') : '',
       toolCalls: message && message.tool_calls ? message.tool_calls : null,
       finishReason: choice ? (choice.finish_reason || null) : null,
-      usage: response.usage ? {
-        promptTokens: response.usage.prompt_tokens,
-        completionTokens: response.usage.completion_tokens,
-        totalTokens: response.usage.total_tokens,
-      } : null,
+      usage: normalizeOpenAiCompatibleUsage(response.usage, options.promptCache || {}),
     };
+  }
+
+  _buildOpenAiCompatibleParams(messages, tools, options = {}, mode = 'stream') {
+    const params = {
+      model: this.model,
+      messages,
+    };
+    if (mode === 'stream') {
+      params.stream = true;
+      params.stream_options = { include_usage: true };
+    }
+    if (tools && tools.length > 0) {
+      params.tools = tools;
+      params.tool_choice = options.tool_choice || 'auto';
+    }
+    if (options.response_format) {
+      params.response_format = options.response_format;
+    }
+    this._applyThinking(params, options.thinking);
+    this._applyCaching(params, options.promptCache || {});
+    return params;
+  }
+
+  async *_streamAnthropic(messages, tools, options = {}) {
+    const params = this._buildAnthropicParams(messages, tools, options);
+    if (typeof options.onRequest === 'function') {
+      await options.onRequest({
+        mode: 'stream',
+        params: _cloneForLog(params),
+      });
+    }
+    const response = await this.client.messages.create(params, {
+      signal: options.signal,
+    });
+    if (typeof options.onChunk === 'function') {
+      await options.onChunk(_cloneForLog(response));
+    }
+    const toolCalls = [];
+    const textParts = [];
+    for (const block of Array.isArray(response.content) ? response.content : []) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+        yield { type: 'text', content: block.text };
+        continue;
+      }
+      if (block.type === 'tool_use') {
+        const openAiToolCall = {
+          id: block.id || null,
+          type: 'function',
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input || {}),
+          },
+        };
+        toolCalls.push(openAiToolCall);
+        yield {
+          type: 'tool_call_delta',
+          index: toolCalls.length - 1,
+          id: openAiToolCall.id,
+          name: openAiToolCall.function.name,
+          argsDelta: openAiToolCall.function.arguments,
+        };
+      }
+    }
+    yield {
+      type: 'done',
+      text: textParts.join(''),
+      toolCalls: toolCalls.length > 0 ? toolCalls : null,
+      finishReason: response.stop_reason || null,
+      finishReasons: response.stop_reason ? [response.stop_reason] : [],
+      usage: normalizeAnthropicUsage(response.usage, options.promptCache || {}),
+    };
+  }
+
+  async _chatAnthropic(messages, tools, options = {}) {
+    const params = this._buildAnthropicParams(messages, tools, options);
+    if (typeof options.onRequest === 'function') {
+      await options.onRequest({
+        mode: 'chat',
+        params: _cloneForLog(params),
+      });
+    }
+    const response = await this.client.messages.create(params, {
+      signal: options.signal,
+    });
+    if (typeof options.onResponse === 'function') {
+      await options.onResponse(_cloneForLog(response));
+    }
+    const toolCalls = [];
+    const textParts = [];
+    for (const block of Array.isArray(response.content) ? response.content : []) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({
+          id: block.id || null,
+          type: 'function',
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input || {}),
+          },
+        });
+      }
+    }
+    return {
+      text: textParts.join(''),
+      toolCalls: toolCalls.length > 0 ? toolCalls : null,
+      finishReason: response.stop_reason || null,
+      usage: normalizeAnthropicUsage(response.usage, options.promptCache || {}),
+    };
+  }
+
+  _buildAnthropicParams(messages, tools, options = {}) {
+    const { system, anthropicMessages } = _splitAnthropicMessages(messages);
+    const params = {
+      model: this.model,
+      max_tokens: options.max_tokens || 4096,
+      system,
+      messages: anthropicMessages,
+    };
+    if (tools && tools.length > 0) {
+      params.tools = tools.map(_openAiToolToAnthropicTool);
+      params.tool_choice = _anthropicToolChoice(options.tool_choice);
+    }
+    if (options.thinking) {
+      const budget = ANTHROPIC_THINKING_BUDGETS[options.thinking] || 10000;
+      params.thinking = { type: 'enabled', budget_tokens: budget };
+    }
+    if (options.promptCache && options.promptCache.cacheControl) {
+      params.cache_control = _cloneForLog(options.promptCache.cacheControl);
+    }
+    return params;
   }
 
   _applyThinking(params, thinking) {
     if (!thinking) return;
-
-    if (this.provider === 'anthropic') {
-      const budget = ANTHROPIC_THINKING_BUDGETS[thinking] || 10000;
-      params.thinking = { type: 'enabled', budget_tokens: budget };
-    } else if (this.provider === 'openrouter') {
+    if (this.provider === 'openrouter') {
       if (!params.extra_body) params.extra_body = {};
       params.extra_body.reasoning = { effort: thinking, exclude: false };
       params.extra_body.include_reasoning = true;
@@ -216,13 +322,142 @@ class LLMClient {
     }
   }
 
-  _applyCaching(params, messages) {
-    if (this.provider === 'anthropic') {
-      params.cache_control = { type: 'ephemeral', ttl: '1h' };
-    } else if (this.provider === 'openrouter' && this.model && this.model.includes('anthropic')) {
-      params.cache_control_injection_points = [{ location: 'message', index: -1 }];
+  _applyCaching(params, cacheContext = {}) {
+    if (this.provider === 'openai') {
+      params.prompt_cache_key = cacheContext.promptCacheKey;
+      if (cacheContext.promptCacheRetention) {
+        params.prompt_cache_retention = cacheContext.promptCacheRetention;
+      }
+      return;
+    }
+    if (this.provider === 'openrouter' && cacheContext.cacheControl) {
+      params.cache_control = _cloneForLog(cacheContext.cacheControl);
+      return;
+    }
+    if (this.provider === 'gemini' && cacheContext.geminiCachedContentName) {
+      if (!params.extra_body) params.extra_body = {};
+      params.extra_body.extra_body = {
+        ...(params.extra_body.extra_body || {}),
+        google: {
+          ...((params.extra_body.extra_body && params.extra_body.extra_body.google) || {}),
+          cached_content: cacheContext.geminiCachedContentName,
+        },
+      };
     }
   }
+}
+
+function _openAiToolToAnthropicTool(tool) {
+  return {
+    name: tool.function.name,
+    description: tool.function.description || '',
+    input_schema: tool.function.parameters || { type: 'object', properties: {} },
+  };
+}
+
+function _anthropicToolChoice(toolChoice) {
+  if (!toolChoice || toolChoice === 'auto') return { type: 'auto' };
+  if (toolChoice === 'required') return { type: 'any' };
+  if (typeof toolChoice === 'object') return toolChoice;
+  return { type: 'auto' };
+}
+
+function _splitAnthropicMessages(messages) {
+  const systemParts = [];
+  const anthropicMessages = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message) continue;
+    if (message.role === 'system' || message.role === 'developer') {
+      const text = _messageText(message);
+      if (text) systemParts.push(text);
+      continue;
+    }
+    if (message.role === 'tool') {
+      anthropicMessages.push({
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: message.tool_call_id,
+          content: String(message.content || ''),
+        }],
+      });
+      continue;
+    }
+    anthropicMessages.push({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: _anthropicContentBlocks(message),
+    });
+  }
+  return {
+    system: systemParts.join('\n\n'),
+    anthropicMessages,
+  };
+}
+
+function _messageText(message) {
+  if (!message) return '';
+  if (typeof message.content === 'string') return message.content;
+  if (!Array.isArray(message.content)) return '';
+  return message.content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      if (part.type === 'text' && typeof part.text === 'string') return part.text;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function _dataUrlToAnthropicImage(url) {
+  const match = String(url || '').match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: match[1],
+      data: match[2],
+    },
+  };
+}
+
+function _anthropicContentBlocks(message) {
+  const blocks = [];
+  if (typeof message.content === 'string') {
+    if (message.content) blocks.push({ type: 'text', text: message.content });
+  } else if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if (!part || typeof part !== 'object') continue;
+      if (part.type === 'text' && typeof part.text === 'string' && part.text) {
+        blocks.push({ type: 'text', text: part.text });
+        continue;
+      }
+      if (part.type === 'image_url' && part.image_url && part.image_url.url) {
+        const image = _dataUrlToAnthropicImage(part.image_url.url);
+        if (image) blocks.push(image);
+      }
+    }
+  }
+  if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+    for (const toolCall of message.tool_calls) {
+      if (!toolCall || !toolCall.function || !toolCall.function.name) continue;
+      let input = {};
+      try {
+        input = typeof toolCall.function.arguments === 'string'
+          ? JSON.parse(toolCall.function.arguments || '{}')
+          : (toolCall.function.arguments || {});
+      } catch {
+        input = {};
+      }
+      blocks.push({
+        type: 'tool_use',
+        id: toolCall.id || null,
+        name: toolCall.function.name,
+        input,
+      });
+    }
+  }
+  return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
 }
 
 function _cloneForLog(value) {
@@ -234,13 +469,6 @@ function _cloneForLog(value) {
   }
 }
 
-/**
- * Resolve API key for a provider.
- * Checks: ~/.qpanda/settings.json → environment variable → fallback.
- * @param {string} provider
- * @param {string} [fallback]
- * @returns {string|null}
- */
 function resolveApiKey(provider, fallback, settings = loadProviderSettings()) {
   if (settings && settings.apiKeys && Object.prototype.hasOwnProperty.call(settings.apiKeys, provider)) {
     return String(settings.apiKeys[provider] || '').trim();

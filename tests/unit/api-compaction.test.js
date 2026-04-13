@@ -159,8 +159,8 @@ describe('API compaction', () => {
     assert.equal(compactionEntries.length, 1);
     assert.deepEqual(
       compactionEntries[0].compaction.preservedLines.length,
-      0,
-      'latest image stayed in the raw tail, so the checkpoint itself should not preserve older image lines'
+      1,
+      'the first replay message is preserved to keep the cacheable prefix stable across compaction'
     );
   });
 });

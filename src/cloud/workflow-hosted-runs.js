@@ -42,6 +42,19 @@ function normalizeSecretRefs(value) {
   return normalized;
 }
 
+function formatWorkflowInputValues(values) {
+  const normalized = normalizeStringMap(values);
+  const entries = Object.entries(normalized)
+    .map(([key, value]) => {
+      const fieldId = normalizeOptionalString(key);
+      const fieldValue = normalizeOptionalString(value);
+      if (!fieldId || !fieldValue) return null;
+      return `- ${fieldId}: ${fieldValue}`;
+    })
+    .filter(Boolean);
+  return entries.length > 0 ? entries.join('\n') : null;
+}
+
 function secretFieldIdsForWorkflow(workflow) {
   const ids = new Set();
   for (const field of Array.isArray(workflow && workflow.inputs) ? workflow.inputs : []) {
@@ -130,6 +143,9 @@ function redactHostedWorkflowValue(target, value) {
 function sanitizeHostedWorkflowCloudRunSpec(spec) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return spec;
   const sanitized = cloneJson(spec);
+  if (sanitized.runtimeApiConfig && typeof sanitized.runtimeApiConfig === 'object' && !Array.isArray(sanitized.runtimeApiConfig)) {
+    delete sanitized.runtimeApiConfig.apiKey;
+  }
   const secretFieldIds = secretFieldIdsForWorkflow(sanitized.workflowDefinition);
   if (sanitized.workflowInputs && typeof sanitized.workflowInputs === 'object' && !Array.isArray(sanitized.workflowInputs)) {
     const nextInputs = { ...sanitized.workflowInputs };
@@ -304,10 +320,34 @@ function getHostedWorkflowExecutionContext(manifest) {
   return manifest[HOSTED_WORKFLOW_CONTEXT] || null;
 }
 
-function visibleHostedWorkflowPrompt(workflow, prompt) {
+function visibleHostedWorkflowPrompt(workflow, prompt, spec = null, plainInputs = null) {
   const instruction = normalizeOptionalString(prompt);
-  if (instruction) return instruction;
-  return `Run the hosted workflow "${workflow.name}".`;
+  const lines = [];
+  if (spec && normalizeOptionalString(spec.targetUrl)) {
+    lines.push(`Use this exact target URL for the workflow: ${normalizeOptionalString(spec.targetUrl)}`);
+    lines.push('Do not try to discover the app URL from the repository or environment unless the page fails to load.');
+    lines.push('Start by opening that URL in the browser and execute the workflow against it.');
+  }
+  if (spec && normalizeOptionalString(spec.targetType)) {
+    lines.push(`Target type: ${normalizeOptionalString(spec.targetType)}`);
+  }
+  if (spec && normalizeOptionalString(spec.browserPreset)) {
+    lines.push(`Browser preset: ${normalizeOptionalString(spec.browserPreset)}`);
+  }
+  lines.push(instruction || `Run the hosted workflow "${workflow.name}".`);
+  const formattedInputs = formatWorkflowInputValues(plainInputs);
+  if (formattedInputs) {
+    lines.push('');
+    lines.push('Workflow input values:');
+    lines.push(formattedInputs);
+  }
+  const workflowBody = normalizeOptionalString(workflow && workflow.body);
+  if (workflowBody) {
+    lines.push('');
+    lines.push(`Full workflow recipe for "${workflow.name}":`);
+    lines.push(workflowBody);
+  }
+  return lines.join('\n');
 }
 
 function materializeHostedWorkflowRunSync(spec, options = {}) {
@@ -340,7 +380,7 @@ function materializeHostedWorkflowRunSync(spec, options = {}) {
     profile: workflowProfile,
     plainInputs,
     secretRefs,
-    launchInstruction: visibleHostedWorkflowPrompt(workflow, spec.prompt),
+    launchInstruction: visibleHostedWorkflowPrompt(workflow, spec.prompt, spec, plainInputs),
   };
 }
 
@@ -403,7 +443,7 @@ function buildHostedWorkflowCloudRunSpec(options = {}) {
     outputDir: String(options.outputDir || ''),
     repositoryContextId: normalizeOptionalString(options.repositoryContextId),
     title: normalizeOptionalString(options.title) || `Workflow: ${workflow.name}`,
-    prompt: visibleHostedWorkflowPrompt(workflow, options.prompt),
+    prompt: visibleHostedWorkflowPrompt(workflow, options.prompt, options, validatedInputs),
     targetUrl: normalizeOptionalString(options.targetUrl),
     targetType: normalizeOptionalString(options.targetType),
     browserPreset: normalizeOptionalString(options.browserPreset),

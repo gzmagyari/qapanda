@@ -19,6 +19,12 @@ const {
 const { setHostedWorkflowExecutionContext } = require('../../src/cloud/workflow-hosted-runs');
 const { parseCliRawEventLine } = require('@qapanda/run-protocol');
 
+const originalProcessExitCode = process.exitCode;
+
+test.after(() => {
+  process.exitCode = originalProcessExitCode;
+});
+
 function createSpecFile(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-cloud-run-spec-'));
   const specPath = path.join(tempDir, 'run-spec.json');
@@ -53,18 +59,58 @@ test('validateCloudRunSpec accepts the documented v1 shape', () => {
 
 test('buildCloudRunOptions launches direct cloud runs through the QA-Browser agent instead of print mode', () => {
   const { spec } = createSpecFile();
-  const options = buildCloudRunOptions(spec, {});
+  const options = buildCloudRunOptions(spec, { agentCli: 'api' });
   assert.equal(options.agent, 'QA-Browser');
+  assert.equal(options.agentCli, 'api');
   assert.equal(options.print, false);
   assert.equal(options.cloudRunSpec.targetUrl, 'https://example.test/login');
+});
+
+test('buildCloudRunOptions preserves runtime API config for API-backed hosted runs', () => {
+  const { spec } = createSpecFile({
+    runtimeApiConfig: {
+      source: 'ai_profile',
+      provider: 'openai',
+      model: 'gpt-5',
+      apiKey: 'sk-test-123',
+    },
+  });
+  const options = buildCloudRunOptions(spec, {});
+  assert.equal(options.controllerCli, 'api');
+  assert.equal(options.workerCli, 'api');
+  assert.equal(options.apiConfig.provider, 'openai');
+  assert.equal(options.apiConfig.model, 'gpt-5');
+  assert.equal(options.apiConfig.apiKey, 'sk-test-123');
+});
+
+test('loadCloudRunSpec preserves runtime API keys in memory for execution', () => {
+  const { tempDir, specPath } = createSpecFile({
+    runtimeApiConfig: {
+      source: 'ai_profile',
+      provider: 'openrouter',
+      model: 'anthropic/claude-haiku-4.5',
+      apiKey: 'sk-or-v1-test-123',
+      baseURL: 'https://openrouter.ai/api/v1',
+    },
+  });
+  try {
+    const loaded = loadCloudRunSpec(specPath);
+    assert.equal(loaded.spec.runtimeApiConfig.provider, 'openrouter');
+    assert.equal(loaded.spec.runtimeApiConfig.model, 'anthropic/claude-haiku-4.5');
+    assert.equal(loaded.spec.runtimeApiConfig.apiKey, 'sk-or-v1-test-123');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('buildDirectCloudRunPrompt includes hosted target context for browser QA runs', () => {
   const { spec } = createSpecFile();
   const prompt = buildDirectCloudRunPrompt(spec);
   assert.match(prompt, /Check the login form\./);
-  assert.match(prompt, /Hosted run context:/);
-  assert.match(prompt, /Target URL: https:\/\/example\.test\/login/);
+  assert.match(prompt, /Hosted run execution requirements:/);
+  assert.match(prompt, /Use this exact target URL for the test: https:\/\/example\.test\/login/);
+  assert.match(prompt, /Do not try to discover the app URL from the repository or environment/);
+  assert.match(prompt, /Start by opening that URL in the browser and testing there/);
   assert.match(prompt, /Browser preset: desktop_chrome/);
 });
 
@@ -302,6 +348,67 @@ test('createCloudRunEventBridge forwards raw worker json lines into cloud-run ev
   assert.equal(rawEvent.parsed.type, 'thread.started');
 });
 
+test('createCloudRunEventBridge emits structured assistant messages for API-backed worker events', async () => {
+  const { spec } = createSpecFile();
+  const events = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    events.push(String(chunk).trim());
+    return true;
+  };
+  try {
+    const bridge = createCloudRunEventBridge(spec);
+    await bridge({
+      source: 'worker-api',
+      type: 'assistant_message',
+      text: 'Opened the login page and found the submit button.',
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(events.length, 1);
+  const rawEvent = parseCliRawEventLine(events[0]);
+  assert.equal(rawEvent.type, 'session.note');
+  assert.equal(rawEvent._streamDetail, true);
+  assert.equal(rawEvent.liveItem.kind, 'assistant_message');
+  assert.equal(rawEvent.liveItem.actor, 'worker');
+  assert.match(rawEvent.liveItem.text, /Opened the login page/);
+});
+
+test('createCloudRunEventBridge emits structured tool events for API-backed worker activity', async () => {
+  const { spec } = createSpecFile();
+  const events = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    events.push(String(chunk).trim());
+    return true;
+  };
+  try {
+    const bridge = createCloudRunEventBridge(spec);
+    await bridge({
+      source: 'worker-api',
+      type: 'tool_call',
+      name: 'builtin_tools__read_file',
+      input: { path: '/workspace/app.ts' },
+    });
+    await bridge({
+      source: 'worker-api',
+      type: 'tool_result',
+      name: 'builtin_tools__read_file',
+      summary: 'Read /workspace/app.ts successfully.',
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(events.length, 2);
+  const toolCallEvent = parseCliRawEventLine(events[0]);
+  const toolResultEvent = parseCliRawEventLine(events[1]);
+  assert.equal(toolCallEvent.liveItem.kind, 'tool_call');
+  assert.equal(toolCallEvent.liveItem.toolName, 'builtin_tools__read_file');
+  assert.equal(toolResultEvent.liveItem.kind, 'tool_result');
+  assert.match(toolResultEvent.liveItem.summary, /Read \/workspace\/app\.ts successfully/);
+});
+
 test('detectCloudRunExecutionIssue flags fake codex sessions in manifest events', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-cloud-run-events-'));
   const eventsPath = path.join(tempDir, 'events.jsonl');
@@ -451,12 +558,14 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
   const calls = {
     prepareNewRun: [],
     runDirectWorkerTurn: [],
+    closeAllMcpToolBridge: 0,
     saveManifest: 0,
     requestStarted: [],
     summary: [],
     rawEvents: [],
   };
   const originalStdoutWrite = process.stdout.write;
+  const originalExitCode = process.exitCode;
   process.stdout.write = ((chunk, encoding, callback) => {
     calls.rawEvents.push(String(chunk));
     if (typeof callback === 'function') callback();
@@ -548,6 +657,11 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
           mcpServersForRole: () => ({}),
         };
       }
+      if (request === './mcp-tool-bridge') {
+        return {
+          closeAll: async () => { calls.closeAllMcpToolBridge += 1; },
+        };
+      }
       if (request === './cloud') {
         return {
           createCloudBoundary: () => ({ preload: async () => {} }),
@@ -569,13 +683,15 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
     await main(['cloud-run', '--spec', specPath, '--raw-events', '--controller-codex-mode', 'cli']);
     assert.equal(calls.prepareNewRun.length, 1);
     assert.match(calls.prepareNewRun[0].message, /Check the login form\./);
-    assert.match(calls.prepareNewRun[0].message, /Target URL: https:\/\/example\.test\/login/);
+    assert.match(calls.prepareNewRun[0].message, /Use this exact target URL for the test: https:\/\/example\.test\/login/);
     assert.equal(calls.prepareNewRun[0].options.rawEvents, true);
     assert.equal(calls.prepareNewRun[0].options.controllerCodexMode, 'cli');
+    assert.equal(calls.prepareNewRun[0].options.agentCli, undefined);
     assert.equal(calls.runDirectWorkerTurn.length, 1);
     assert.match(calls.runDirectWorkerTurn[0].options.userMessage, /Check the login form\./);
     assert.equal(calls.runDirectWorkerTurn[0].options.agentId, 'QA-Browser');
     assert.equal(typeof calls.runDirectWorkerTurn[0].options.onEvent, 'function');
+    assert.equal(calls.closeAllMcpToolBridge, 1);
     assert.deepEqual(calls.requestStarted, ['run_123']);
     assert.deepEqual(calls.summary, []);
     const rawLines = calls.rawEvents.join('').split(/\r?\n/).filter(Boolean).map((line) => parseCliRawEventLine(line));
@@ -585,6 +701,7 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
     assert.ok(rawLines.some((event) => event && event.type === 'session.completed'));
   } finally {
     process.stdout.write = originalStdoutWrite;
+    process.exitCode = originalExitCode;
     Module._load = originalLoad;
     delete require.cache[cliPath];
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -615,11 +732,13 @@ test('main dispatches workflow-backed cloud-run specs through the controller pat
     prepareNewRun: [],
     runManagerLoop: [],
     runDirectWorkerTurn: [],
+    closeAllMcpToolBridge: 0,
     saveManifest: 0,
     requestStarted: [],
     rawEvents: [],
   };
   const originalStdoutWrite = process.stdout.write;
+  const originalExitCode = process.exitCode;
   process.stdout.write = ((chunk, encoding, callback) => {
     calls.rawEvents.push(String(chunk));
     if (typeof callback === 'function') callback();
@@ -713,6 +832,11 @@ test('main dispatches workflow-backed cloud-run specs through the controller pat
           mcpServersForRole: () => ({}),
         };
       }
+      if (request === './mcp-tool-bridge') {
+        return {
+          closeAll: async () => { calls.closeAllMcpToolBridge += 1; },
+        };
+      }
       if (request === './cloud') {
         return {
           createCloudBoundary: () => ({
@@ -739,16 +863,34 @@ test('main dispatches workflow-backed cloud-run specs through the controller pat
   try {
     const { main } = require('../../src/cli');
     await main(['cloud-run', '--spec', specPath, '--raw-events']);
+    const expectedWorkflowPrompt = [
+      'Use this exact target URL for the workflow: https://example.test/login',
+      'Do not try to discover the app URL from the repository or environment unless the page fails to load.',
+      'Start by opening that URL in the browser and execute the workflow against it.',
+      'Target type: web',
+      'Browser preset: desktop_chrome',
+      'Run the hosted workflow "Deep Login".',
+      '',
+      'Workflow input values:',
+      '- environment_url: https://staging.example.test/login',
+      '',
+      'Full workflow recipe for "Deep Login":',
+      '# Goal',
+      '',
+      'Test the login page deeply.',
+    ].join('\n');
     assert.equal(calls.prepareNewRun.length, 1);
-    assert.equal(calls.prepareNewRun[0].message, 'Run the hosted workflow "Deep Login".');
+    assert.equal(calls.prepareNewRun[0].message, expectedWorkflowPrompt);
     assert.equal(calls.runDirectWorkerTurn.length, 0);
     assert.equal(calls.runManagerLoop.length, 1);
-    assert.equal(calls.runManagerLoop[0].options.userMessage, 'Run the hosted workflow "Deep Login".');
+    assert.equal(calls.runManagerLoop[0].options.userMessage, expectedWorkflowPrompt);
+    assert.equal(calls.closeAllMcpToolBridge, 1);
     assert.deepEqual(calls.requestStarted, ['run_123']);
     const rawLines = calls.rawEvents.join('').split(/\r?\n/).filter(Boolean).map((line) => parseCliRawEventLine(line));
     assert.ok(rawLines.some((event) => event && event.type === 'session.completed'));
   } finally {
     process.stdout.write = originalStdoutWrite;
+    process.exitCode = originalExitCode;
     Module._load = originalLoad;
     delete require.cache[cliPath];
     fs.rmSync(tempDir, { recursive: true, force: true });

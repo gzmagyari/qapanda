@@ -46,6 +46,8 @@
     "sharp": "^0.34.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@google/genai": "^1.49.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@qapanda/client-cloud": "file:.qpanda/platform-client-safe/qapanda-client-cloud-1.0.0.tgz",
     "@qapanda/cloud-sdk": "file:.qpanda/platform-client-safe/qapanda-cloud-sdk-1.0.0.tgz",

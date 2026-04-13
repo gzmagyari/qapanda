@@ -711,9 +711,7 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
   const messages = [];
   const compactionState = latestSessionCompaction(entries, sessionKey);
   const compactionMessage = compactionState ? contextCompactionReplayMessage(compactionState.entry) : null;
-  if (compactionMessage) {
-    messages.push(compactionMessage);
-  }
+  let compactionInserted = !compactionMessage;
   for (const entry of entries) {
     if (!entry || entry.v !== TRANSCRIPT_V2 || entry.sessionKey !== sessionKey) continue;
     if (entryIsCompactedAway(entry, compactionState)) continue;
@@ -723,6 +721,10 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
       } else {
         messages.push({ role: 'user', content: entry.text || '' });
       }
+      if (!compactionInserted) {
+        messages.push(compactionMessage);
+        compactionInserted = true;
+      }
       continue;
     }
     if (entry.kind === 'assistant_message') {
@@ -731,6 +733,10 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
       } else if (entry.text) {
         messages.push({ role: 'assistant', content: entry.text });
       }
+      if (!compactionInserted) {
+        messages.push(compactionMessage);
+        compactionInserted = true;
+      }
       continue;
     }
     if (entry.kind === 'context_compaction') {
@@ -738,7 +744,14 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
     }
     if (entry.kind === 'tool_result') {
       messages.push(...providerMessagesForToolResult(entry, options));
+      if (!compactionInserted) {
+        messages.push(compactionMessage);
+        compactionInserted = true;
+      }
     }
+  }
+  if (!compactionInserted) {
+    messages.push(compactionMessage);
   }
   return messages;
 }

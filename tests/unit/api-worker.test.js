@@ -125,6 +125,53 @@ describe('API Worker — simple text response', () => {
     assert.ok(doneLine, 'should include done summary');
     assert.equal(doneLine.finishReason, 'stop');
   });
+
+  it('reuses the first API worker system prompt snapshot for the same agent session', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const seenSystemPrompts = [];
+    const manifest = makeManifest((_req, body) => {
+      seenSystemPrompts.push(body.messages[0].content);
+      return { text: 'ok' };
+    });
+    manifest.agents = {
+      dev: {
+        id: 'dev',
+        name: 'Developer',
+        cli: 'api',
+        system_prompt: 'First prompt snapshot',
+      },
+    };
+    const renderer = makeRenderer();
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r1' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'first',
+      renderer,
+      emitEvent: noopEmit,
+      agentId: 'dev',
+    });
+
+    manifest.agents.dev.system_prompt = 'Changed prompt later';
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r2' },
+      loop: { index: 2, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'second',
+      renderer,
+      emitEvent: noopEmit,
+      agentId: 'dev',
+    });
+
+    assert.equal(seenSystemPrompts.length, 2);
+    assert.equal(seenSystemPrompts[0], seenSystemPrompts[1]);
+    assert.match(seenSystemPrompts[0], /First prompt snapshot/);
+    assert.doesNotMatch(seenSystemPrompts[1], /Changed prompt later/);
+  });
 });
 
 describe('API Worker — single tool call', () => {

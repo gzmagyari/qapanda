@@ -121,6 +121,32 @@ function _dbgState(prefix, panelId) {
   }
 }
 
+function _buildChromeLaunchArgs(port, userDataDir) {
+  const args = [
+    '--headless=new',
+    `--remote-debugging-port=${port}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-sync',
+    '--no-proxy-server',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=AutomationControlled',
+    '--disable-infobars',
+    '--lang=en-US,en',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    '--window-size=1280,720',
+    `--user-data-dir=${userDataDir}`,
+  ];
+  if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() === 0) {
+    args.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+  args.push('https://www.google.com');
+  return args;
+}
+
 function _summarizeCdpParams(method, params) {
   const p = params || {};
   if (method === 'Page.navigate') {
@@ -219,25 +245,7 @@ async function ensureChrome(panelId, options = {}) {
 
     try { fs.mkdirSync(userDataDir, { recursive: true }); } catch {}
 
-    const proc = spawn(chromePath, [
-      '--headless=new',
-      `--remote-debugging-port=${port}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-sync',
-      '--no-proxy-server',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=AutomationControlled',
-      '--disable-infobars',
-      '--lang=en-US,en',
-      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-      '--window-size=1280,720',
-      `--user-data-dir=${userDataDir}`,
-      'https://www.google.com',
-    ], { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+    const proc = spawn(chromePath, _buildChromeLaunchArgs(port, userDataDir), { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
 
     let stderrChunks = '';
     proc.stderr.on('data', (d) => { stderrChunks += d.toString(); });
@@ -749,6 +757,7 @@ module.exports = {
   getChromePort,
   getChromeDebugState,
   sendInput,
+  _buildChromeLaunchArgs,
   _dbg,
   _selectBestPageTarget,
   _isPlaceholderPageUrl,

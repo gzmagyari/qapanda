@@ -183,6 +183,7 @@ function normalizeRunOptions(options = {}) {
     chromeDebugPort: Number.isFinite(options.chromeDebugPort)
       ? Math.max(0, Number(options.chromeDebugPort))
       : null,
+    chromeOwnerPanelId: options.chromeOwnerPanelId || null,
     controllerPrestartKey: options.controllerPrestartKey || null,
     workerPrestartKey: options.workerPrestartKey || null,
     chatTarget: typeof options.chatTarget === 'string' ? options.chatTarget : null,
@@ -209,7 +210,20 @@ function ensureWorkerSessionState(session) {
   if (!Number.isFinite(target.lastSeenTranscriptLine)) {
     target.lastSeenTranscriptLine = 0;
   }
+  if (typeof target.apiSystemPromptSnapshot !== 'string') {
+    target.apiSystemPromptSnapshot = null;
+  }
   return target;
+}
+
+function normalizeManifestControllerState(manifest) {
+  if (!manifest || !manifest.controller || typeof manifest.controller !== 'object') {
+    return manifest;
+  }
+  if (typeof manifest.controller.apiSystemPromptSnapshot !== 'string') {
+    manifest.controller.apiSystemPromptSnapshot = null;
+  }
+  return manifest;
 }
 
 function normalizeManifestWorkerState(manifest) {
@@ -261,6 +275,7 @@ async function prepareNewRun(initialMessage, options = {}) {
       sessionId: null,
       lastSeenChatLine: 0,
       lastSeenTranscriptLine: 0,
+      apiSystemPromptSnapshot: null,
       schemaFile: files.schema,
     },
     worker: {
@@ -288,6 +303,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     workspaceName: normalized.workspaceName || null,
     resumeToken: normalized.resumeToken || null,
     chromeDebugPort: normalized.chromeDebugPort || null,
+    chromeOwnerPanelId: normalized.chromeOwnerPanelId || null,
     controllerPrestartKey: normalized.controllerPrestartKey || null,
     workerPrestartKey: normalized.workerPrestartKey || null,
     chatTarget: normalized.chatTarget || null,
@@ -340,6 +356,7 @@ async function loadManifestFromDir(runDir) {
   if (!manifest) {
     throw new Error(`No manifest found in ${runDir}`);
   }
+  normalizeManifestControllerState(manifest);
   normalizeManifestWorkerState(manifest);
   return manifest;
 }
@@ -494,4 +511,5 @@ module.exports = {
   runDirFromId,
   saveManifest,
   normalizeManifestWorkerState,
+  normalizeManifestControllerState,
 };

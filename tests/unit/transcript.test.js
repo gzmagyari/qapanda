@@ -498,8 +498,8 @@ describe('transcript helpers', () => {
 
     const replay = buildSessionReplay(entries, 'worker:default');
     assert.equal(replay[0].role, 'assistant');
-    assert.match(replay[0].content, /Older work summary/);
-    assert.ok(!replay.some((msg) => msg.role === 'user' && msg.content === 'old prompt'));
+    assert.ok(Array.isArray(replay[0].tool_calls));
+    assert.ok(replay.some((msg) => msg.role === 'assistant' && /Older work summary/.test(msg.content)));
     assert.ok(replay.some((msg) => msg.role === 'tool' && msg.tool_call_id === 'shot-1'));
     assert.ok(replay.some((msg) => msg.role === 'assistant' && msg.content === 'Newest reply.'));
   });

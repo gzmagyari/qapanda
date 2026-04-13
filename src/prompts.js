@@ -598,6 +598,138 @@ function buildControllerPrompt(manifest, request) {
   ].filter(Boolean).join('\n');
 }
 
+function buildControllerStatePayload(manifest, request) {
+  const lastLoop = request.loops[request.loops.length - 1] || null;
+  const lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
+  const continueStyleRequest = isContinueStyleRequest(request.userMessage);
+  const isResume = !!manifest.controller.sessionId;
+  const lastSeen = manifest.controller.lastSeenTranscriptLine || manifest.controller.lastSeenChatLine || 0;
+  const isIncremental = isResume && lastSeen > 0;
+  const transcriptTailState = continueStyleRequest
+    ? buildTranscriptTailExcerpt(manifest, { maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS })
+    : null;
+  const continueTailState = continueStyleRequest
+    ? (transcriptTailState || buildTranscriptTail(buildTranscriptExcerpt(manifest), {
+        maxChars: CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS,
+      }))
+    : null;
+  const transcriptLines = continueStyleRequest
+    ? continueTailState.lines
+    : (isIncremental
+      ? buildTranscriptExcerpt(manifest, lastSeen)
+      : buildTranscriptExcerpt(manifest));
+  const workerCli = manifest.worker.cli || manifest.worker.bin || 'codex';
+  const state = {
+    repository_root: manifest.repoRoot,
+    run_id: manifest.runId,
+    request_id: request.id,
+    controller_session_id: manifest.controller.sessionId,
+    worker_session_id: manifest.worker.sessionId,
+    worker_session_started: manifest.worker.hasStarted,
+    worker_cli: workerCli,
+    request_started_at: request.startedAt,
+    current_loop_index: request.loops.length + 1,
+    latest_user_message: request.userMessage,
+    latest_stop_reason: manifest.stopReason,
+    latest_worker_prompt: lastWorker ? lastWorker.prompt : null,
+    latest_worker_exit_code: lastWorker ? lastWorker.exitCode : null,
+    latest_worker_result: lastWorker ? lastWorker.resultText : null,
+  };
+  if (continueStyleRequest) {
+    state.recent_transcript = continueTailState && continueTailState.truncated
+      ? [
+          `System: Earlier transcript omitted. Only the latest ~${CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS} characters of visible chat history are shown.`,
+          ...transcriptLines,
+        ]
+      : transcriptLines;
+  } else if (isIncremental) {
+    state.new_messages_since_your_last_turn = transcriptLines;
+  } else {
+    state.recent_transcript = transcriptLines;
+  }
+  return {
+    state,
+    continueStyleRequest,
+    isIncremental,
+  };
+}
+
+function buildApiControllerSystemPrompt(manifest) {
+  const projectSections = buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true });
+  const staticSections = [
+    manifest.controllerSystemPrompt || null,
+    manifest.controllerSystemPrompt ? null : 'You are the CONTROLLER agent — a senior developer who supervises a worker agent inside a terminal workflow.',
+    manifest.controllerSystemPrompt ? null : '',
+    manifest.controllerSystemPrompt ? null : 'Roles:',
+    manifest.controllerSystemPrompt ? null : '- The human user is your manager. They give you high-level instructions.',
+    manifest.controllerSystemPrompt ? null : '- You are the senior developer. You THINK, PLAN, INVESTIGATE, and REVIEW.',
+    manifest.controllerSystemPrompt ? null : '- The worker agent is your junior developer. The worker writes code, edits files, and runs commands.',
+    manifest.controllerSystemPrompt ? null : '',
+    manifest.controllerSystemPrompt ? null : 'CRITICAL — You are NOT a pass-through for coding tasks:',
+    manifest.controllerSystemPrompt ? null : '- For coding/engineering tasks: NEVER blindly forward the user\'s message. Break it into steps, investigate first, give the worker a focused instruction.',
+    manifest.controllerSystemPrompt ? null : '- For explicit relay requests (e.g. "tell the QA agent that...", "let the agent know X"): forward the information directly and naturally — do NOT rephrase, add constraints, or tell the worker how to reply.',
+    manifest.controllerSystemPrompt ? null : '- ALWAYS break complex tasks into steps. Do one step at a time.',
+    manifest.controllerSystemPrompt ? null : '- YOU do the investigation and analysis. Read files, run git diff, run tests, examine code.',
+    manifest.controllerSystemPrompt ? null : '- Only delegate to the worker when you have a SPECIFIC, FOCUSED instruction for it.',
+    manifest.controllerSystemPrompt ? null : '- After the worker finishes, YOU review the result. Check git diff, run tests, read changed files.',
+    manifest.controllerSystemPrompt ? null : '- If the worker\'s work has issues, send it back with SPECIFIC feedback about what to fix.',
+    manifest.controllerSystemPrompt ? null : '- Keep looping (investigate -> delegate -> review) until the task is truly done.',
+    manifest.controllerSystemPrompt ? null : '',
+    manifest.controllerSystemPrompt ? null : 'Behavior contract:',
+    manifest.controllerSystemPrompt ? null : '- Each turn, you may either reply directly and stop, or delegate a focused task to the worker.',
+    manifest.controllerSystemPrompt ? null : '- If you delegate, the app launches the worker, streams its output, then calls you again.',
+    manifest.controllerSystemPrompt ? null : '- After the worker finishes, inspect the result (git diff, tests, etc.) before deciding next step.',
+    manifest.controllerSystemPrompt ? null : '- For read-only tasks (summaries, explanations), skip verification.',
+    manifest.controllerSystemPrompt ? null : '- When you stop, the shell waits for the next user instruction.',
+    manifest.controllerSystemPrompt ? null : '',
+    manifest.controllerSystemPrompt ? null : 'Your job:',
+    manifest.controllerSystemPrompt ? null : '- For simple chat or questions, reply yourself and stop. Do NOT delegate greetings or questions.',
+    manifest.controllerSystemPrompt ? null : '- For repository work, first investigate yourself (read code, understand the problem).',
+    manifest.controllerSystemPrompt ? null : '- Then send the worker a SPECIFIC instruction like "In src/foo.js, the function bar() has a null check missing on line 42. Fix it by adding..." — not "find and fix bugs".',
+    manifest.controllerSystemPrompt ? null : '- You CAN and SHOULD use your tools to read files, run commands, inspect code, run tests.',
+    manifest.controllerSystemPrompt ? null : '- Never edit SOURCE CODE files yourself. Never commit or push.',
+    manifest.controllerSystemPrompt ? null : '- You MAY stage changes with `git add` when you have reviewed and approved the worker\'s work. Staging = your approval stamp.',
+    manifest.controllerSystemPrompt ? null : '- You MAY create or edit .md files (e.g. .qpanda/tasks/task-001.md) to write detailed instructions for the worker. For complex tasks, write a task .md file with full details, then tell the worker to read it.',
+    manifest.controllerSystemPrompt ? null : '- Keep controller_messages short, plain-text, user-visible. No markdown bullets, no JSON, no code fences. Prefer 1-6 messages.',
+    manifest.controllerSystemPrompt ? null : '- If the task is complete, stop. If the worker needs more work, delegate again with specific instructions.',
+    manifest.controllerSystemPrompt ? null : '- The app automatically reuses the existing worker session.',
+    manifest.controllerSystemPrompt ? null : '',
+    manifest.controllerSystemPrompt ? null : 'Return JSON ONLY with these fields:',
+    manifest.controllerSystemPrompt ? null : '- action: "delegate" or "stop"',
+    manifest.controllerSystemPrompt ? null : '- agent_id: which worker agent to delegate to (null or "default" for the default worker, or a custom agent id). Always include this field.',
+    manifest.controllerSystemPrompt ? null : '- controller_messages: array of short strings shown to the user in chat (visible conversation)',
+    manifest.controllerSystemPrompt ? null : '- claude_message: the instruction string sent to the worker when action is delegate, otherwise null',
+    manifest.controllerSystemPrompt ? null : '- stop_reason: a short string or null',
+    manifest.controllerSystemPrompt ? null : '- progress_updates: array of short task-progress lines written to the progress log / top-right status bubble. Use these ONLY for substantive task milestones.',
+    manifest.controller.extraInstructions
+      ? `Additional controller instructions:\n${manifest.controller.extraInstructions}`
+      : null,
+    loadCcManagerMd(manifest.repoRoot),
+    ...projectSections,
+    buildHostedWorkflowControllerSection(manifest),
+    manifest.selfTesting ? buildSelfTestingPrompt('controller', manifest.selfTestPrompts) : null,
+    buildWorkflowSection(manifest.repoRoot),
+    buildAgentsSection(manifest),
+  ];
+  return staticSections.filter(Boolean).join('\n');
+}
+
+function buildApiControllerUserPrompt(manifest, request) {
+  const { state, continueStyleRequest, isIncremental } = buildControllerStatePayload(manifest, request);
+  const resumeNote = isIncremental
+    ? 'You are resuming a previous session. You already have earlier conversation history. Below are only the NEW messages since your last turn.'
+    : null;
+  return [
+    'Return JSON ONLY. Fields: action, agent_id, claude_message, controller_messages, stop_reason, progress_updates.',
+    resumeNote,
+    continueStyleRequest ? 'This is a continue-style request. Prefer deciding from the newest transcript tail first.' : null,
+    'Current state:',
+    JSON.stringify(state, null, 2),
+    '',
+    'Now decide the next step. Return JSON only.',
+  ].filter(Boolean).join('\n');
+}
+
 function buildAgentsSection(manifest) {
   const agents = manifest.agents;
   if (!agents || Object.keys(agents).length === 0) return null;
@@ -947,6 +1079,8 @@ function buildSelfTestingPrompt(role, customPrompts) {
 buildSelfTestingPrompt.DEFAULTS = DEFAULT_SELF_TEST_PROMPTS;
 
 module.exports = {
+  buildApiControllerSystemPrompt,
+  buildApiControllerUserPrompt,
   buildAgentWorkerSystemPrompt,
   buildControllerPrompt,
   buildContinueDirective,

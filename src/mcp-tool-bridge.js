@@ -3,12 +3,44 @@
  * ALL tools come through MCP servers — built-in tools via stdio MCP,
  * external tools via HTTP or stdio MCP servers. One code path for everything.
  */
+const fs = require('node:fs');
+const path = require('node:path');
+const { sortToolDefinitions } = require('./prompt-cache');
 
 // Tool registry: maps prefixed tool name → { serverName, originalName, type }
 let _toolRegistry = {};
 
 // Active MCP client connections (for stdio MCPs that need to stay alive)
 let _activeClients = {};
+
+function _isChromeDevtoolsServer(serverName, toolName) {
+  const serverText = String(serverName || '').toLowerCase();
+  const toolText = String(toolName || '').toLowerCase();
+  return serverText.includes('chrome-devtools')
+    || serverText.includes('chrome_devtools')
+    || toolText.includes('chrome_devtools')
+    || toolText.includes('chrome-devtools');
+}
+
+function _isRecoverableStdioMcpError(serverName, toolName, error) {
+  if (!_isChromeDevtoolsServer(serverName, toolName)) return false;
+  const message = String(error && error.message ? error.message : error || '').toLowerCase();
+  return message.includes('request timed out')
+    || message.includes('connection closed')
+    || message.includes('connection lost')
+    || message.includes('socket hang up')
+    || message.includes('transport closed')
+    || message.includes('terminated');
+}
+
+async function _disposeActiveClient(serverName) {
+  const clientInfo = _activeClients[serverName];
+  if (!clientInfo) return;
+  try {
+    await clientInfo.client.close();
+  } catch {}
+  delete _activeClients[serverName];
+}
 
 // ── MCP tool loading ─────────────────────────────────────────────
 
@@ -40,6 +72,54 @@ function _mcpToolToOpenAI(serverName, mcpTool) {
   };
 }
 
+function _isLikelyRelativeFileArg(value) {
+  const text = String(value || '').trim();
+  if (!text || path.isAbsolute(text)) return false;
+  if (text.startsWith('-')) return false;
+  if (text.includes('://')) return false;
+  if (text.startsWith('{') && text.endsWith('}')) return false;
+  if (text.startsWith('.') || text.includes('/') || text.includes('\\')) return true;
+  return /\.(?:[cm]?[jt]s|json|mjs|cjs|py|sh|mts|cts)$/i.test(text);
+}
+
+function _resolveMcpWorkingDir(config, fallbackCwd) {
+  const configDir = config && config.__configDir ? String(config.__configDir) : '';
+  const explicitCwd = config && config.cwd ? String(config.cwd).trim() : '';
+  if (explicitCwd) {
+    return path.resolve(configDir || fallbackCwd || process.cwd(), explicitCwd);
+  }
+  if (configDir) return configDir;
+  return fallbackCwd || process.cwd();
+}
+
+function _prepareStdioMcpLaunch(config, fallbackCwd) {
+  const launchCwd = _resolveMcpWorkingDir(config || {}, fallbackCwd);
+  const resolvedArgs = Array.isArray(config && config.args)
+    ? config.args.map((arg) => {
+        if (!_isLikelyRelativeFileArg(arg)) return arg;
+        const candidate = path.resolve(launchCwd, String(arg));
+        return fs.existsSync(candidate) ? candidate : arg;
+      })
+    : [];
+  const resolvedCommand = (config && config.command && _isLikelyRelativeFileArg(config.command))
+    ? (() => {
+        const candidate = path.resolve(launchCwd, String(config.command));
+        return fs.existsSync(candidate) ? candidate : config.command;
+      })()
+    : config.command;
+  return {
+    command: resolvedCommand,
+    args: resolvedArgs,
+    cwd: launchCwd,
+    env: { ...process.env, ...((config && config.env) || {}) },
+  };
+}
+
+function _describeStdioMcpLaunch(serverName, launch) {
+  const renderedArgs = Array.isArray(launch.args) ? launch.args.join(' ') : '';
+  return `server=${serverName} command=${launch.command}${renderedArgs ? ` args=${renderedArgs}` : ''} cwd=${launch.cwd}`;
+}
+
 /** Load tools from an HTTP MCP server */
 async function _loadHttpMcpTools(serverName, config) {
   const url = config.url.replace(/\/mcp$/, '') + '/mcp';
@@ -64,11 +144,13 @@ async function _loadStdioMcpTools(serverName, config) {
   try {
     const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+    const launch = _prepareStdioMcpLaunch(config);
 
     const transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args || [],
-      env: { ...process.env, ...(config.env || {}) },
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
       stderr: 'ignore',
     });
     const client = new Client({ name: 'qapanda', version: '1.0' });
@@ -80,7 +162,8 @@ async function _loadStdioMcpTools(serverName, config) {
     const result = await client.listTools();
     return (result.tools || []).map(t => _mcpToolToOpenAI(serverName, t));
   } catch (err) {
-    console.error(`[mcp-tool-bridge] Stdio MCP "${serverName}" failed:`, err.message);
+    const launch = _prepareStdioMcpLaunch(config);
+    console.error(`[mcp-tool-bridge] Stdio MCP "${serverName}" failed (${_describeStdioMcpLaunch(serverName, launch)}):`, err.message);
     return [];
   }
 }
@@ -106,24 +189,51 @@ async function _executeHttpMcpTool(serverConfig, toolName, args) {
 }
 
 /** Execute a tool call on a stdio MCP server (reuse cached client) */
-async function _executeStdioMcpTool(serverName, serverConfig, toolName, args) {
+async function _executeStdioMcpTool(serverName, serverConfig, toolName, args, options = {}) {
   let clientInfo = _activeClients[serverName];
   if (!clientInfo) {
     // Reconnect
     const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+    const launch = _prepareStdioMcpLaunch(serverConfig);
     const transport = new StdioClientTransport({
-      command: serverConfig.command,
-      args: serverConfig.args || [],
-      env: { ...process.env, ...(serverConfig.env || {}) },
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
     });
     const client = new Client({ name: 'qapanda', version: '1.0' });
     await client.connect(transport);
     clientInfo = { client, type: 'stdio' };
     _activeClients[serverName] = clientInfo;
   }
-  const result = await clientInfo.client.callTool({ name: toolName, arguments: args });
-  return _processToolResult(result);
+  try {
+    const result = await clientInfo.client.callTool({ name: toolName, arguments: args });
+    return _processToolResult(result);
+  } catch (err) {
+    if (!_isRecoverableStdioMcpError(serverName, toolName, err)) {
+      throw err;
+    }
+    await _disposeActiveClient(serverName);
+    if (_isChromeDevtoolsServer(serverName, toolName) && typeof options.onRecoverChromeDevtools === 'function') {
+      await options.onRecoverChromeDevtools({ serverName, toolName, args, error: err });
+    }
+    const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+    const launch = _prepareStdioMcpLaunch(serverConfig);
+    const transport = new StdioClientTransport({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+    });
+    const client = new Client({ name: 'qapanda', version: '1.0' });
+    await client.connect(transport);
+    clientInfo = { client, type: 'stdio' };
+    _activeClients[serverName] = clientInfo;
+    const retryResult = await clientInfo.client.callTool({ name: toolName, arguments: args });
+    return _processToolResult(retryResult);
+  }
 }
 
 
@@ -223,9 +333,10 @@ async function loadAllTools(mcpServers, cwd) {
     }
   }
 
+  const sortedTools = sortToolDefinitions(tools);
   _lastMcpFingerprint = fingerprint;
-  _cachedTools = tools;
-  return tools;
+  _cachedTools = sortedTools;
+  return sortedTools;
 }
 
 /**
@@ -235,7 +346,7 @@ async function loadAllTools(mcpServers, cwd) {
  * @param {string} cwd - Working directory
  * @returns {Promise<object>} Canonical MCP tool result
  */
-async function executeTool(toolCall, mcpServers, cwd) {
+async function executeTool(toolCall, mcpServers, cwd, options = {}) {
   const name = toolCall.function.name;
   const meta = _toolRegistry[name];
   if (!meta) return _errorToolResult(`Error: unknown tool "${name}"`);
@@ -251,7 +362,7 @@ async function executeTool(toolCall, mcpServers, cwd) {
     }
     if (meta.type === 'stdio') {
       const serverConfig = mcpServers && mcpServers[meta.serverName];
-      return await _executeStdioMcpTool(meta.serverName, serverConfig, meta.originalName, args);
+      return await _executeStdioMcpTool(meta.serverName, serverConfig, meta.originalName, args, options);
     }
     return _errorToolResult(`Error: unknown tool type "${meta.type}" for "${name}"`);
   } catch (err) {
@@ -263,8 +374,8 @@ async function executeTool(toolCall, mcpServers, cwd) {
  * Clean up all connections.
  */
 async function closeAll() {
-  for (const [, info] of Object.entries(_activeClients)) {
-    try { await info.client.close(); } catch {}
+  for (const name of Object.keys(_activeClients)) {
+    await _disposeActiveClient(name);
   }
   _activeClients = {};
   _toolRegistry = {};
@@ -277,7 +388,13 @@ module.exports = {
   executeTool,
   closeAll,
   // Exposed for testing
+  _prepareStdioMcpLaunch,
+  _resolveMcpWorkingDir,
+  _isLikelyRelativeFileArg,
+  _describeStdioMcpLaunch,
   _mcpToolToOpenAI,
   _sanitizeToolNamePart,
+  _isChromeDevtoolsServer,
+  _isRecoverableStdioMcpError,
   _processToolResult,
 };
