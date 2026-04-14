@@ -718,10 +718,260 @@ function tailReplayToolResults(entries, sessionKey, compactionState) {
       tailEntries.add(entry);
       continue;
     }
-    if (entry.kind === 'tool_call' || entry.kind === 'ui_message') continue;
+    if (entry.kind === 'tool_call' || entry.kind === 'ui_message' || entry.kind === 'backend_event') continue;
     break;
   }
   return tailEntries;
+}
+
+function visibleSessionEntries(entries, sessionKey, compactionState) {
+  const visible = [];
+  for (const entry of entries || []) {
+    if (!entry || entry.v !== TRANSCRIPT_V2 || entry.sessionKey !== sessionKey) continue;
+    if (entry.kind === 'context_compaction') continue;
+    if (entryIsCompactedAway(entry, compactionState)) continue;
+    visible.push(entry);
+  }
+  return visible;
+}
+
+function assistantToolCalls(entry) {
+  if (!entry || entry.kind !== 'assistant_message') return [];
+  const toolCalls = entry.payload && Array.isArray(entry.payload.tool_calls)
+    ? entry.payload.tool_calls
+    : [];
+  return toolCalls.filter((toolCall) =>
+    toolCall &&
+    (
+      toolCall.id ||
+      (toolCall.function && typeof toolCall.function.name === 'string' && toolCall.function.name.trim())
+    )
+  );
+}
+
+function toolCallName(toolCall) {
+  return toolCall && toolCall.function && typeof toolCall.function.name === 'string'
+    ? String(toolCall.function.name)
+    : '';
+}
+
+function toolResultName(entry) {
+  return entry && entry.toolName ? String(entry.toolName) : '';
+}
+
+function isReplayBoundaryEntry(entry) {
+  return !!entry && (entry.kind === 'user_message' || entry.kind === 'assistant_message');
+}
+
+function isReplayNoiseEntry(entry) {
+  return !!entry && (entry.kind === 'tool_call' || entry.kind === 'backend_event' || entry.kind === 'ui_message');
+}
+
+function replayMessagesForEntry(entry) {
+  if (!entry) return [];
+  if (entry.kind === 'user_message') {
+    if (entry.payload && entry.payload.role === 'user') {
+      return [clone(entry.payload)];
+    }
+    return [{ role: 'user', content: entry.text || '' }];
+  }
+  if (entry.kind === 'assistant_message') {
+    if (entry.payload && entry.payload.role === 'assistant') {
+      return [clone(entry.payload)];
+    }
+    if (entry.text) {
+      return [{ role: 'assistant', content: entry.text }];
+    }
+  }
+  return [];
+}
+
+function entryLineNumbers(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => entry && Number.isFinite(entry.__lineNumber) ? entry.__lineNumber : null)
+    .filter((lineNumber) => Number.isFinite(lineNumber))
+    .sort((left, right) => left - right);
+}
+
+function matchToolResultsToToolCalls(toolCalls, toolResults) {
+  const matchedCalls = new Map();
+  const matchedResultIndices = new Set();
+  const expectedIds = new Map();
+
+  for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
+    const toolCall = toolCalls[callIndex];
+    if (toolCall && toolCall.id) {
+      expectedIds.set(String(toolCall.id), callIndex);
+    }
+  }
+
+  for (let resultIndex = 0; resultIndex < toolResults.length; resultIndex += 1) {
+    const toolResult = toolResults[resultIndex];
+    const toolCallId = toolResult && toolResult.toolCallId ? String(toolResult.toolCallId) : '';
+    if (!toolCallId || !expectedIds.has(toolCallId)) continue;
+    const callIndex = expectedIds.get(toolCallId);
+    if (matchedCalls.has(callIndex)) continue;
+    matchedCalls.set(callIndex, toolResult);
+    matchedResultIndices.add(resultIndex);
+  }
+
+  const unresolvedCallsByName = new Map();
+  const unresolvedResultsByName = new Map();
+
+  for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
+    if (matchedCalls.has(callIndex)) continue;
+    const name = toolCallName(toolCalls[callIndex]);
+    if (!name) continue;
+    if (!unresolvedCallsByName.has(name)) unresolvedCallsByName.set(name, []);
+    unresolvedCallsByName.get(name).push(callIndex);
+  }
+
+  for (let resultIndex = 0; resultIndex < toolResults.length; resultIndex += 1) {
+    if (matchedResultIndices.has(resultIndex)) continue;
+    const name = toolResultName(toolResults[resultIndex]);
+    if (!name) continue;
+    if (!unresolvedResultsByName.has(name)) unresolvedResultsByName.set(name, []);
+    unresolvedResultsByName.get(name).push(resultIndex);
+  }
+
+  for (const [name, callIndices] of unresolvedCallsByName.entries()) {
+    const resultIndices = unresolvedResultsByName.get(name) || [];
+    if (callIndices.length !== 1 || resultIndices.length !== 1) continue;
+    matchedCalls.set(callIndices[0], toolResults[resultIndices[0]]);
+    matchedResultIndices.add(resultIndices[0]);
+  }
+
+  return {
+    complete: matchedCalls.size === toolCalls.length,
+    matchedCalls,
+    matchedResultsInEncounterOrder: toolResults.filter((toolResult, index) => matchedResultIndices.has(index)),
+  };
+}
+
+function buildToolReplayBundle(sessionEntries, startIndex, options = {}) {
+  const assistantEntry = sessionEntries[startIndex];
+  const toolCalls = assistantToolCalls(assistantEntry);
+  if (toolCalls.length === 0) return null;
+
+  const assistantMessages = replayMessagesForEntry(assistantEntry);
+  if (assistantMessages.length === 0) {
+    return {
+      complete: false,
+      nextIndex: startIndex,
+      entries: [assistantEntry],
+      lines: entryLineNumbers([assistantEntry]),
+      messages: [],
+      replayMessageCount: 0,
+    };
+  }
+
+  const rawWindowEntries = [assistantEntry];
+  const toolResultEntries = [];
+  let boundaryIndex = sessionEntries.length;
+
+  for (let index = startIndex + 1; index < sessionEntries.length; index += 1) {
+    const entry = sessionEntries[index];
+    if (!entry) {
+      boundaryIndex = index;
+      break;
+    }
+    if (isReplayBoundaryEntry(entry)) {
+      boundaryIndex = index;
+      break;
+    }
+    rawWindowEntries.push(entry);
+    if (entry.kind === 'tool_result') {
+      toolResultEntries.push(entry);
+    }
+  }
+
+  const { complete, matchedResultsInEncounterOrder } = matchToolResultsToToolCalls(toolCalls, toolResultEntries);
+  const matchedResultSet = new Set(matchedResultsInEncounterOrder);
+  const rawBundleEntries = rawWindowEntries.filter((entry) =>
+    entry === assistantEntry ||
+    matchedResultSet.has(entry) ||
+    isReplayNoiseEntry(entry)
+  );
+
+  const bundleMessages = assistantMessages.slice();
+  for (const entry of matchedResultsInEncounterOrder) {
+    const includeInlineImages = options.inlineImageReplayMode === 'all'
+      ? options.includeInlineImages !== false
+      : (options.inlineImageReplayMode === 'tail-only'
+          ? !!(options.tailToolResults && options.tailToolResults.has(entry))
+          : false);
+    bundleMessages.push(...providerMessagesForToolResult(entry, {
+      ...options,
+      includeInlineImages,
+    }));
+  }
+
+  return {
+    complete,
+    nextIndex: Math.max(startIndex, boundaryIndex - 1),
+    entries: rawBundleEntries,
+    lines: entryLineNumbers(rawBundleEntries),
+    messages: complete ? bundleMessages : [],
+    replayMessageCount: complete ? bundleMessages.length : 0,
+  };
+}
+
+function buildSessionReplaySegments(entries, sessionKey, options = {}) {
+  if (!Array.isArray(entries) || !sessionKey) return [];
+  const compactionState = options.compactionState || latestSessionCompaction(entries, sessionKey);
+  const inlineImageReplayMode = options.inlineImageReplayMode || 'all';
+  const tailToolResults = inlineImageReplayMode === 'tail-only'
+    ? tailReplayToolResults(entries, sessionKey, compactionState)
+    : null;
+  const visibleEntries = visibleSessionEntries(entries, sessionKey, compactionState);
+  const segments = [];
+
+  for (let index = 0; index < visibleEntries.length; index += 1) {
+    const entry = visibleEntries[index];
+    if (!entry) continue;
+
+    if (entry.kind === 'user_message' || entry.kind === 'assistant_message') {
+      const toolCalls = assistantToolCalls(entry);
+      if (toolCalls.length > 0) {
+        const bundle = buildToolReplayBundle(visibleEntries, index, {
+          ...options,
+          inlineImageReplayMode,
+          tailToolResults,
+        });
+        if (bundle) {
+          index = bundle.nextIndex;
+          if (bundle.complete && bundle.messages.length > 0) {
+            segments.push({
+              kind: 'tool_bundle',
+              entries: bundle.entries,
+              lines: bundle.lines,
+              messages: bundle.messages,
+              replayMessageCount: bundle.replayMessageCount,
+            });
+          }
+          continue;
+        }
+      }
+
+      const messages = replayMessagesForEntry(entry);
+      if (messages.length > 0) {
+        segments.push({
+          kind: entry.kind,
+          entries: [entry],
+          lines: entryLineNumbers([entry]),
+          messages,
+          replayMessageCount: messages.length,
+        });
+      }
+      continue;
+    }
+
+    if (entry.kind === 'tool_result') {
+      continue;
+    }
+  }
+
+  return segments;
 }
 
 function buildSessionReplay(entries, sessionKey, options = {}) {
@@ -730,54 +980,16 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
   const compactionState = latestSessionCompaction(entries, sessionKey);
   const compactionMessage = compactionState ? contextCompactionReplayMessage(compactionState.entry) : null;
   let compactionInserted = !compactionMessage;
-  const inlineImageReplayMode = options.inlineImageReplayMode || 'all';
-  const tailToolResults = inlineImageReplayMode === 'tail-only'
-    ? tailReplayToolResults(entries, sessionKey, compactionState)
-    : null;
-  for (const entry of entries) {
-    if (!entry || entry.v !== TRANSCRIPT_V2 || entry.sessionKey !== sessionKey) continue;
-    if (entryIsCompactedAway(entry, compactionState)) continue;
-    if (entry.kind === 'user_message') {
-      if (entry.payload && entry.payload.role === 'user') {
-        messages.push(clone(entry.payload));
-      } else {
-        messages.push({ role: 'user', content: entry.text || '' });
-      }
-      if (!compactionInserted) {
-        messages.push(compactionMessage);
-        compactionInserted = true;
-      }
-      continue;
-    }
-    if (entry.kind === 'assistant_message') {
-      if (entry.payload && entry.payload.role === 'assistant') {
-        messages.push(clone(entry.payload));
-      } else if (entry.text) {
-        messages.push({ role: 'assistant', content: entry.text });
-      }
-      if (!compactionInserted) {
-        messages.push(compactionMessage);
-        compactionInserted = true;
-      }
-      continue;
-    }
-    if (entry.kind === 'context_compaction') {
-      continue;
-    }
-    if (entry.kind === 'tool_result') {
-      const includeInlineImages = inlineImageReplayMode === 'all'
-        ? options.includeInlineImages !== false
-        : (inlineImageReplayMode === 'tail-only'
-            ? !!(tailToolResults && tailToolResults.has(entry))
-            : false);
-      messages.push(...providerMessagesForToolResult(entry, {
-        ...options,
-        includeInlineImages,
-      }));
-      if (!compactionInserted) {
-        messages.push(compactionMessage);
-        compactionInserted = true;
-      }
+  const segments = buildSessionReplaySegments(entries, sessionKey, {
+    ...options,
+    compactionState,
+  });
+  for (const segment of segments) {
+    if (!segment || !Array.isArray(segment.messages) || segment.messages.length === 0) continue;
+    messages.push(...segment.messages);
+    if (!compactionInserted) {
+      messages.push(compactionMessage);
+      compactionInserted = true;
     }
   }
   if (!compactionInserted) {
@@ -1202,6 +1414,7 @@ module.exports = {
   buildTranscriptTail,
   buildMergedRunView,
   buildSessionReplay,
+  buildSessionReplaySegments,
   buildStartCardMessages,
   buildTranscriptDisplayMessages,
   countDisplayMessageChars,

@@ -10,6 +10,7 @@ const { saveManifest } = require('./state');
 const {
   appendTranscriptRecord,
   buildSessionReplay,
+  buildSessionReplaySegments,
   createTranscriptRecord,
   entryIsCompactedAway,
   latestSessionCompaction,
@@ -39,14 +40,6 @@ function extractMessageText(message) {
   }).filter(Boolean).join('\n');
 }
 
-function replayMessageCountForEntry(entry) {
-  if (!entry || entry.v !== 2) return 0;
-  if (entry.kind === 'user_message' || entry.kind === 'assistant_message') return 1;
-  if (entry.kind === 'tool_result') return providerMessagesForToolResult(entry, { includeInlineImages: false }).length;
-  if (entry.kind === 'context_compaction') return 1;
-  return 0;
-}
-
 function currentReplayEntries(entries, sessionKey) {
   const compactionState = latestSessionCompaction(entries, sessionKey);
   return (entries || []).filter((entry) => {
@@ -55,59 +48,31 @@ function currentReplayEntries(entries, sessionKey) {
   });
 }
 
-function buildAssistantToolCallLineMap(entries, sessionKey) {
-  const lineByToolCallId = new Map();
-  for (const entry of entries || []) {
-    if (!entry || entry.v !== 2 || entry.sessionKey !== sessionKey) continue;
-    if (entry.kind !== 'assistant_message') continue;
-    const toolCalls = entry.payload && Array.isArray(entry.payload.tool_calls)
-      ? entry.payload.tool_calls
-      : [];
-    for (const toolCall of toolCalls) {
-      if (toolCall && toolCall.id) {
-        lineByToolCallId.set(toolCall.id, entry.__lineNumber);
-      }
-    }
-  }
-  return lineByToolCallId;
-}
-
-function tailToolResultPreservationInfo(entries, sessionKey) {
-  const preservedLines = new Set();
-  const assistantLines = buildAssistantToolCallLineMap(entries, sessionKey);
-  const replayEntries = currentReplayEntries(entries, sessionKey);
-  for (let index = replayEntries.length - 1; index >= 0; index -= 1) {
-    const entry = replayEntries[index];
-    if (!entry) continue;
-    if (entry.kind === 'tool_result') {
-      if (entry.__lineNumber) preservedLines.add(entry.__lineNumber);
-      if (entry.toolCallId && assistantLines.has(entry.toolCallId)) {
-        preservedLines.add(assistantLines.get(entry.toolCallId));
-      }
-      continue;
-    }
-    if (entry.kind === 'tool_call' || entry.kind === 'ui_message') continue;
-    break;
-  }
-  return preservedLines;
-}
-
 function compactableEntries(entries, sessionKey) {
   return currentReplayEntries(entries, sessionKey)
     .filter((entry) => entry.kind !== 'context_compaction')
     .sort((a, b) => (a.__lineNumber || 0) - (b.__lineNumber || 0));
 }
 
-function selectEntriesToKeep(entries, preserveLines, keepRecentMessages) {
+function currentReplaySegments(entries, sessionKey) {
+  return buildSessionReplaySegments(entries, sessionKey, {
+    inlineImageReplayMode: 'tail-only',
+  });
+}
+
+function selectSegmentsToKeep(segments, preserveLines, keepRecentMessages) {
   const keepLines = new Set(preserveLines);
   let remaining = keepRecentMessages;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    const lineNumber = entry.__lineNumber || 0;
-    if (keepLines.has(lineNumber)) continue;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
+    if (!segment || !Array.isArray(segment.lines) || segment.lines.length === 0) continue;
+    const lineNumbers = segment.lines.filter((lineNumber) => Number.isFinite(lineNumber));
+    if (lineNumbers.every((lineNumber) => keepLines.has(lineNumber))) continue;
     if (remaining <= 0) break;
-    keepLines.add(lineNumber);
-    remaining -= replayMessageCountForEntry(entry);
+    for (const lineNumber of lineNumbers) {
+      keepLines.add(lineNumber);
+    }
+    remaining -= Number(segment.replayMessageCount || 0);
   }
   return keepLines;
 }
@@ -292,12 +257,15 @@ async function compactApiSessionHistory({
     return { performed: false, reason: 'nothing-to-compact', replayMessageCount };
   }
 
-  const preservedLines = tailToolResultPreservationInfo(entries, sessionKey);
-  if (candidates[0] && candidates[0].__lineNumber) {
-    preservedLines.add(candidates[0].__lineNumber);
+  const replaySegments = currentReplaySegments(entries, sessionKey);
+  const preservedLines = new Set();
+  if (replaySegments[0] && Array.isArray(replaySegments[0].lines)) {
+    for (const lineNumber of replaySegments[0].lines) {
+      if (Number.isFinite(lineNumber)) preservedLines.add(lineNumber);
+    }
   }
-  const keepLines = selectEntriesToKeep(
-    candidates,
+  const keepLines = selectSegmentsToKeep(
+    replaySegments,
     preservedLines,
     force ? forcedKeepRecentMessages : keepRecentMessages
   );

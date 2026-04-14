@@ -174,4 +174,199 @@ describe('API compaction', () => {
       'the first replay message is preserved to keep the cacheable prefix stable across compaction'
     );
   });
+
+  it('preserves an entire assistant tool bundle when it is the stable opener', async () => {
+    mock.setHandler(() => ({ text: 'summarized earlier context' }));
+    const transcriptPath = path.join(tmpDir, '.qpanda', 'runs', 'compact-bundle-test', 'transcript.jsonl');
+    const entries = [
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        payload: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'bundle-1',
+              type: 'function',
+              function: { name: 'cc_memory__get_memory', arguments: '{}' },
+            },
+            {
+              id: 'bundle-2',
+              type: 'function',
+              function: { name: 'cc_tasks__list_tasks', arguments: '{}' },
+            },
+          ],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_result',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        toolCallId: 'bundle-1',
+        toolName: 'cc_memory__get_memory',
+        result: {
+          content: [{ type: 'text', text: 'Memory contents' }],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_result',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        toolCallId: 'bundle-2',
+        toolName: 'cc_tasks__list_tasks',
+        result: {
+          content: [{ type: 'text', text: 'Task list' }],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'user',
+        requestId: 'r2',
+        text: 'continue',
+        payload: { role: 'user', content: 'continue' },
+      }),
+    ];
+    writeTranscript(entries, transcriptPath);
+
+    const manifest = {
+      runDir: path.join(tmpDir, '.qpanda', 'runs', 'compact-bundle-test'),
+      files: {
+        manifest: path.join(tmpDir, '.qpanda', 'runs', 'compact-bundle-test', 'manifest.json'),
+        transcript: transcriptPath,
+      },
+      worker: {},
+      usageSummary: createEmptyUsageSummary(),
+    };
+
+    const result = await compactApiSessionHistory({
+      manifest,
+      sessionKey: 'worker:agent:QA-Browser',
+      backend: 'worker:api',
+      provider: 'custom',
+      apiKey: 'test-key',
+      baseURL: mock.url + '/v1',
+      model: 'test-model',
+      triggerMessages: 1,
+      keepRecentMessages: 0,
+    });
+
+    assert.equal(result.performed, true);
+
+    const updatedEntries = readTranscriptEntriesSync(transcriptPath);
+    const compactionEntry = updatedEntries.find((entry) => entry.kind === 'context_compaction');
+    assert.ok(compactionEntry, 'should append a compaction entry');
+    assert.deepEqual(compactionEntry.compaction.preservedLines, [1, 2, 3]);
+
+    const replay = buildSessionReplay(updatedEntries, 'worker:agent:QA-Browser', {
+      inlineImageReplayMode: 'tail-only',
+    });
+    const summaryIndex = replay.findIndex((message) => message.role === 'assistant' && /summarized earlier context/.test(String(message.content || '')));
+    const secondToolIndex = replay.findIndex((message) => message.role === 'tool' && message.tool_call_id === 'bundle-2');
+
+    assert.ok(replay[0] && Array.isArray(replay[0].tool_calls), 'bundle opener assistant message should be preserved');
+    assert.ok(secondToolIndex >= 0, 'both tool results should remain in replay');
+    assert.ok(summaryIndex > secondToolIndex, 'summary must be inserted after the full preserved tool bundle');
+  });
+
+  it('preserves raw tool-call and backend history rows for kept tool bundles', async () => {
+    mock.setHandler(() => ({ text: 'summarized earlier context' }));
+    const transcriptPath = path.join(tmpDir, '.qpanda', 'runs', 'compact-raw-bundle-test', 'transcript.jsonl');
+    const entries = [
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        text: 'Checking page state.',
+        payload: {
+          role: 'assistant',
+          content: 'Checking page state.',
+          tool_calls: [{
+            id: 'pages-1',
+            type: 'function',
+            function: { name: 'chrome_devtools__list_pages', arguments: '{}' },
+          }],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_call',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        toolCallId: 'pages-1',
+        toolName: 'chrome_devtools__list_pages',
+        input: {},
+      }),
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        text: 'Checking page state.',
+        payload: { source: 'worker-api', type: 'assistant_message', text: 'Checking page state.' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        payload: { type: 'mcpCardStart', text: 'Listed pages' },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_result',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'worker:api',
+        requestId: 'r1',
+        toolCallId: 'pages-1',
+        toolName: 'chrome_devtools__list_pages',
+        result: {
+          content: [{ type: 'text', text: '## Pages\n1: https://example.com [selected]' }],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:agent:QA-Browser',
+        backend: 'user',
+        requestId: 'r2',
+        text: 'continue',
+        payload: { role: 'user', content: 'continue' },
+      }),
+    ];
+    writeTranscript(entries, transcriptPath);
+
+    const manifest = {
+      runDir: path.join(tmpDir, '.qpanda', 'runs', 'compact-raw-bundle-test'),
+      files: {
+        manifest: path.join(tmpDir, '.qpanda', 'runs', 'compact-raw-bundle-test', 'manifest.json'),
+        transcript: transcriptPath,
+      },
+      worker: {},
+      usageSummary: createEmptyUsageSummary(),
+    };
+
+    const result = await compactApiSessionHistory({
+      manifest,
+      sessionKey: 'worker:agent:QA-Browser',
+      backend: 'worker:api',
+      provider: 'custom',
+      apiKey: 'test-key',
+      baseURL: mock.url + '/v1',
+      model: 'test-model',
+      triggerMessages: 1,
+      keepRecentMessages: 0,
+    });
+
+    assert.equal(result.performed, true);
+
+    const updatedEntries = readTranscriptEntriesSync(transcriptPath);
+    const compactionEntry = updatedEntries.find((entry) => entry.kind === 'context_compaction');
+    assert.ok(compactionEntry, 'should append a compaction entry');
+    assert.deepEqual(compactionEntry.compaction.preservedLines, [1, 2, 3, 4, 5]);
+  });
 });
