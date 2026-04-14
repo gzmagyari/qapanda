@@ -18,7 +18,10 @@ const { buildPromptCacheContext } = require('./prompt-cache');
 const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
-const { compactApiSessionHistory } = require('./api-compaction');
+const {
+  DEFAULT_COMPACTION_TRIGGER_MESSAGES,
+  compactApiSessionHistory,
+} = require('./api-compaction');
 const {
   buildGeminiCacheUsage,
   geminiCacheSessionKey,
@@ -136,6 +139,11 @@ async function recoverChromeDevtoolsSession(
   }
 }
 
+function resolveApiCompactionTriggerMessages(agentConfig) {
+  const value = agentConfig && Number(agentConfig.apiCompactionTriggerMessages);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_COMPACTION_TRIGGER_MESSAGES;
+}
+
 async function runApiWorkerTurn({
   manifest,
   request,
@@ -173,6 +181,7 @@ async function runApiWorkerTurn({
     : ((resolvedProvider.legacy ? apiConfig.baseURL : (apiConfig.baseURL || resolvedProvider.baseURL)) || null);
   const model = (agentConfig && agentConfig.model) || apiConfig.model || defaultModelForProvider(providerId);
   const thinking = (agentConfig && agentConfig.thinking) || apiConfig.thinking || null;
+  const compactionTriggerMessages = resolveApiCompactionTriggerMessages(agentConfig);
 
   if (!model) {
     throw new Error(`No default model configured for provider "${provider}". Specify a model explicitly.`);
@@ -297,11 +306,14 @@ async function runApiWorkerTurn({
         thinking,
         force: forceCompact,
         signal: abortSignal,
+        triggerMessages: compactionTriggerMessages,
         emitEvent,
       });
     }
     const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
-    const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey);
+    const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey, {
+      inlineImageReplayMode: 'tail-only',
+    });
     const completeMessages = [
       { role: 'system', content: systemPrompt },
       ...replayMessages,
@@ -467,7 +479,9 @@ async function runApiWorkerTurn({
       }
       if (providerId === 'gemini' && canonicalHistoryAvailable) {
         const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
-        const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey);
+        const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey, {
+          inlineImageReplayMode: 'tail-only',
+        });
         await refreshGeminiCacheEntry({
           manifest,
           cacheKey: geminiCacheSessionKey({

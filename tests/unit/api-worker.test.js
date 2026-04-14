@@ -289,7 +289,7 @@ describe('API Worker — streaming events', () => {
 });
 
 describe('API Worker — transcript-backed replay', () => {
-  it('replays prior screenshot tool results as image messages on later turns', async () => {
+  it('replays screenshots inline only on the immediate next API turn', async () => {
     const { runApiWorkerTurn } = require('../../src/api-worker');
     let apiCalls = [];
     const mcpServer = http.createServer((req, res) => {
@@ -372,25 +372,70 @@ describe('API Worker — transcript-backed replay', () => {
     }
 
     assert.equal(apiCalls.length, 3);
-    const secondTurnMessages = apiCalls[2].messages;
+    const immediateFollowupMessages = apiCalls[1].messages;
     assert.ok(
+      immediateFollowupMessages.some((msg) =>
+        msg.role === 'user' &&
+        Array.isArray(msg.content) &&
+        msg.content.some((part) => part.type === 'image_url')
+      ),
+      'the immediate follow-up turn should include the fresh screenshot as an image message'
+    );
+
+    const secondTurnMessages = apiCalls[2].messages;
+    assert.equal(
       secondTurnMessages.some((msg) =>
         msg.role === 'user' &&
         Array.isArray(msg.content) &&
         msg.content.some((part) => part.type === 'image_url')
       ),
-      'second turn should include the previous screenshot as an image message'
+      false,
+      'later requests should not replay the previous screenshot as an image message'
     );
 
-    const replay = buildSessionReplay(transcriptEntries(manifest), 'worker:default');
-    assert.ok(
-      replay.some((msg) =>
+    const canonicalReplay = buildSessionReplay(transcriptEntries(manifest), 'worker:default', {
+      inlineImageReplayMode: 'tail-only',
+    });
+    assert.equal(
+      canonicalReplay.some((msg) =>
         msg.role === 'user' &&
         Array.isArray(msg.content) &&
         msg.content.some((part) => part.type === 'image_url')
       ),
-      'canonical transcript replay should preserve screenshot history'
+      false,
+      'canonical replay should downgrade old screenshots to text provenance'
     );
+  });
+
+  it('passes per-agent API compaction thresholds into compaction', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    let capturedTriggerMessages = null;
+    const manifest = makeManifest(() => ({ text: 'ok' }));
+    manifest.agents = {
+      dev: {
+        id: 'dev',
+        name: 'Developer',
+        cli: 'api',
+        apiCompactionTriggerMessages: 123,
+      },
+    };
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r1' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'hi',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+      agentId: 'dev',
+      compactSessionHistory: async (options) => {
+        capturedTriggerMessages = options.triggerMessages;
+        return { performed: false, reason: 'below-threshold', replayMessageCount: 1 };
+      },
+    });
+
+    assert.equal(capturedTriggerMessages, 123);
   });
 });
 

@@ -279,6 +279,89 @@ describe('transcript helpers', () => {
     assert.equal(replayMessages[1].content[1].image_url.format, 'image/png');
   });
 
+  it('can replay screenshot tool results as text-only provenance without inline images', () => {
+    const entry = createTranscriptRecord({
+      kind: 'tool_result',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'r1',
+      loopIndex: 1,
+      toolCallId: 'call_123',
+      toolName: 'chrome_devtools__take_screenshot',
+      result: {
+        content: [
+          { type: 'text', text: 'Took a screenshot of the current page.' },
+          { type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' },
+        ],
+      },
+    });
+
+    const replayMessages = providerMessagesForToolResult(entry, { includeInlineImages: false });
+    assert.equal(replayMessages.length, 1);
+    assert.equal(replayMessages[0].role, 'tool');
+    assert.match(replayMessages[0].content, /Took a screenshot of the current page\./);
+    assert.match(replayMessages[0].content, /asset_id=asset_call_123/);
+  });
+
+  it('only replays inline screenshot images for trailing fresh tool results in tail-only mode', () => {
+    const entries = [
+      Object.assign(createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        requestId: 'r1',
+        payload: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'shot-1',
+            type: 'function',
+            function: { name: 'chrome_devtools__take_screenshot', arguments: '{}' },
+          }],
+        },
+      }), { __lineNumber: 1 }),
+      Object.assign(createTranscriptRecord({
+        kind: 'tool_result',
+        sessionKey: 'worker:default',
+        backend: 'worker:api',
+        requestId: 'r1',
+        toolCallId: 'shot-1',
+        toolName: 'chrome_devtools__take_screenshot',
+        result: {
+          content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],
+        },
+      }), { __lineNumber: 2 }),
+      Object.assign(createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:default',
+        backend: 'user',
+        requestId: 'r2',
+        text: 'next request',
+        payload: { role: 'user', content: 'next request' },
+      }), { __lineNumber: 3 }),
+    ];
+
+    const staleReplay = buildSessionReplay(entries, 'worker:default', { inlineImageReplayMode: 'tail-only' });
+    assert.equal(
+      staleReplay.some((msg) =>
+        msg.role === 'user' &&
+        Array.isArray(msg.content) &&
+        msg.content.some((part) => part.type === 'image_url')
+      ),
+      false
+    );
+
+    const tailReplay = buildSessionReplay(entries.slice(0, 2), 'worker:default', { inlineImageReplayMode: 'tail-only' });
+    assert.equal(
+      tailReplay.some((msg) =>
+        msg.role === 'user' &&
+        Array.isArray(msg.content) &&
+        msg.content.some((part) => part.type === 'image_url')
+      ),
+      true
+    );
+  });
+
   it('does not restore permanent test cards from test mutation tool results', () => {
     const entries = [
       Object.assign(createTranscriptRecord({

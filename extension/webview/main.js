@@ -1484,6 +1484,9 @@
     const existingThinking = existing ? (existing.thinking || '') : '';
     const existingRunMode = existing ? (existing.runMode || '') : '';
     const existingCodexMode = existing ? (existing.codexMode || '') : '';
+    const existingApiCompactionTriggerMessages = existing && existing.apiCompactionTriggerMessages != null
+      ? String(existing.apiCompactionTriggerMessages)
+      : '';
 
     let cliOptions = ['', 'claude', 'codex', 'api', 'qa-remote-claude', 'qa-remote-codex'];
     const cliLabels = { '': 'Default (inherit from worker)', 'claude': 'claude', 'codex': 'codex', 'api': 'API (BYOK)', 'qa-remote-claude': 'qa-remote-claude', 'qa-remote-codex': 'qa-remote-codex' };
@@ -1512,6 +1515,7 @@
       '<option value=""' + (existingCodexMode === '' ? ' selected' : '') + '>Default (App Server)</option>' +
       '<option value="cli"' + (existingCodexMode === 'cli' ? ' selected' : '') + '>CLI (per turn)</option>' +
       '</select></div>' +
+      '<div class="agent-form-row" id="agent-f-api-compaction-row"><label>API Compaction</label><input type="number" min="1" step="1" class="mcp-input" id="agent-f-api-compaction" value="' + escapeHtml(existingApiCompactionTriggerMessages) + '" placeholder="Trigger after N replay messages (e.g. 100)"></div>' +
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
@@ -1578,6 +1582,11 @@
         if (codexModeRow) {
           codexModeRow.style.display = useCodex ? '' : 'none';
         }
+        // API compaction threshold only applies to API CLI
+        const apiCompactionRow = document.getElementById('agent-f-api-compaction-row');
+        if (apiCompactionRow) {
+          apiCompactionRow.style.display = useApi ? '' : 'none';
+        }
       }
 
       // Populate on load with saved values
@@ -1616,6 +1625,7 @@
     const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
     const runMode = (document.getElementById('agent-f-runmode') ? document.getElementById('agent-f-runmode').value : '') || null;
     const codexMode = (document.getElementById('agent-f-codexmode') ? document.getElementById('agent-f-codexmode').value : '') || null;
+    const apiCompactionTriggerMessagesText = (document.getElementById('agent-f-api-compaction') ? document.getElementById('agent-f-api-compaction').value : '').trim();
     const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
     const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
     const errorEl = document.getElementById('agent-f-error');
@@ -1633,6 +1643,15 @@
       }
     }
 
+    let apiCompactionTriggerMessages = null;
+    if (apiCompactionTriggerMessagesText) {
+      if (!/^\d+$/.test(apiCompactionTriggerMessagesText) || Number(apiCompactionTriggerMessagesText) <= 0) {
+        if (errorEl) errorEl.textContent = 'API compaction must be a positive integer';
+        return;
+      }
+      apiCompactionTriggerMessages = Number(apiCompactionTriggerMessagesText);
+    }
+
     const prevEnabled = editId && agents[editId] ? agents[editId].enabled : true;
     const agentData = { name: name || id, description, system_prompt: systemPrompt, mcps, enabled: prevEnabled !== false };
     if (cli) agentData.cli = cli;
@@ -1641,6 +1660,7 @@
     if (thinking) agentData.thinking = thinking;
     if (runMode) agentData.runMode = runMode;
     if (codexMode) agentData.codexMode = codexMode;
+    if (apiCompactionTriggerMessages != null) agentData.apiCompactionTriggerMessages = apiCompactionTriggerMessages;
 
     agentEditingForm = null;
 

@@ -129,6 +129,62 @@ describe('Config bar', () => {
     assert.ok(Array.from(provider.options).some((option) => option.value === 'lmstudio'));
   });
 
+  it('round-trips agent API compaction trigger messages', async () => {
+    wv.click('.agent-add-btn[data-scope="project"]');
+    await wv.flush();
+
+    wv.document.getElementById('agent-f-id').value = 'browser-api';
+    wv.document.getElementById('agent-f-name').value = 'Browser API';
+    const cli = wv.document.getElementById('agent-f-cli');
+    cli.value = 'api';
+    cli.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+
+    const apiCompaction = wv.document.getElementById('agent-f-api-compaction');
+    assert.ok(apiCompaction, 'agent API compaction input should exist');
+    apiCompaction.value = '123';
+
+    wv.document.getElementById('agent-f-save').click();
+    await wv.flush();
+
+    const saveMsg = wv.messages.filter((msg) => msg.type === 'agentSave').pop();
+    assert.ok(saveMsg, 'should save the project agent');
+    assert.equal(saveMsg.agents['browser-api'].apiCompactionTriggerMessages, 123);
+  });
+
+  it('loads existing API compaction trigger messages in the agent editor', async () => {
+    const base = sampleInitConfig();
+    wv.postMessage(sampleInitConfig({
+      agents: {
+        system: base.agents.system,
+        systemMeta: base.agents.systemMeta,
+        global: {},
+        project: {
+          'browser-api': {
+            name: 'Browser API',
+            description: 'Browser agent',
+            system_prompt: 'Prompt',
+            mcps: {},
+            enabled: true,
+            cli: 'api',
+            apiCompactionTriggerMessages: 100,
+          },
+        },
+      },
+    }));
+    await wv.flush();
+
+    const editBtn = Array.from(wv.document.querySelectorAll('#agent-list-project .mcp-btn'))
+      .find((button) => button.textContent.trim() === 'Edit');
+    assert.ok(editBtn, 'project agent edit button should exist');
+    editBtn.click();
+    await wv.flush();
+
+    const apiCompaction = wv.document.getElementById('agent-f-api-compaction');
+    assert.ok(apiCompaction, 'agent API compaction input should exist');
+    assert.equal(apiCompaction.value, '100');
+  });
+
   it('preserves imported Claude target and worker selections when Claude UI is otherwise hidden', async () => {
     wv.postMessage(sampleInitConfig({
       featureFlags: { enableRemoteDesktop: true, enableClaudeCli: false },

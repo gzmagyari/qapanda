@@ -672,6 +672,7 @@ function promotedImageReplayText(entry, imageCount) {
 function providerMessagesForToolResult(entry, options = {}) {
   const result = entry && entry.result;
   const toolContent = normalizedToolProvenanceText(entry, result, options);
+  const includeInlineImages = options.includeInlineImages !== false;
 
   const messages = [{
     role: 'tool',
@@ -679,7 +680,7 @@ function providerMessagesForToolResult(entry, options = {}) {
     content: toolContent,
   }];
 
-  const imageParts = imagePartsFromToolResult(result);
+  const imageParts = includeInlineImages ? imagePartsFromToolResult(result) : [];
   if (imageParts.length > 0) {
     messages.push({
       role: 'user',
@@ -706,12 +707,33 @@ function contextCompactionReplayMessage(entry) {
   };
 }
 
+function tailReplayToolResults(entries, sessionKey, compactionState) {
+  const tailEntries = new Set();
+  if (!Array.isArray(entries) || !sessionKey) return tailEntries;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry || entry.v !== TRANSCRIPT_V2 || entry.sessionKey !== sessionKey) continue;
+    if (entryIsCompactedAway(entry, compactionState)) continue;
+    if (entry.kind === 'tool_result') {
+      tailEntries.add(entry);
+      continue;
+    }
+    if (entry.kind === 'tool_call' || entry.kind === 'ui_message') continue;
+    break;
+  }
+  return tailEntries;
+}
+
 function buildSessionReplay(entries, sessionKey, options = {}) {
   if (!Array.isArray(entries) || !sessionKey) return [];
   const messages = [];
   const compactionState = latestSessionCompaction(entries, sessionKey);
   const compactionMessage = compactionState ? contextCompactionReplayMessage(compactionState.entry) : null;
   let compactionInserted = !compactionMessage;
+  const inlineImageReplayMode = options.inlineImageReplayMode || 'all';
+  const tailToolResults = inlineImageReplayMode === 'tail-only'
+    ? tailReplayToolResults(entries, sessionKey, compactionState)
+    : null;
   for (const entry of entries) {
     if (!entry || entry.v !== TRANSCRIPT_V2 || entry.sessionKey !== sessionKey) continue;
     if (entryIsCompactedAway(entry, compactionState)) continue;
@@ -743,7 +765,15 @@ function buildSessionReplay(entries, sessionKey, options = {}) {
       continue;
     }
     if (entry.kind === 'tool_result') {
-      messages.push(...providerMessagesForToolResult(entry, options));
+      const includeInlineImages = inlineImageReplayMode === 'all'
+        ? options.includeInlineImages !== false
+        : (inlineImageReplayMode === 'tail-only'
+            ? !!(tailToolResults && tailToolResults.has(entry))
+            : false);
+      messages.push(...providerMessagesForToolResult(entry, {
+        ...options,
+        includeInlineImages,
+      }));
       if (!compactionInserted) {
         messages.push(compactionMessage);
         compactionInserted = true;

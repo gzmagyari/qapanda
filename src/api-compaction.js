@@ -40,7 +40,7 @@ function extractMessageText(message) {
 function replayMessageCountForEntry(entry) {
   if (!entry || entry.v !== 2) return 0;
   if (entry.kind === 'user_message' || entry.kind === 'assistant_message') return 1;
-  if (entry.kind === 'tool_result') return providerMessagesForToolResult(entry).length;
+  if (entry.kind === 'tool_result') return providerMessagesForToolResult(entry, { includeInlineImages: false }).length;
   if (entry.kind === 'context_compaction') return 1;
   return 0;
 }
@@ -70,35 +70,24 @@ function buildAssistantToolCallLineMap(entries, sessionKey) {
   return lineByToolCallId;
 }
 
-function imagePreservationInfo(entries, sessionKey) {
-  const allLines = new Set();
-  const assistantLines = buildAssistantToolCallLineMap(entries, sessionKey);
-  let latestImageEntry = null;
-  for (const entry of currentReplayEntries(entries, sessionKey)) {
-    if (!entry || entry.kind !== 'tool_result') continue;
-    const messageParts = providerMessagesForToolResult(entry);
-    const hasImage = messageParts.some((message) =>
-      Array.isArray(message.content) &&
-      message.content.some((part) => part && part.type === 'image_url')
-    );
-    if (!hasImage) continue;
-    if (!latestImageEntry || (entry.__lineNumber || 0) > (latestImageEntry.__lineNumber || 0)) {
-      latestImageEntry = entry;
-    }
-    if (entry.__lineNumber) allLines.add(entry.__lineNumber);
-    if (entry.toolCallId && assistantLines.has(entry.toolCallId)) allLines.add(assistantLines.get(entry.toolCallId));
-  }
+function tailToolResultPreservationInfo(entries, sessionKey) {
   const preservedLines = new Set();
-  if (latestImageEntry) {
-    if (latestImageEntry.__lineNumber) preservedLines.add(latestImageEntry.__lineNumber);
-    if (latestImageEntry.toolCallId && assistantLines.has(latestImageEntry.toolCallId)) {
-      preservedLines.add(assistantLines.get(latestImageEntry.toolCallId));
+  const assistantLines = buildAssistantToolCallLineMap(entries, sessionKey);
+  const replayEntries = currentReplayEntries(entries, sessionKey);
+  for (let index = replayEntries.length - 1; index >= 0; index -= 1) {
+    const entry = replayEntries[index];
+    if (!entry) continue;
+    if (entry.kind === 'tool_result') {
+      if (entry.__lineNumber) preservedLines.add(entry.__lineNumber);
+      if (entry.toolCallId && assistantLines.has(entry.toolCallId)) {
+        preservedLines.add(assistantLines.get(entry.toolCallId));
+      }
+      continue;
     }
+    if (entry.kind === 'tool_call' || entry.kind === 'ui_message') continue;
+    break;
   }
-  return {
-    allLines,
-    preservedLines,
-  };
+  return preservedLines;
 }
 
 function compactableEntries(entries, sessionKey) {
@@ -107,14 +96,13 @@ function compactableEntries(entries, sessionKey) {
     .sort((a, b) => (a.__lineNumber || 0) - (b.__lineNumber || 0));
 }
 
-function selectEntriesToKeep(entries, preserveLines, keepRecentMessages, excludedRecentLines = new Set()) {
+function selectEntriesToKeep(entries, preserveLines, keepRecentMessages) {
   const keepLines = new Set(preserveLines);
   let remaining = keepRecentMessages;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     const lineNumber = entry.__lineNumber || 0;
     if (keepLines.has(lineNumber)) continue;
-    if (excludedRecentLines.has(lineNumber)) continue;
     if (remaining <= 0) break;
     keepLines.add(lineNumber);
     remaining -= replayMessageCountForEntry(entry);
@@ -141,7 +129,7 @@ function compactionInputText(entries, sessionKey) {
       continue;
     }
     if (entry.kind === 'tool_result') {
-      replayMessages.push(...providerMessagesForToolResult(entry));
+      replayMessages.push(...providerMessagesForToolResult(entry, { includeInlineImages: false }));
     }
   }
   for (const message of replayMessages) {
@@ -275,7 +263,7 @@ async function compactApiSessionHistory({
   }
 
   const entries = await readTranscriptEntries(manifest.files.transcript);
-  const replayMessages = buildSessionReplay(entries, sessionKey);
+  const replayMessages = buildSessionReplay(entries, sessionKey, { inlineImageReplayMode: 'tail-only' });
   const replayMessageCount = replayMessages.length;
   if (!model) {
     return { performed: false, reason: 'missing-model', replayMessageCount };
@@ -289,19 +277,14 @@ async function compactApiSessionHistory({
     return { performed: false, reason: 'nothing-to-compact', replayMessageCount };
   }
 
-  const imageLines = imagePreservationInfo(entries, sessionKey);
-  const preservedLines = new Set(imageLines.preservedLines);
+  const preservedLines = tailToolResultPreservationInfo(entries, sessionKey);
   if (candidates[0] && candidates[0].__lineNumber) {
     preservedLines.add(candidates[0].__lineNumber);
   }
-  const excludedRecentLines = new Set(
-    Array.from(imageLines.allLines).filter((lineNumber) => !preservedLines.has(lineNumber))
-  );
   const keepLines = selectEntriesToKeep(
     candidates,
     preservedLines,
-    force ? forcedKeepRecentMessages : keepRecentMessages,
-    excludedRecentLines
+    force ? forcedKeepRecentMessages : keepRecentMessages
   );
   let compactAway = candidates.filter((entry) => !keepLines.has(entry.__lineNumber || 0));
   if (force && compactAway.length === 0) {
@@ -374,7 +357,7 @@ async function compactApiSessionHistory({
     performed: true,
     summary,
     replayMessageCountBefore: replayMessageCount,
-    replayMessageCountAfter: buildSessionReplay(updatedEntries, sessionKey).length,
+    replayMessageCountAfter: buildSessionReplay(updatedEntries, sessionKey, { inlineImageReplayMode: 'tail-only' }).length,
     compactedThroughLine,
   };
 }

@@ -34,7 +34,7 @@ function writeTranscript(entries, transcriptPath) {
 }
 
 describe('API compaction', () => {
-  it('preserves only the latest image context in replay after compaction', async () => {
+  it('preserves the stable opener and fresh tail tool context without replaying old images inline', async () => {
     mock.setHandler(() => ({ text: 'summarized earlier context' }));
     const transcriptPath = path.join(tmpDir, '.qpanda', 'runs', 'compact-test', 'transcript.jsonl');
     const entries = [
@@ -144,16 +144,20 @@ describe('API compaction', () => {
     assert.equal(result.performed, true);
 
     const updatedEntries = readTranscriptEntriesSync(transcriptPath);
-    const replay = buildSessionReplay(updatedEntries, 'worker:agent:QA-Browser');
+    const replay = buildSessionReplay(updatedEntries, 'worker:agent:QA-Browser', {
+      inlineImageReplayMode: 'tail-only',
+    });
     const imageMessages = replay.filter((message) =>
       Array.isArray(message.content) &&
       message.content.some((part) => part && part.type === 'image_url')
     );
-
-    assert.equal(imageMessages.length, 1, 'should preserve only one image message');
-    const latestImageUrl = imageMessages[0].content.find((part) => part.type === 'image_url').image_url.url;
-    assert.match(latestImageUrl, /bmV3LWltYWdl/, 'should preserve the latest image only');
-    assert.doesNotMatch(JSON.stringify(replay), /b2xkLWltYWdl/, 'older image should be removed from replay');
+    assert.equal(imageMessages.length, 0, 'historical replay should not keep inline screenshot payloads');
+    assert.ok(
+      replay.some((message) => message.role === 'tool' && /asset_id=asset_call_new/.test(String(message.content || ''))),
+      'the latest screenshot should still be represented by text provenance'
+    );
+    assert.doesNotMatch(JSON.stringify(replay), /b2xkLWltYWdl/, 'older image payload should be removed from replay');
+    assert.doesNotMatch(JSON.stringify(replay), /bmV3LWltYWdl/, 'latest image payload should also be removed from historical replay');
 
     const compactionEntries = updatedEntries.filter((entry) => entry.kind === 'context_compaction');
     assert.equal(compactionEntries.length, 1);
