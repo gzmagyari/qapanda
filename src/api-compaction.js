@@ -6,6 +6,7 @@ const {
   createStreamApiLogHooks,
 } = require('./api-io-log');
 const { buildPromptCacheContext } = require('./prompt-cache');
+const { saveManifest } = require('./state');
 const {
   appendTranscriptRecord,
   buildSessionReplay,
@@ -16,6 +17,7 @@ const {
   readTranscriptEntries,
   workerSessionKey,
 } = require('./transcript');
+const { applyUsageToManifest, usageActorFromBackend, usageSummaryMessage } = require('./usage-summary');
 
 const DEFAULT_COMPACTION_TRIGGER_MESSAGES = 500;
 const DEFAULT_KEEP_RECENT_MESSAGES = 100;
@@ -159,6 +161,7 @@ function cloneMessage(message) {
 async function generateCompactionSummary({
   manifest,
   sessionKey,
+  backend,
   requestId,
   loopIndex,
   provider,
@@ -168,6 +171,7 @@ async function generateCompactionSummary({
   thinking,
   inputText,
   signal,
+  renderer = null,
 }) {
   const resolvedProvider = resolveRuntimeApiProvider(provider);
   if (!resolvedProvider) {
@@ -237,6 +241,16 @@ async function generateCompactionSummary({
       usage: response && response.usage ? response.usage : null,
     });
   }
+  if (response && response.usage) {
+    applyUsageToManifest(manifest, {
+      actor: usageActorFromBackend(backend),
+      usage: response.usage,
+    });
+    await saveManifest(manifest);
+    if (renderer && typeof renderer.usageStats === 'function') {
+      renderer.usageStats(usageSummaryMessage(manifest.usageSummary));
+    }
+  }
   return String((response && response.text) || '').trim();
 }
 
@@ -257,6 +271,7 @@ async function compactApiSessionHistory({
   keepRecentMessages = DEFAULT_KEEP_RECENT_MESSAGES,
   forcedKeepRecentMessages = DEFAULT_FORCE_KEEP_RECENT_MESSAGES,
   emitEvent = null,
+  renderer = null,
 }) {
   if (!manifest || !manifest.files || !manifest.files.transcript || !sessionKey) {
     return { performed: false, reason: 'missing-session' };
@@ -302,6 +317,7 @@ async function compactApiSessionHistory({
   const summary = await generateCompactionSummary({
     manifest,
     sessionKey,
+    backend,
     requestId,
     loopIndex,
     provider,
@@ -311,6 +327,7 @@ async function compactApiSessionHistory({
     thinking,
     inputText: summaryInput,
     signal,
+    renderer,
   });
   if (!summary) {
     return { performed: false, reason: 'empty-summary', replayMessageCount };

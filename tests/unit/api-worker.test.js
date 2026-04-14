@@ -10,6 +10,7 @@ const {
   buildSessionReplay,
   createTranscriptRecord,
 } = require('../../src/transcript');
+const { createEmptyUsageSummary } = require('../../src/usage-summary');
 
 let mock;
 let tmpDir;
@@ -30,10 +31,21 @@ after(async () => {
 function makeManifest(handlerOverride) {
   if (handlerOverride) mock.setHandler(handlerOverride);
   fs.writeFileSync(path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'transcript.jsonl'), '');
+  const runDir = path.join(tmpDir, '.qpanda', 'runs', 'test-run');
   return {
+    runId: 'test-run',
     repoRoot: tmpDir,
+    stateRoot: path.join(tmpDir, '.qpanda'),
+    runDir,
     files: {
+      manifest: path.join(runDir, 'manifest.json'),
+      events: path.join(runDir, 'events.jsonl'),
       transcript: path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'transcript.jsonl'),
+      chatLog: path.join(runDir, 'chat.jsonl'),
+      progress: path.join(runDir, 'progress.md'),
+    },
+    controller: {
+      apiConfig: null,
     },
     worker: {
       cli: 'api',
@@ -49,6 +61,7 @@ function makeManifest(handlerOverride) {
     workerMcpServers: {},
     agents: {},
     selfTesting: false,
+    usageSummary: createEmptyUsageSummary(),
   };
 }
 
@@ -60,6 +73,7 @@ function makeRenderer() {
     claude: (text) => output.push({ type: 'claude', text }),
     streamMarkdown: (label, text) => output.push({ type: 'stream', label, text }),
     flushStream: () => output.push({ type: 'flush' }),
+    usageStats: (summary) => output.push({ type: 'usageStats', summary }),
   };
 }
 
@@ -171,6 +185,51 @@ describe('API Worker — simple text response', () => {
     assert.equal(seenSystemPrompts[0], seenSystemPrompts[1]);
     assert.match(seenSystemPrompts[0], /First prompt snapshot/);
     assert.doesNotMatch(seenSystemPrompts[1], /Changed prompt later/);
+  });
+
+  it('persists per-iteration usage summary to the manifest and renderer', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const manifest = makeManifest(() => ({
+      text: 'usage tracked',
+      usage: {
+        prompt_tokens: 120,
+        completion_tokens: 30,
+        total_tokens: 150,
+        prompt_tokens_details: {
+          cached_tokens: 90,
+          cache_write_tokens: 10,
+        },
+        cost: 0.0123,
+        cost_details: {
+          upstream_inference_prompt_cost: 0.01,
+          upstream_inference_completions_cost: 0.0023,
+        },
+      },
+    }));
+    const renderer = makeRenderer();
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r-usage' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'track usage',
+      renderer,
+      emitEvent: noopEmit,
+    });
+
+    assert.equal(manifest.usageSummary.totalCostUsd, 0.0123);
+    assert.equal(manifest.usageSummary.promptCostUsd, 0.01);
+    assert.equal(manifest.usageSummary.completionCostUsd, 0.0023);
+    assert.equal(manifest.usageSummary.promptTokens, 120);
+    assert.equal(manifest.usageSummary.completionTokens, 30);
+    assert.equal(manifest.usageSummary.cachedTokens, 90);
+    assert.equal(manifest.usageSummary.cacheWriteTokens, 10);
+    assert.equal(manifest.usageSummary.byActor.worker.totalCostUsd, 0.0123);
+    assert.equal(fs.existsSync(manifest.files.manifest), true, 'should persist manifest updates');
+    const usageMsg = renderer.output.find((entry) => entry.type === 'usageStats');
+    assert.ok(usageMsg, 'should push live usage summary to the renderer');
+    assert.equal(usageMsg.summary.totalCostUsd, 0.0123);
   });
 });
 

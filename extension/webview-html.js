@@ -143,6 +143,11 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </div>
           </div>
         </div>
+          <div id="usage-summary" class="usage-summary hidden" aria-live="polite">
+            <div id="usage-summary-cost" class="usage-summary-line"></div>
+            <div id="usage-summary-tokens" class="usage-summary-line"></div>
+            <div id="usage-summary-actors" class="usage-summary-line usage-summary-line-muted"></div>
+          </div>
       </div>
       </div><!-- /input-row -->
       <div id="config-bar">

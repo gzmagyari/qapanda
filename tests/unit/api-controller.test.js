@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createMockServer } = require('./llm-mock-server');
+const { createEmptyUsageSummary } = require('../../src/usage-summary');
 
 let mock;
 let tmpDir;
@@ -20,11 +21,12 @@ after(async () => {
 
 function makeManifest(handler) {
   if (handler) mock.setHandler(handler);
+  const runDir = path.join(tmpDir, '.qpanda', 'runs', 'test-run');
   return {
     runId: 'test-run',
     repoRoot: tmpDir,
     stateRoot: path.join(tmpDir, '.qpanda'),
-    runDir: path.join(tmpDir, '.qpanda', 'runs', 'test-run'),
+    runDir,
     controller: {
       cli: 'api',
       model: null,
@@ -54,11 +56,15 @@ function makeManifest(handler) {
     controllerSystemPrompt: null,
     controllerMcpServers: {},
     workerMcpServers: {},
-    files: { events: path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'events.jsonl') },
+    files: {
+      manifest: path.join(runDir, 'manifest.json'),
+      events: path.join(runDir, 'events.jsonl'),
+    },
     counters: { request: 1, loop: 1, controllerTurn: 0, workerTurn: 0 },
     requests: [],
     stopReason: null,
     selfTesting: false,
+    usageSummary: createEmptyUsageSummary(),
   };
 }
 
@@ -70,6 +76,7 @@ function makeRenderer() {
     controllerEvent: () => {},
     streamMarkdown: () => {},
     flushStream: () => {},
+    usageStats: (summary) => output.push({ type: 'usageStats', summary }),
   };
 }
 
@@ -214,5 +221,52 @@ describe('API Controller - stable system snapshot', () => {
     assert.equal(seenSystemPrompts.length, 2);
     assert.equal(seenSystemPrompts[0], seenSystemPrompts[1]);
     assert.doesNotMatch(seenSystemPrompts[1], /Changed later/);
+  });
+});
+
+describe('API Controller - usage summary aggregation', () => {
+  it('persists controller usage summary and emits live updates', async () => {
+    const { runApiControllerTurn } = require('../../src/api-controller');
+    const manifest = makeManifest(() => ({
+      text: JSON.stringify({
+        action: 'stop',
+        agent_id: null,
+        claude_message: null,
+        controller_messages: ['done'],
+        stop_reason: 'done',
+        progress_updates: [],
+      }),
+      usage: {
+        prompt_tokens: 44,
+        completion_tokens: 11,
+        total_tokens: 55,
+        prompt_tokens_details: {
+          cached_tokens: 40,
+          cache_write_tokens: 2,
+        },
+        cost: 0.0044,
+        cost_details: {
+          upstream_inference_prompt_cost: 0.0031,
+          upstream_inference_completions_cost: 0.0013,
+        },
+      },
+    }));
+    const renderer = makeRenderer();
+
+    await runApiControllerTurn({
+      manifest,
+      request: { id: 'r-usage', userMessage: 'test', startedAt: 'now', loops: [], latestWorkerResult: null },
+      loop: { index: 1, controller: { promptFile: path.join(tmpDir, 'prompt-usage.txt') } },
+      renderer,
+      emitEvent: () => {},
+    });
+
+    assert.equal(manifest.usageSummary.totalCostUsd, 0.0044);
+    assert.equal(manifest.usageSummary.byActor.controller.totalCostUsd, 0.0044);
+    assert.equal(manifest.usageSummary.byActor.worker.totalCostUsd, 0);
+    assert.equal(fs.existsSync(manifest.files.manifest), true, 'should save manifest with usage summary');
+    const usageMsg = renderer.output.find((entry) => entry.type === 'usageStats');
+    assert.ok(usageMsg, 'should emit live usage summary');
+    assert.equal(usageMsg.summary.byActor.controller.promptTokens, 44);
   });
 });

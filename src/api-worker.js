@@ -15,9 +15,10 @@ const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
 const { buildPromptCacheContext } = require('./prompt-cache');
-const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
+const { lookupAgentConfig, ensureWorkerSessionState, saveManifest } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
+const { applyUsageToManifest, usageActorFromBackend, usageSummaryMessage } = require('./usage-summary');
 const {
   DEFAULT_COMPACTION_TRIGGER_MESSAGES,
   compactApiSessionHistory,
@@ -308,6 +309,7 @@ async function runApiWorkerTurn({
         signal: abortSignal,
         triggerMessages: compactionTriggerMessages,
         emitEvent,
+        renderer,
       });
     }
     const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
@@ -362,6 +364,7 @@ async function runApiWorkerTurn({
   let iterations = 0;
   let finalText = '';
   const totalUsage = { promptTokens: 0, completionTokens: 0 };
+  const usageActor = usageActorFromBackend(backend);
 
   while (true) {
     iterations++;
@@ -458,6 +461,14 @@ async function runApiWorkerTurn({
     if (usage) {
       totalUsage.promptTokens += usage.promptTokens || 0;
       totalUsage.completionTokens += usage.completionTokens || 0;
+      applyUsageToManifest(manifest, {
+        actor: usageActor,
+        usage,
+      });
+      await saveManifest(manifest);
+      if (renderer && typeof renderer.usageStats === 'function') {
+        renderer.usageStats(usageSummaryMessage(manifest.usageSummary));
+      }
     }
 
     if (!toolCalls || toolCalls.length === 0) {

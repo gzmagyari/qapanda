@@ -12,6 +12,7 @@ const {
 } = require('./utils');
 const { defaultSchemaPath, writeControllerSchema } = require('./schema');
 const { redactHostedWorkflowValue, sanitizeHostedWorkflowCloudRunSpec } = require('./cloud/workflow-hosted-runs');
+const { createEmptyUsageSummary } = require('./usage-summary');
 
 function defaultStateRoot(cwd) {
   return path.join(cwd, '.qpanda');
@@ -311,6 +312,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     selfTesting: !!normalized.selfTesting,
     selfTestPrompts: normalized.selfTestPrompts || null,
     apiConfig: normalized.controller.apiConfig || normalized.worker.apiConfig || null,
+    usageSummary: createEmptyUsageSummary(),
     counters: {
       request: 0,
       loop: 0,

@@ -8,6 +8,7 @@ const CHAT_LOG_SKIP = new Set([
   'running', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId',
   'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory',
   'streamLine', 'flushStream', 'close', 'initConfig',
+  'usageStats',
   'desktopReady', 'desktopGone', 'chromeReady', 'chromeFrame', 'chromeGone',
   'computerUseDetected', 'requestStarted', 'requestFinished',
   'liveEntityCard', 'clearLiveEntityCard',
@@ -338,6 +339,10 @@ class WebviewRenderer {
 
   chromeGone() {
     this._post({ type: 'chromeGone' });
+  }
+
+  usageStats(summary) {
+    this._post({ type: 'usageStats', summary: summary || null });
   }
 }
 

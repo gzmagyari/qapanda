@@ -17,6 +17,8 @@ const {
 } = require('./prompts');
 const { buildPromptCacheContext } = require('./prompt-cache');
 const { validateControllerDecision, parsePossiblyFencedJson } = require('./schema');
+const { saveManifest } = require('./state');
+const { applyUsageToManifest, usageActorFromBackend, usageSummaryMessage } = require('./usage-summary');
 const { writeText } = require('./utils');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
@@ -72,6 +74,7 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   renderer.controller('Thinking about the next step.');
 
   const textParts = [];
+  let usage = null;
   const apiLogFiles = controllerApiLogFiles(loop);
   const apiLogHooks = createStreamApiLogHooks(manifest, apiLogFiles, {
     requestId: request.id,
@@ -105,6 +108,7 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
       if (event.type === 'text') {
         textParts.push(event.content);
       } else if (event.type === 'done' && apiLogFiles && apiLogFiles.responseFile) {
+        usage = event.usage || null;
         await appendApiResponseLog(manifest, apiLogFiles.responseFile, {
           type: 'done',
           requestId: request.id,
@@ -133,6 +137,16 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   }
 
   const responseText = textParts.join('');
+  if (usage) {
+    applyUsageToManifest(manifest, {
+      actor: usageActorFromBackend('controller:api'),
+      usage,
+    });
+    await saveManifest(manifest);
+    if (renderer && typeof renderer.usageStats === 'function') {
+      renderer.usageStats(usageSummaryMessage(manifest.usageSummary));
+    }
+  }
 
   let decision;
   try {

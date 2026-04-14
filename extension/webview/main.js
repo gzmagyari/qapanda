@@ -3652,6 +3652,10 @@
   const cfgCodexMode = document.getElementById('cfg-codex-mode');
   const cfgWorkerCli = document.getElementById('cfg-worker-cli');
   const cfgWaitDelay = document.getElementById('cfg-wait-delay');
+  const usageSummaryEl = document.getElementById('usage-summary');
+  const usageSummaryCostEl = document.getElementById('usage-summary-cost');
+  const usageSummaryTokensEl = document.getElementById('usage-summary-tokens');
+  const usageSummaryActorsEl = document.getElementById('usage-summary-actors');
 
   // ── Persisted state ─────────────────────────────────────────────────
   // messageLog: array of message objects replayed on restore
@@ -3664,6 +3668,7 @@
   const TEST_CARD_CONFETTI_DEDUPE_MS = 10_000;
   let messageLog = [];
   let currentRunId = null;
+  let currentUsageSummary = null;
   let currentWorkspace = null;
   let currentResumeToken = null;
   let currentRootIdentity = null;
@@ -3722,6 +3727,108 @@
     if (provider === 'codex') return 'Search Codex chat messages...';
     if (provider === 'claude') return 'Search Claude chat messages...';
     return 'Search imported chat messages...';
+  }
+
+  function formatUsageUsd(value, available) {
+    if (!available) return 'n/a';
+    var numeric = Number(value || 0);
+    if (!Number.isFinite(numeric)) return 'n/a';
+    if (numeric >= 1) return '$' + numeric.toFixed(2);
+    return '$' + numeric.toFixed(4);
+  }
+
+  function formatUsageTokens(value) {
+    var numeric = Number(value || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return '0';
+    if (numeric >= 1000000) return (numeric / 1000000).toFixed(numeric >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    if (numeric >= 1000) return (numeric / 1000).toFixed(numeric >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'k';
+    return String(Math.round(numeric));
+  }
+
+  function usagePillHtml(label, value, modifier) {
+    return (
+      '<span class="usage-pill' + (modifier ? ' usage-pill-' + modifier : '') + '">' +
+        '<span class="usage-pill-label">' + escapeHtml(label) + '</span> ' +
+        '<span class="usage-pill-value">' + escapeHtml(value) + '</span>' +
+      '</span>'
+    );
+  }
+
+  function usagePillRowHtml(pills) {
+    return pills.filter(Boolean).join('<span class="usage-summary-separator" aria-hidden="true">|</span>');
+  }
+
+  function actorHasUsage(actor) {
+    if (!actor) return false;
+    return !!(
+      Number(actor.promptTokens || 0) > 0 ||
+      Number(actor.completionTokens || 0) > 0 ||
+      Number(actor.cachedTokens || 0) > 0 ||
+      Number(actor.cacheWriteTokens || 0) > 0 ||
+      actor.costAvailable
+    );
+  }
+
+  function renderUsageSummary(summary) {
+    currentUsageSummary = summary || null;
+    if (!usageSummaryEl || !usageSummaryCostEl || !usageSummaryTokensEl || !usageSummaryActorsEl) return;
+
+    var controller = summary && summary.byActor ? summary.byActor.controller || null : null;
+    var worker = summary && summary.byActor ? summary.byActor.worker || null : null;
+    var hasData = !!(
+      summary &&
+      (
+        actorHasUsage(controller) ||
+        actorHasUsage(worker) ||
+        Number(summary.promptTokens || 0) > 0 ||
+        Number(summary.completionTokens || 0) > 0 ||
+        Number(summary.cachedTokens || 0) > 0 ||
+        Number(summary.cacheWriteTokens || 0) > 0 ||
+        summary.costAvailable
+      )
+    );
+    if (!hasData) {
+      usageSummaryEl.classList.add('hidden');
+      usageSummaryCostEl.innerHTML = '';
+      usageSummaryTokensEl.innerHTML = '';
+      usageSummaryActorsEl.innerHTML = '';
+      return;
+    }
+
+    usageSummaryCostEl.innerHTML = usagePillRowHtml([
+      usagePillHtml('Cost', formatUsageUsd(summary.totalCostUsd, summary.costAvailable), 'cost'),
+      usagePillHtml('Prompt', formatUsageUsd(summary.promptCostUsd, summary.costAvailable), 'prompt'),
+      usagePillHtml('Completion', formatUsageUsd(summary.completionCostUsd, summary.costAvailable), 'completion')
+    ]);
+    usageSummaryTokensEl.innerHTML = usagePillRowHtml([
+      usagePillHtml('Tokens', formatUsageTokens(summary.promptTokens) + ' in', 'token'),
+      usagePillHtml('Output', formatUsageTokens(summary.completionTokens) + ' out', 'token'),
+      usagePillHtml('Cached', formatUsageTokens(summary.cachedTokens), 'token'),
+      usagePillHtml('Writes', formatUsageTokens(summary.cacheWriteTokens), 'token')
+    ]);
+
+    var showActorLine = actorHasUsage(controller) && actorHasUsage(worker);
+    if (showActorLine) {
+      var actorCostAvailable = !!(
+        (controller && controller.costAvailable) ||
+        (worker && worker.costAvailable)
+      );
+      usageSummaryActorsEl.innerHTML = actorCostAvailable
+        ? usagePillRowHtml([
+          usagePillHtml('Worker', formatUsageUsd(worker.totalCostUsd, !!(worker && worker.costAvailable)), 'actor'),
+          usagePillHtml('Orchestrator', formatUsageUsd(controller.totalCostUsd, !!(controller && controller.costAvailable)), 'actor')
+        ])
+        : usagePillRowHtml([
+          usagePillHtml('Worker In', formatUsageTokens(worker && worker.promptTokens), 'actor'),
+          usagePillHtml('Orchestrator In', formatUsageTokens(controller && controller.promptTokens), 'actor')
+        ]);
+      usageSummaryActorsEl.style.display = '';
+    } else {
+      usageSummaryActorsEl.innerHTML = '';
+      usageSummaryActorsEl.style.display = 'none';
+    }
+
+    usageSummaryEl.classList.remove('hidden');
   }
 
   function saveState() {
@@ -3854,7 +3961,7 @@
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
     // chat history survives reloads via transcript.jsonl on disk.
-    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'runHistory', 'importChatHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState'];
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'runHistory', 'importChatHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState', 'usageStats'];
     if (skipped.includes(msg.type)) return;
     messageLog.push(msg);
   }
@@ -6469,6 +6576,7 @@
       messageLog = [];
       pendingVisibleHistoryTrim = false;
       currentRunId = null;
+      renderUsageSummary(null);
       hideProgressBubble();
       saveState();
     },
@@ -6641,6 +6749,10 @@
       saveState();
     },
 
+    usageStats(msg) {
+      renderUsageSummary(msg.summary || null);
+    },
+
     reviewState(msg) {
       reviewState = {
         visible: !!(msg.reviewState && msg.reviewState.visible),
@@ -6787,6 +6899,7 @@
     clearRunId() {
       _dbg('clearRunId: before runId=' + (currentRunId || 'null') + ' resume=' + (currentResumeToken || 'null'));
       currentRunId = null;
+      renderUsageSummary(null);
       removeLiveQaReportCardSlot();
       hideProgressBubble();
       saveState();

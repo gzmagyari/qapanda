@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const { createMockServer } = require('./llm-mock-server');
 const { compactApiSessionHistory } = require('../../src/api-compaction');
+const { createEmptyUsageSummary } = require('../../src/usage-summary');
 const {
   buildSessionReplay,
   createTranscriptRecord,
@@ -126,7 +127,13 @@ describe('API compaction', () => {
     writeTranscript(entries, transcriptPath);
 
     const manifest = {
-      files: { transcript: transcriptPath },
+      runDir: path.join(tmpDir, '.qpanda', 'runs', 'compact-test'),
+      files: {
+        manifest: path.join(tmpDir, '.qpanda', 'runs', 'compact-test', 'manifest.json'),
+        transcript: transcriptPath,
+      },
+      worker: {},
+      usageSummary: createEmptyUsageSummary(),
     };
 
     const result = await compactApiSessionHistory({

@@ -38,6 +38,7 @@ const {
   transcriptBackend,
   workerSessionKey,
 } = require('./src/transcript');
+const { backfillUsageSummaryFromRun, usageSummaryMessage, usageSummaryNeedsBackfill } = require('./src/usage-summary');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 
@@ -992,6 +993,7 @@ class SessionManager {
   syncAttachedRunState() {
     if (!this._activeManifest) return;
     this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+    this.sendUsageSummary();
     this._syncPanelContext();
     this._syncConfig();
     if (this._activeManifest.chatTarget !== undefined && this._activeManifest.chatTarget !== null) {
@@ -1126,6 +1128,7 @@ class SessionManager {
     this._activeManifest = await prepareNewRun(initialMessage, this._buildNewRunOpts());
     this._syncChatLogPath();
     this._postMessage({ type: 'setRunId', runId: this._activeManifest.runId });
+    this.sendUsageSummary();
     await this._bindConfiguredResumeAliases();
     if (!this._resumeToken) {
       this._resumeToken = this._activeManifest.runId;
@@ -1220,6 +1223,13 @@ class SessionManager {
       this._activeManifest = await loadManifestFromDir(runDir);
       this._syncChatLogPath();
       let manifestChanged = false;
+        if (
+          !Object.prototype.hasOwnProperty.call(this._activeManifest, 'usageSummary') ||
+          usageSummaryNeedsBackfill(this._activeManifest.usageSummary)
+        ) {
+          const backfillResult = await backfillUsageSummaryFromRun(this._activeManifest);
+          manifestChanged = manifestChanged || !!backfillResult.changed;
+        }
       if (this._activeManifest.workspaceName !== undefined && this._activeManifest.workspaceName !== null) {
         this._workspaceName = this._activeManifest.workspaceName || null;
       }
@@ -1284,6 +1294,7 @@ class SessionManager {
     } catch {
       // Run no longer exists or is unreadable
       this._postMessage({ type: 'clearRunId' });
+      this._postMessage({ type: 'usageStats', summary: null });
       return false;
     }
   }
@@ -1325,6 +1336,11 @@ class SessionManager {
     } catch {
       this._postMessage({ type: 'progressFull', text: '' });
     }
+  }
+
+  sendUsageSummary() {
+    const summary = this._activeManifest ? usageSummaryMessage(this._activeManifest.usageSummary) : null;
+    this._postMessage({ type: 'usageStats', summary });
   }
 
   /** Stop the in-memory timer without touching disk. Used for shutdown/dispose. */
@@ -1686,6 +1702,7 @@ class SessionManager {
         model: targetInfo.model,
         thinking: targetInfo.thinking,
         force: true,
+        renderer: this._renderer,
       });
       this._renderer.banner(describeCompactionResult(result, label));
     } finally {
@@ -1819,6 +1836,7 @@ class SessionManager {
       }
       this._postMessage({ type: 'clear' });
       this._postMessage({ type: 'clearRunId' });
+      this._postMessage({ type: 'usageStats', summary: null });
       this._postMessage({ type: 'progressFull', text: '' });
       if (preservedAlias) {
         this._syncPanelContext();
@@ -1844,6 +1862,7 @@ class SessionManager {
       this._prestartDone = false;
       this._activeManifest = null;
       this._postMessage({ type: 'clearRunId' });
+      this._postMessage({ type: 'usageStats', summary: null });
       this._postMessage({ type: 'progressFull', text: '' });
       this._renderer.banner('Detached from the current run.');
       this.prestart();
