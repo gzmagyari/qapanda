@@ -18,6 +18,7 @@ const {
 } = require('./state');
 const { parseInteger, parseNumber, readAllStdin } = require('./utils');
 const { runInteractiveShell } = require('./shell');
+const { loadSettings: loadSharedSettings } = require('./settings-store');
 const {
   discoverExternalChatSessions,
 } = require('./external-chat-discovery');
@@ -112,6 +113,8 @@ Common options:
   --worker-thinking <level>          Worker thinking (low/medium/high)
   --api-provider <name>              API provider (built-in or named custom provider from Settings)
   --api-base-url <url>               Legacy/manual API base URL override
+  --lazy-mcp-tools                   Enable sticky lazy-loaded MCP tools for API workers
+  --no-lazy-mcp-tools                Disable sticky lazy-loaded MCP tools for API workers
   --wait <delay>                     Auto-pass delay (1m, 5m, 1h, etc.)
   --no-mcp-inject                    Disable system MCP auto-injection
   --raw-events                       Show raw streaming events
@@ -164,6 +167,8 @@ const RUN_SPEC = {
   'worker-thinking': { key: 'workerThinking', kind: 'value' },
   'api-provider': { key: 'apiProvider', kind: 'value' },
   'api-base-url': { key: 'apiBaseUrl', kind: 'value' },
+  'lazy-mcp-tools': { key: 'lazyMcpTools', kind: 'boolean' },
+  'no-lazy-mcp-tools': { key: 'noLazyMcpTools', kind: 'boolean' },
   'worker-session-id': { key: 'workerSessionId', kind: 'value' },
   'worker-allowed-tools': { key: 'workerAllowedTools', kind: 'value' },
   'worker-tools': { key: 'workerTools', kind: 'value' },
@@ -252,6 +257,28 @@ function normalizeOptions(options) {
     workerMaxTurns: parseInteger(options.workerMaxTurns, '--worker-max-turns'),
     workerMaxBudgetUsd: parseNumber(options.workerMaxBudgetUsd, '--worker-max-budget-usd'),
   };
+}
+
+function resolveLazyMcpToolsSetting(options = {}) {
+  if (options.lazyMcpTools && options.noLazyMcpTools) {
+    throw new Error('Cannot combine --lazy-mcp-tools and --no-lazy-mcp-tools.');
+  }
+  if (options.lazyMcpTools) return true;
+  if (options.noLazyMcpTools) return false;
+  if (typeof options.lazyMcpToolsEnabled === 'boolean') return options.lazyMcpToolsEnabled;
+  try {
+    return !!loadSharedSettings().lazyMcpToolsEnabled;
+  } catch {
+    return false;
+  }
+}
+
+function applyPersistedRunSettings(options = {}) {
+  const next = { ...options };
+  next.lazyMcpToolsEnabled = resolveLazyMcpToolsSetting(next);
+  delete next.lazyMcpTools;
+  delete next.noLazyMcpTools;
+  return next;
 }
 
 function fallbackStateRootForRepo(repoRoot) {
@@ -700,7 +727,7 @@ async function listModesCmd(argv) {
 
 async function runOneShot(argv) {
   const parsed = parseArgs(argv, RUN_SPEC);
-  const options = parsed.options;
+  const options = applyPersistedRunSettings(parsed.options);
   let message = parsed.positionals.join(' ').trim();
   if (!message) message = (await readAllStdin()).trim();
   if (!message) throw new Error('Missing initial user message.');
@@ -709,7 +736,7 @@ async function runOneShot(argv) {
 }
 
 async function runPreparedOneShot(message, options, { preloadCloud = true, onEvent = null, afterRun = null, printSummary = true } = {}) {
-  const { options: normalizedOptions } = await applyRootDescriptorToOptions(options);
+  const { options: normalizedOptions } = await applyRootDescriptorToOptions(applyPersistedRunSettings(options));
 
   // Load config and apply mode/agent/MCP injection
   const config = loadConfig(normalizedOptions.repoRoot);
@@ -814,7 +841,7 @@ async function runPreparedOneShot(message, options, { preloadCloud = true, onEve
 }
 
 async function runPreparedHostedWorkflowCloudRun(spec, options) {
-  const { options: normalizedOptions } = await applyRootDescriptorToOptions(options);
+  const { options: normalizedOptions } = await applyRootDescriptorToOptions(applyPersistedRunSettings(options));
   const config = loadConfig(normalizedOptions.repoRoot);
   await config.cloud.preload();
   const workflowContext = await materializeHostedWorkflowRun(spec, {
@@ -1102,7 +1129,7 @@ async function importChatCommand(argv) {
     throw createExitError('Usage: qapanda import-chat --provider <codex|claude> [--query <text> | --latest | --session-id <id>] [--repo <path>]', 2);
   }
 
-  const { options } = await applyRootDescriptorToOptions(parsed.options);
+  const { options } = await applyRootDescriptorToOptions(applyPersistedRunSettings(parsed.options));
   const query = String(parsed.options.query || '').trim();
   const selectionCount = Number(!!parsed.options.latest) + Number(!!parsed.options.sessionId) + Number(!!query);
   if (selectionCount > 1) {
@@ -1225,7 +1252,7 @@ async function main(argv) {
   if (!command || command === 'shell' || String(command).startsWith('--')) {
     const shellArgv = !command ? [] : (command === 'shell' ? rest : argv);
     const parsed = parseArgs(shellArgv, RUN_SPEC);
-    const { options } = await applyRootDescriptorToOptions(parsed.options);
+    const { options } = await applyRootDescriptorToOptions(applyPersistedRunSettings(parsed.options));
     await runInteractiveShell(options);
     return;
   }

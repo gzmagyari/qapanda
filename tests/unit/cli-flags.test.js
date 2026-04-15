@@ -26,6 +26,8 @@ const RUN_SPEC = {
   'worker-thinking': { key: 'workerThinking', kind: 'value' },
   'api-provider': { key: 'apiProvider', kind: 'value' },
   'api-base-url': { key: 'apiBaseUrl', kind: 'value' },
+  'lazy-mcp-tools': { key: 'lazyMcpTools', kind: 'boolean' },
+  'no-lazy-mcp-tools': { key: 'noLazyMcpTools', kind: 'boolean' },
   'wait': { key: 'wait', kind: 'value' },
   'raw-events': { key: 'rawEvents', kind: 'boolean' },
   'quiet': { key: 'quiet', kind: 'boolean' },
@@ -71,6 +73,16 @@ describe('CLI flag parsing', () => {
     const { options } = parseArgs(['--api-provider', 'openai', '--api-base-url', 'http://localhost:9999/v1'], RUN_SPEC);
     assert.equal(options.apiProvider, 'openai');
     assert.equal(options.apiBaseUrl, 'http://localhost:9999/v1');
+  });
+
+  it('parses --lazy-mcp-tools flag', () => {
+    const { options } = parseArgs(['--lazy-mcp-tools'], RUN_SPEC);
+    assert.equal(options.lazyMcpTools, true);
+  });
+
+  it('parses --no-lazy-mcp-tools flag', () => {
+    const { options } = parseArgs(['--no-lazy-mcp-tools'], RUN_SPEC);
+    assert.equal(options.noLazyMcpTools, true);
   });
 
   it('parses --wait flag', () => {

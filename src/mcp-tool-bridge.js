@@ -12,6 +12,7 @@ let _toolRegistry = {};
 
 // Active MCP client connections (for stdio MCPs that need to stay alive)
 let _activeClients = {};
+const SEARCH_MCP_TOOLS_NAME = 'search_mcp_tools';
 
 function _isChromeDevtoolsServer(serverName, toolName) {
   const serverText = String(serverName || '').toLowerCase();
@@ -265,6 +266,112 @@ function _errorToolResult(text) {
   };
 }
 
+function _cloneToolDefinition(tool) {
+  if (!tool || typeof tool !== 'object') return null;
+  return {
+    type: tool.type,
+    function: {
+      name: tool.function && tool.function.name ? tool.function.name : '',
+      description: tool.function && tool.function.description ? tool.function.description : '',
+      parameters: tool.function && tool.function.parameters ? tool.function.parameters : { type: 'object', properties: {} },
+    },
+  };
+}
+
+function _buildSearchText(entry) {
+  return [
+    entry.name,
+    entry.originalName,
+    entry.serverName,
+    entry.description,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function _toolCatalogFromDefinitions(fingerprint, toolDefs) {
+  const definitions = sortToolDefinitions((toolDefs || []).map((tool) => _cloneToolDefinition(tool)).filter(Boolean));
+  const entries = definitions.map((tool) => {
+    const meta = _toolRegistry[tool.function.name] || {};
+    const entry = {
+      name: tool.function.name,
+      serverName: meta.serverName || null,
+      originalName: meta.originalName || tool.function.name,
+      type: meta.type || null,
+      description: tool.function.description || '',
+      parameters: tool.function.parameters || { type: 'object', properties: {} },
+      definition: _cloneToolDefinition(tool),
+    };
+    entry.searchText = _buildSearchText(entry);
+    return entry;
+  });
+  const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry]));
+  return {
+    fingerprint,
+    toolCount: entries.length,
+    toolNames: entries.map((entry) => entry.name),
+    entries,
+    byName,
+    tools: entries.map((entry) => _cloneToolDefinition(entry.definition)),
+  };
+}
+
+function _searchScore(entry, queryText) {
+  const query = String(queryText || '').trim().toLowerCase();
+  if (!query) return 0;
+  const name = String(entry.name || '').toLowerCase();
+  const originalName = String(entry.originalName || '').toLowerCase();
+  const serverName = String(entry.serverName || '').toLowerCase();
+  const description = String(entry.description || '').toLowerCase();
+  const tokens = query.split(/[^a-z0-9_]+/i).filter(Boolean);
+  let score = 0;
+
+  if (name === query || originalName === query) score += 1000;
+  if (name.startsWith(query) || originalName.startsWith(query)) score += 500;
+  if (name.includes(query) || originalName.includes(query)) score += 250;
+  if (serverName === query) score += 200;
+  if (serverName.includes(query)) score += 120;
+
+  for (const token of tokens) {
+    if (name.includes(token) || originalName.includes(token)) score += 50;
+    else if (serverName.includes(token)) score += 25;
+    else if (description.includes(token)) score += 10;
+  }
+
+  return score;
+}
+
+function buildSearchMcpToolDefinition() {
+  return {
+    type: 'function',
+    function: {
+      name: SEARCH_MCP_TOOLS_NAME,
+      description: 'Search the hidden MCP tool catalog and activate relevant tools for later turns.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Capability or tool you need, such as "read command output", "take screenshot", or "search tests".',
+          },
+          maxResults: {
+            type: 'integer',
+            description: 'Maximum number of matches to return.',
+            minimum: 1,
+            maximum: 5,
+          },
+          server: {
+            type: 'string',
+            description: 'Optional MCP server name to narrow the search.',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  };
+}
+
 // ── Unified API ──────────────────────────────────────────────────
 
 /**
@@ -274,7 +381,7 @@ function _errorToolResult(text) {
  * @returns {Promise<Array>} OpenAI-format tool definitions
  */
 let _lastMcpFingerprint = null;
-let _cachedTools = null;
+let _cachedCatalog = null;
 
 function _stableFingerprintValue(value) {
   if (Array.isArray(value)) return value.map(_stableFingerprintValue);
@@ -289,13 +396,17 @@ function _stableFingerprintValue(value) {
 }
 
 async function loadAllTools(mcpServers, cwd) {
-  // Cache: if MCP config hasn't changed, reuse existing connections and tools
+  const catalog = await loadToolCatalog(mcpServers, cwd);
+  return catalog.tools.map((tool) => _cloneToolDefinition(tool));
+}
+
+async function loadToolCatalog(mcpServers, cwd) {
   const fingerprint = JSON.stringify({
     cwd: cwd || '',
     servers: _stableFingerprintValue(mcpServers || {}),
   });
-  if (fingerprint === _lastMcpFingerprint && _cachedTools && Object.keys(_activeClients).length > 0) {
-    return _cachedTools;
+  if (fingerprint === _lastMcpFingerprint && _cachedCatalog) {
+    return _cachedCatalog;
   }
 
   _toolRegistry = {};
@@ -333,10 +444,65 @@ async function loadAllTools(mcpServers, cwd) {
     }
   }
 
-  const sortedTools = sortToolDefinitions(tools);
+  const catalog = _toolCatalogFromDefinitions(fingerprint, tools);
   _lastMcpFingerprint = fingerprint;
-  _cachedTools = sortedTools;
-  return sortedTools;
+  _cachedCatalog = catalog;
+  return catalog;
+}
+
+function materializeToolDefinitions(catalog, visibleToolNames) {
+  const source = catalog && catalog.byName ? catalog.byName : {};
+  const selected = Array.isArray(visibleToolNames)
+    ? visibleToolNames
+        .map((name) => source[name])
+        .filter(Boolean)
+        .map((entry) => _cloneToolDefinition(entry.definition))
+    : [];
+  return sortToolDefinitions(selected);
+}
+
+function searchToolCatalog(catalog, query, options = {}) {
+  if (!catalog || !Array.isArray(catalog.entries)) return [];
+  const maxResults = Math.max(1, Math.min(5, Number(options.maxResults) || 5));
+  const serverFilter = options.server ? String(options.server).trim().toLowerCase() : '';
+  return catalog.entries
+    .filter((entry) => !serverFilter || String(entry.serverName || '').toLowerCase() === serverFilter)
+    .map((entry) => ({
+      entry,
+      score: _searchScore(entry, query),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return String(left.entry.name).localeCompare(String(right.entry.name));
+    })
+    .slice(0, maxResults)
+    .map((item) => ({
+      name: item.entry.name,
+      serverName: item.entry.serverName,
+      originalName: item.entry.originalName,
+      description: item.entry.description,
+      score: item.score,
+    }));
+}
+
+function buildMcpCapabilityIndex(catalog) {
+  if (!catalog || !Array.isArray(catalog.entries) || catalog.entries.length === 0) return '';
+  const grouped = new Map();
+  for (const entry of catalog.entries) {
+    const serverName = String(entry && entry.serverName ? entry.serverName : 'unknown').trim() || 'unknown';
+    const toolName = String(entry && (entry.originalName || entry.name) ? (entry.originalName || entry.name) : '').trim();
+    if (!toolName) continue;
+    if (!grouped.has(serverName)) grouped.set(serverName, new Set());
+    grouped.get(serverName).add(toolName);
+  }
+  return Array.from(grouped.entries())
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])))
+    .map(([serverName, toolNames]) => {
+      const names = Array.from(toolNames).sort((left, right) => String(left).localeCompare(String(right)));
+      return `${serverName}: ${names.join(', ')}`;
+    })
+    .join('\n');
 }
 
 /**
@@ -380,13 +546,20 @@ async function closeAll() {
   _activeClients = {};
   _toolRegistry = {};
   _lastMcpFingerprint = null;
-  _cachedTools = null;
+  _cachedCatalog = null;
 }
 
 module.exports = {
+  SEARCH_MCP_TOOLS_NAME,
+  buildSearchMcpToolDefinition,
+  buildMcpCapabilityIndex,
+  loadToolCatalog,
   loadAllTools,
+  materializeToolDefinitions,
+  searchToolCatalog,
   executeTool,
   closeAll,
+  errorToolResult: _errorToolResult,
   // Exposed for testing
   _prepareStdioMcpLaunch,
   _resolveMcpWorkingDir,

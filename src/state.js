@@ -190,6 +190,7 @@ function normalizeRunOptions(options = {}) {
     chatTarget: typeof options.chatTarget === 'string' ? options.chatTarget : null,
     controllerSystemPrompt: options.controllerSystemPrompt || null,
     selfTesting: !!options.selfTesting,
+    lazyMcpToolsEnabled: !!options.lazyMcpToolsEnabled,
     selfTestPrompts: options.selfTestPrompts || null,
   };
 }
@@ -213,6 +214,18 @@ function ensureWorkerSessionState(session) {
   }
   if (typeof target.apiSystemPromptSnapshot !== 'string') {
     target.apiSystemPromptSnapshot = null;
+  }
+  if (typeof target.apiLazyToolsEnabled !== 'boolean') {
+    target.apiLazyToolsEnabled = false;
+  }
+  if (typeof target.apiToolCatalogFingerprint !== 'string') {
+    target.apiToolCatalogFingerprint = null;
+  }
+  if (!Array.isArray(target.apiVisibleToolNames)) {
+    target.apiVisibleToolNames = [];
+  }
+  if (!Array.isArray(target.apiActivatedToolOrder)) {
+    target.apiActivatedToolOrder = [];
   }
   return target;
 }
@@ -310,6 +323,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     chatTarget: normalized.chatTarget || null,
     controllerSystemPrompt: normalized.controllerSystemPrompt || null,
     selfTesting: !!normalized.selfTesting,
+    lazyMcpToolsEnabled: !!normalized.lazyMcpToolsEnabled,
     selfTestPrompts: normalized.selfTestPrompts || null,
     apiConfig: normalized.controller.apiConfig || normalized.worker.apiConfig || null,
     usageSummary: createEmptyUsageSummary(),

@@ -142,7 +142,14 @@ class SessionManager {
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
-    try { this._selfTesting = !!require('./settings-store').getSetting('selfTesting'); } catch { this._selfTesting = false; }
+    try {
+      const settingsStore = require('./settings-store');
+      this._selfTesting = !!settingsStore.getSetting('selfTesting');
+      this._lazyMcpToolsEnabled = !!settingsStore.getSetting('lazyMcpToolsEnabled');
+    } catch {
+      this._selfTesting = false;
+      this._lazyMcpToolsEnabled = false;
+    }
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
   }
@@ -2303,6 +2310,7 @@ class SessionManager {
       if (settings.selfTestPromptAgent) customPrompts.agent = settings.selfTestPromptAgent;
       if (Object.keys(customPrompts).length > 0) opts.selfTestPrompts = customPrompts;
     }
+    opts.lazyMcpToolsEnabled = !!this._lazyMcpToolsEnabled;
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
       if (this._controllerCli !== 'claude') {

@@ -10,7 +10,16 @@ const {
   createStreamApiLogHooks,
   workerApiLogFiles,
 } = require('./api-io-log');
-const { loadAllTools, executeTool } = require('./mcp-tool-bridge');
+const {
+  SEARCH_MCP_TOOLS_NAME,
+  buildMcpCapabilityIndex,
+  buildSearchMcpToolDefinition,
+  errorToolResult,
+  executeTool,
+  loadToolCatalog,
+  materializeToolDefinitions,
+  searchToolCatalog,
+} = require('./mcp-tool-bridge');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
@@ -55,6 +64,120 @@ function parseToolInput(argumentsValue) {
   } catch {
     return {};
   }
+}
+
+const DEFAULT_LAZY_TOOL_LIMIT = 20;
+
+function uniqueToolNames(values) {
+  const seen = new Set();
+  const output = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const name = String(value || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    output.push(name);
+  }
+  return output;
+}
+
+function resolveLazyToolLimit(agentConfig) {
+  const value = Number(agentConfig && agentConfig.apiLazyToolLimit);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_LAZY_TOOL_LIMIT;
+}
+
+function isLazyMcpEnabledForWorker(manifest, agentConfig) {
+  return !!(
+    manifest &&
+    manifest.lazyMcpToolsEnabled &&
+    agentConfig &&
+    agentConfig.apiLazyTools
+  );
+}
+
+function ensureLazyToolSessionState(agentSession, catalog, { lazyEnabled }) {
+  if (!lazyEnabled) {
+    agentSession.apiLazyToolsEnabled = false;
+    agentSession.apiToolCatalogFingerprint = catalog.fingerprint;
+    agentSession.apiVisibleToolNames = [];
+    agentSession.apiActivatedToolOrder = [];
+    return { initialized: false };
+  }
+
+  const sameCatalog = agentSession.apiToolCatalogFingerprint === catalog.fingerprint;
+  const sameMode = agentSession.apiLazyToolsEnabled === true;
+  const restoredVisible = sameCatalog && sameMode
+    ? uniqueToolNames(agentSession.apiVisibleToolNames).filter((name) => name === SEARCH_MCP_TOOLS_NAME || catalog.byName[name])
+    : [];
+  const baseVisible = [SEARCH_MCP_TOOLS_NAME];
+  const visibleNames = uniqueToolNames([...baseVisible, ...restoredVisible]);
+  const activatedOrder = sameCatalog && sameMode
+    ? uniqueToolNames(agentSession.apiActivatedToolOrder).filter((name) => name !== SEARCH_MCP_TOOLS_NAME && catalog.byName[name])
+    : [];
+
+  agentSession.apiLazyToolsEnabled = true;
+  agentSession.apiToolCatalogFingerprint = catalog.fingerprint;
+  agentSession.apiVisibleToolNames = visibleNames;
+  agentSession.apiActivatedToolOrder = activatedOrder;
+  return { initialized: restoredVisible.length === 0 };
+}
+
+function touchActivatedTool(agentSession, toolName) {
+  const name = String(toolName || '').trim();
+  if (!name || name === SEARCH_MCP_TOOLS_NAME) return;
+  const next = uniqueToolNames([
+    ...((agentSession && agentSession.apiActivatedToolOrder) || []).filter((entry) => entry !== name),
+    name,
+  ]);
+  agentSession.apiActivatedToolOrder = next;
+}
+
+function pruneVisibleTools(agentSession, limit) {
+  const visible = uniqueToolNames(agentSession.apiVisibleToolNames);
+  const coreSet = new Set([SEARCH_MCP_TOOLS_NAME]);
+  const nonCoreVisible = visible.filter((name) => !coreSet.has(name));
+  if (nonCoreVisible.length <= limit) return [];
+
+  const removableCount = nonCoreVisible.length - limit;
+  const order = uniqueToolNames(agentSession.apiActivatedToolOrder);
+  const evicted = [];
+  for (const name of order) {
+    if (evicted.length >= removableCount) break;
+    if (!coreSet.has(name) && nonCoreVisible.includes(name)) {
+      evicted.push(name);
+    }
+  }
+  if (evicted.length < removableCount) {
+    for (const name of nonCoreVisible) {
+      if (evicted.length >= removableCount) break;
+      if (!evicted.includes(name)) evicted.push(name);
+    }
+  }
+
+  agentSession.apiVisibleToolNames = visible.filter((name) => !evicted.includes(name));
+  agentSession.apiActivatedToolOrder = order.filter((name) => !evicted.includes(name));
+  return evicted;
+}
+
+function buildSearchToolResult(query, matches, { activated = [], alreadyActive = [], evicted = [] } = {}) {
+  const lines = [
+    `Search query: ${String(query || '').trim() || '(empty)'}`,
+    matches.length > 0 ? `Matched ${matches.length} tool${matches.length === 1 ? '' : 's'}:` : 'No matching tools found.',
+  ];
+  for (const match of matches) {
+    const status = activated.includes(match.name)
+      ? 'activated'
+      : (alreadyActive.includes(match.name) ? 'already active' : 'available');
+    lines.push(`- ${match.name} (${match.serverName || 'unknown server'}) - ${status}`);
+    if (match.description) {
+      lines.push(`  ${match.description}`);
+    }
+  }
+  if (evicted.length > 0) {
+    lines.push(`Evicted oldest non-core tools: ${evicted.join(', ')}`);
+  }
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+  };
 }
 
 function _httpGetJson(url) {
@@ -200,11 +323,21 @@ async function runApiWorkerTurn({
       }
     }
   }
-  const tools = await loadAllTools(allMcpServers, manifest.repoRoot);
-
   if (!manifest.worker.agentSessions) manifest.worker.agentSessions = {};
   const agentSession = ensureWorkerSessionState(manifest.worker.agentSessions[manifestSessionKey]);
   manifest.worker.agentSessions[manifestSessionKey] = agentSession;
+  const lazyMcpToolsEnabled = isLazyMcpEnabledForWorker(manifest, agentConfig);
+  const toolCatalog = await loadToolCatalog(allMcpServers, manifest.repoRoot);
+  const eagerTools = lazyMcpToolsEnabled
+    ? null
+    : materializeToolDefinitions(toolCatalog, toolCatalog.toolNames);
+  const mcpCapabilityIndex = lazyMcpToolsEnabled
+    ? buildMcpCapabilityIndex(toolCatalog)
+    : '';
+  const lazyToolLimit = resolveLazyToolLimit(agentConfig);
+  ensureLazyToolSessionState(agentSession, toolCatalog, {
+    lazyEnabled: lazyMcpToolsEnabled,
+  });
   const promptsDirs = buildPromptsDirs(manifest.repoRoot);
   if (!agentSession.apiSystemPromptSnapshot) {
     let built = buildAgentWorkerSystemPrompt(
@@ -214,10 +347,30 @@ async function runApiWorkerTurn({
         : { repoRoot: manifest.repoRoot },
       promptsDirs
     );
-    built += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file â€” Read files\n- builtin_tools__write_file â€” Write/create files\n- builtin_tools__edit_file â€” Edit files (find and replace)\n- builtin_tools__run_command â€” Execute shell commands\n- builtin_tools__list_directory â€” List directory contents\n- builtin_tools__glob_search â€” Find files by pattern\n- builtin_tools__grep_search â€” Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
+    if (!lazyMcpToolsEnabled) {
+      built += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file - Read files\n- builtin_tools__write_file - Write/create files\n- builtin_tools__edit_file - Edit files (find and replace)\n- builtin_tools__run_command - Execute shell commands\n- builtin_tools__list_directory - List directory contents\n- builtin_tools__glob_search - Find files by pattern\n- builtin_tools__grep_search - Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
+    } else {
+      built += '\n\n## Lazy MCP Tool Loading\nYou start with only one visible tool: `search_mcp_tools`. All other MCP tools are hidden until you load them. The host still knows the full MCP capability map listed below. Use `search_mcp_tools` whenever you need any capability beyond the current visible tool set. Search by MCP name or by tool/capability name from the index instead of guessing broadly. Matching tools will be activated for later turns and stay available during this task unless the active tool budget is exceeded. Do not repeatedly search for the same capability once the tool is already visible.';
+      if (mcpCapabilityIndex) {
+        built += `\n\n## MCP Capability Index\nThe following MCP groups and tool names are known to the host:\n${mcpCapabilityIndex}`;
+      }
+    }
     agentSession.apiSystemPromptSnapshot = built.replaceAll('\u00e2\u20ac\u201d', '-');
   }
   const systemPrompt = agentSession.apiSystemPromptSnapshot;
+  function currentVisibleToolNames() {
+    if (!lazyMcpToolsEnabled) return toolCatalog.toolNames.slice();
+    return uniqueToolNames(agentSession.apiVisibleToolNames);
+  }
+  function currentVisibleTools() {
+    if (!lazyMcpToolsEnabled) return eagerTools || [];
+    const visibleNames = currentVisibleToolNames();
+    const realToolNames = visibleNames.filter((name) => name !== SEARCH_MCP_TOOLS_NAME);
+    return [
+      ...materializeToolDefinitions(toolCatalog, realToolNames),
+      buildSearchMcpToolDefinition(),
+    ];
+  }
   if (manifest.chromeDebugPort != null) {
     agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
     manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
@@ -381,6 +534,9 @@ async function runApiWorkerTurn({
       cacheContext = canonical.cacheContext;
     }
 
+    const visibleToolNames = currentVisibleToolNames();
+    const tools = currentVisibleTools();
+
     const textParts = [];
     let toolCalls = null;
     let usage = null;
@@ -398,6 +554,10 @@ async function runApiWorkerTurn({
       thinking,
       messageCount: Array.isArray(messages) ? messages.length : 0,
       toolCount: Array.isArray(tools) ? tools.length : 0,
+      catalogToolCount: toolCatalog.toolCount,
+      visibleToolCount: visibleToolNames.length,
+      visibleToolNames,
+      lazyMcpToolsEnabled,
       cacheSupport: cacheContext.cacheSupport,
       cacheMode: cacheContext.cacheMode,
       promptCacheKey: cacheContext.promptCacheKey || null,
@@ -563,11 +723,52 @@ async function runApiWorkerTurn({
         payload: tc,
       }));
 
-      const result = await executeTool(tc, allMcpServers, manifest.repoRoot, {
-        onRecoverChromeDevtools: async ({ toolName: recoverToolName, error }) => {
-          await recoverChromeDevtoolsSession(manifest, agentSession, { toolName: recoverToolName, error });
-        },
-      });
+      let result;
+      if (toolName === SEARCH_MCP_TOOLS_NAME) {
+        const maxResults = Math.max(1, Math.min(5, Number(parsedInput.maxResults) || 5));
+        const matches = searchToolCatalog(toolCatalog, parsedInput.query, {
+          maxResults,
+          server: parsedInput.server || '',
+        });
+        const activated = [];
+        const alreadyActive = [];
+        for (const match of matches) {
+          if (agentSession.apiVisibleToolNames.includes(match.name)) {
+            alreadyActive.push(match.name);
+            touchActivatedTool(agentSession, match.name);
+            continue;
+          }
+          agentSession.apiVisibleToolNames = uniqueToolNames([...agentSession.apiVisibleToolNames, match.name]);
+          activated.push(match.name);
+          touchActivatedTool(agentSession, match.name);
+        }
+        const evicted = pruneVisibleTools(agentSession, lazyToolLimit);
+        result = buildSearchToolResult(parsedInput.query, matches, {
+          activated,
+          alreadyActive,
+          evicted,
+        });
+        emitEvent({
+          source: 'worker-api',
+          type: 'tool_activation',
+          name: SEARCH_MCP_TOOLS_NAME,
+          activated,
+          alreadyActive,
+          evicted,
+        });
+        await saveManifest(manifest);
+      } else if (lazyMcpToolsEnabled && !visibleToolNames.includes(toolName)) {
+        result = errorToolResult(`Error: tool "${toolName}" is not currently active. Use ${SEARCH_MCP_TOOLS_NAME} first.`);
+      } else {
+        result = await executeTool(tc, allMcpServers, manifest.repoRoot, {
+          onRecoverChromeDevtools: async ({ toolName: recoverToolName, error }) => {
+            await recoverChromeDevtoolsSession(manifest, agentSession, { toolName: recoverToolName, error });
+          },
+        });
+        if (lazyMcpToolsEnabled) {
+          touchActivatedTool(agentSession, toolName);
+        }
+      }
       const toolResultEntry = createTranscriptRecord({
         kind: 'tool_result',
         sessionKey: localSessionKey,

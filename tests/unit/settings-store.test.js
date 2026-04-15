@@ -32,6 +32,7 @@ describe('settings-store custom providers', () => {
   it('round-trips named custom providers and keyed apiKeys', () => {
     const { saveSettings, loadSettings } = loadFreshSettingsStore();
     const saved = saveSettings({
+      lazyMcpToolsEnabled: true,
       apiKeys: {
         openai: 'openai-key',
         lmstudio: '',
@@ -44,11 +45,13 @@ describe('settings-store custom providers', () => {
     assert.deepEqual(saved.customProviders, [
       { id: 'lm-studio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1' },
     ]);
+    assert.equal(saved.lazyMcpToolsEnabled, true);
     assert.equal(saved.apiKeys.openai, 'openai-key');
     assert.equal(saved.apiKeys.lmstudio, '');
 
     const loaded = loadSettings();
     assert.deepEqual(loaded.customProviders, saved.customProviders);
+    assert.equal(loaded.lazyMcpToolsEnabled, true);
     assert.equal(loaded.apiKeys.openai, 'openai-key');
   });
 });

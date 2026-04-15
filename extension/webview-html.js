@@ -533,6 +533,13 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
               </div>
               <input type="checkbox" id="setting-self-testing" class="settings-checkbox" />
             </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Lazy-load API MCP Tools</div>
+                <div class="settings-item-desc">Reduce API prompt cost by exposing a smaller MCP tool set first and loading extra tools on demand during API worker runs.</div>
+              </div>
+              <input type="checkbox" id="setting-lazy-mcp-tools" class="settings-checkbox" />
+            </div>
           </div>
         </div>
         <div class="mcp-section settings-prompts-hidden" id="settings-prompts-section">

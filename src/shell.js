@@ -22,6 +22,7 @@ const {
 const { summarizeError } = require('./utils');
 const { discoverExternalChatSessions } = require('./external-chat-discovery');
 const { importExternalChatSession } = require('./external-chat-import');
+const { loadSettings: loadSharedSettings } = require('./settings-store');
 const {
   findResourcesDir,
   loadMergedAgents,
@@ -163,6 +164,15 @@ async function runInteractiveShell(options = {}) {
   let currentWorkspace = options.workspaceName || null;
   let pendingResumeAlias = null;
   let saveResumeAs = options.saveResumeAs || null;
+  let lazyMcpToolsEnabled = typeof options.lazyMcpToolsEnabled === 'boolean'
+    ? options.lazyMcpToolsEnabled
+    : (() => {
+        try {
+          return !!loadSharedSettings().lazyMcpToolsEnabled;
+        } catch {
+          return false;
+        }
+      })();
 
   let activeManifest = null;
   let waitDelay = options.wait || '';
@@ -224,6 +234,7 @@ async function runInteractiveShell(options = {}) {
       rootKind: currentWorkspace ? 'named-workspace' : 'repo',
       rootIdentity: currentWorkspace ? `workspace:${currentWorkspace}` : `repo:${cwd}`,
       resumeToken: saveResumeAs || pendingResumeAlias || null,
+      lazyMcpToolsEnabled,
       controllerCli,
       workerCli,
       controllerModel,

@@ -22,6 +22,208 @@ before(async () => {
   fs.mkdirSync(path.join(tmpDir, '.qpanda', 'runs', 'test-run'), { recursive: true });
   fs.writeFileSync(path.join(tmpDir, '.qpanda', 'runs', 'test-run', 'transcript.jsonl'), '');
 });
+
+describe('API Worker - lazy MCP tools', () => {
+  it('starts with only search_mcp_tools, then activates and persists matched tools', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const builtinServerPath = path.resolve(__dirname, '../../extension/builtin-tools-mcp-server.js');
+    const seenTools = [];
+    let apiCalls = 0;
+    const manifest = makeManifest((_req, body) => {
+      apiCalls += 1;
+      seenTools.push((body.tools || []).map((tool) => tool.function && tool.function.name).filter(Boolean));
+      if (apiCalls === 1) {
+        return {
+          toolCalls: [{ id: 'search_1', name: 'search_mcp_tools', arguments: { query: 'read file' } }],
+        };
+      }
+      if (apiCalls === 2) {
+        return {
+          toolCalls: [{ id: 'read_1', name: 'builtin_tools__read_file', arguments: { path: 'sample.txt' } }],
+        };
+      }
+      if (apiCalls === 3) {
+        return { text: 'Read the sample file.' };
+      }
+      return { text: 'The read tool is still available.' };
+    });
+    manifest.lazyMcpToolsEnabled = true;
+    manifest.agents = {
+      dev: {
+        id: 'dev',
+        name: 'Developer',
+        cli: 'api',
+        apiLazyTools: true,
+      },
+    };
+    manifest.workerMcpServers = {
+      'builtin-tools': { command: 'node', args: [builtinServerPath], env: { CWD: tmpDir } },
+    };
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r1' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'find and read the sample file',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+      agentId: 'dev',
+    });
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r2' },
+      loop: { index: 2, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'is the read tool still visible?',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+      agentId: 'dev',
+    });
+
+    assert.equal(seenTools[0].includes('search_mcp_tools'), true);
+    assert.deepEqual(seenTools[0], ['search_mcp_tools']);
+    assert.equal(seenTools[0].includes('builtin_tools__read_file'), false);
+    assert.equal(seenTools[1].includes('builtin_tools__read_file'), true);
+    assert.equal(seenTools[3].includes('builtin_tools__read_file'), true);
+    assert.ok(manifest.worker.agentSessions.dev.apiVisibleToolNames.includes('builtin_tools__read_file'));
+  });
+
+  it('rejects fabricated hidden tool calls until they are activated', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const builtinServerPath = path.resolve(__dirname, '../../extension/builtin-tools-mcp-server.js');
+    let apiCalls = 0;
+    const manifest = makeManifest(() => {
+      apiCalls += 1;
+      if (apiCalls === 1) {
+        return {
+          toolCalls: [{ id: 'read_hidden', name: 'builtin_tools__read_file', arguments: { path: 'sample.txt' } }],
+        };
+      }
+      return { text: 'Handled the hidden-tool error.' };
+    });
+    manifest.lazyMcpToolsEnabled = true;
+    manifest.agents = {
+      dev: {
+        id: 'dev',
+        name: 'Developer',
+        cli: 'api',
+        apiLazyTools: true,
+      },
+    };
+    manifest.workerMcpServers = {
+      'builtin-tools': { command: 'node', args: [builtinServerPath], env: { CWD: tmpDir } },
+    };
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r-hidden' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'call a hidden tool directly',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+      agentId: 'dev',
+    });
+
+    const entries = transcriptEntries(manifest);
+    const hiddenToolResult = entries.find((entry) => entry.kind === 'tool_result' && entry.toolName === 'builtin_tools__read_file');
+    assert.ok(hiddenToolResult);
+    assert.equal(hiddenToolResult.result && hiddenToolResult.result.isError, true);
+    assert.match(JSON.stringify(hiddenToolResult.result), /search_mcp_tools/i);
+  });
+
+  it('injects a grouped MCP capability index into the lazy API worker system prompt', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const builtinServerPath = path.resolve(__dirname, '../../extension/builtin-tools-mcp-server.js');
+    const seenSystemPrompts = [];
+    const taskServer = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        const parsed = JSON.parse(body || '{}');
+        if (parsed.method === 'tools/list') {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: parsed.id,
+            result: {
+              tools: [
+                {
+                  name: 'search_tasks',
+                  description: 'Search tasks',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+                {
+                  name: 'add_comment',
+                  description: 'Add a comment',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+              ],
+            },
+          }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end();
+      });
+    });
+    await new Promise((resolve) => taskServer.listen(0, '127.0.0.1', resolve));
+    const address = taskServer.address();
+    const manifest = makeManifest((_req, body) => {
+      seenSystemPrompts.push(body.messages[0].content);
+      return { text: 'ok' };
+    });
+    manifest.lazyMcpToolsEnabled = true;
+    manifest.agents = {
+      'QA-Browser': {
+        id: 'QA-Browser',
+        name: 'QA Engineer (Browser)',
+        cli: 'api',
+        apiLazyTools: true,
+      },
+    };
+    manifest.workerMcpServers = {
+      'builtin-tools': { command: 'node', args: [builtinServerPath], env: { CWD: tmpDir } },
+      cc_tasks: { url: `http://127.0.0.1:${address.port}/mcp` },
+    };
+
+    try {
+      await runApiWorkerTurn({
+        manifest,
+        request: { id: 'r-cap-1' },
+        loop: { index: 1, controller: {} },
+        workerRecord: makeWorkerRecord(),
+        prompt: 'hi',
+        renderer: makeRenderer(),
+        emitEvent: noopEmit,
+        agentId: 'QA-Browser',
+      });
+
+      await runApiWorkerTurn({
+        manifest,
+        request: { id: 'r-cap-2' },
+        loop: { index: 2, controller: {} },
+        workerRecord: makeWorkerRecord(),
+        prompt: 'hi again',
+        renderer: makeRenderer(),
+        emitEvent: noopEmit,
+        agentId: 'QA-Browser',
+      });
+    } finally {
+      await new Promise((resolve) => taskServer.close(resolve));
+    }
+
+    assert.equal(seenSystemPrompts.length, 2);
+    assert.equal(seenSystemPrompts[0], seenSystemPrompts[1]);
+    assert.match(seenSystemPrompts[0], /only one visible tool: `search_mcp_tools`/);
+    assert.match(seenSystemPrompts[0], /## MCP Capability Index/);
+    assert.match(seenSystemPrompts[0], /builtin-tools: .*grep_search.*read_file/i);
+    assert.match(seenSystemPrompts[0], /cc_tasks: add_comment, search_tasks/);
+    assert.doesNotMatch(seenSystemPrompts[0], /cc_tasks__search_tasks/);
+  });
+});
 after(async () => {
   if (mock) await mock.close();
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
@@ -61,6 +263,7 @@ function makeManifest(handlerOverride) {
     workerMcpServers: {},
     agents: {},
     selfTesting: false,
+    lazyMcpToolsEnabled: false,
     usageSummary: createEmptyUsageSummary(),
   };
 }

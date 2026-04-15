@@ -1066,6 +1066,7 @@ function _activateInner(context) {
         if (msg.type === 'settingsSave') {
           const updated = saveSettings(msg.settings || {});
           session._selfTesting = !!updated.selfTesting;
+          session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
           await postSettingsData(panel, session, cloudBoundary, context);
           return;
         }
@@ -1419,6 +1420,7 @@ async function _deserializeInner(panel, state, context) {
           if (msg.type === 'settingsSave') {
             const updated = saveSettings(msg.settings || {});
             session._selfTesting = !!updated.selfTesting;
+            session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
             await postSettingsData(panel, session, cloudBoundary, context);
             return;
           }

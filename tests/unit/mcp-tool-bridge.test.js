@@ -4,7 +4,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createMcpHttpServer } = require('../../extension/mcp-http-server');
-const { loadAllTools, executeTool, closeAll, _mcpToolToOpenAI, _sanitizeToolNamePart } = require('../../src/mcp-tool-bridge');
+const {
+  SEARCH_MCP_TOOLS_NAME,
+  buildMcpCapabilityIndex,
+  buildSearchMcpToolDefinition,
+  loadAllTools,
+  loadToolCatalog,
+  materializeToolDefinitions,
+  searchToolCatalog,
+  executeTool,
+  closeAll,
+  _mcpToolToOpenAI,
+  _sanitizeToolNamePart,
+} = require('../../src/mcp-tool-bridge');
 
 let tmpDir;
 let tmpDir2;
@@ -15,6 +27,78 @@ before(() => {
   tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-bridge-test-'));
   fs.writeFileSync(path.join(tmpDir, 'test.txt'), 'hello world\n');
   fs.writeFileSync(path.join(tmpDir2, 'test.txt'), 'second workspace\n');
+});
+
+describe('lazy MCP catalog helpers', () => {
+  it('builds a searchable catalog and materializes only the visible subset', async () => {
+    const catalog = await loadToolCatalog(builtinMcpConfig(), tmpDir);
+    assert.equal(catalog.toolCount, 7);
+    const visible = materializeToolDefinitions(catalog, ['builtin_tools__read_file', 'builtin_tools__list_directory']);
+    assert.deepEqual(
+      visible.map((tool) => tool.function.name),
+      ['builtin_tools__list_directory', 'builtin_tools__read_file']
+    );
+  });
+
+  it('finds tool matches deterministically by name and description', async () => {
+    const catalog = await loadToolCatalog(builtinMcpConfig(), tmpDir);
+    const matches = searchToolCatalog(catalog, 'read file', { maxResults: 3 });
+    assert.ok(matches.length > 0);
+    assert.equal(matches[0].name, 'builtin_tools__read_file');
+  });
+
+  it('exposes a synthetic search_mcp_tools definition', () => {
+    const tool = buildSearchMcpToolDefinition();
+    assert.equal(tool.type, 'function');
+    assert.equal(tool.function.name, SEARCH_MCP_TOOLS_NAME);
+    assert.ok(tool.function.parameters.required.includes('query'));
+  });
+
+  it('builds a deterministic MCP capability index grouped by server name', () => {
+    const index = buildMcpCapabilityIndex({
+      entries: [
+        {
+          name: 'cc_tasks__add_comment',
+          serverName: 'cc_tasks',
+          originalName: 'add_comment',
+          description: 'Add a comment',
+          parameters: { type: 'object', properties: { task_id: { type: 'string' } } },
+        },
+        {
+          name: 'builtin_tools__read_file',
+          serverName: 'builtin_tools',
+          originalName: 'read_file',
+          description: 'Read a file',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        },
+        {
+          name: 'cc_tasks__search_tasks',
+          serverName: 'cc_tasks',
+          originalName: 'search_tasks',
+          description: 'Search tasks',
+          parameters: { type: 'object', properties: { query: { type: 'string' } } },
+        },
+        {
+          name: 'builtin_tools__grep_search',
+          serverName: 'builtin_tools',
+          originalName: 'grep_search',
+          description: 'Search file contents',
+          parameters: { type: 'object', properties: { pattern: { type: 'string' } } },
+        },
+      ],
+    });
+
+    assert.equal(
+      index,
+      [
+        'builtin_tools: grep_search, read_file',
+        'cc_tasks: add_comment, search_tasks',
+      ].join('\n')
+    );
+    assert.equal(index.includes('description'), false);
+    assert.equal(index.includes('properties'), false);
+    assert.equal(index.includes('builtin_tools__read_file'), false);
+  });
 });
 
 after(async () => {

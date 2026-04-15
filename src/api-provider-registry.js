@@ -176,6 +176,7 @@ function normalizeSettingsData(data = {}) {
   const apiKeys = settings.apiKeys && typeof settings.apiKeys === 'object' ? { ...settings.apiKeys } : {};
   return {
     ...settings,
+    lazyMcpToolsEnabled: Boolean(settings.lazyMcpToolsEnabled),
     apiKeys,
     customProviders: normalizeCustomProviders(settings.customProviders).map((provider) => ({
       id: provider.id,

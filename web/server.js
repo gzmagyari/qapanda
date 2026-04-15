@@ -528,6 +528,7 @@ wss.on('connection', (ws) => {
       if (msg.type === 'settingsSave') {
         const updated = saveSettings(msg.settings || {});
         attachedEntry.session._selfTesting = !!updated.selfTesting;
+        attachedEntry.session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
         entryPostMessage({
           type: 'settingsData',
           settings: updated,

@@ -196,6 +196,7 @@
 
   // ── Settings tab ────────────────────────────────────────────────────
   const selfTestToggle = document.getElementById('setting-self-testing');
+  const lazyMcpToolsToggle = document.getElementById('setting-lazy-mcp-tools');
   const settingsPromptsSection = document.getElementById('settings-prompts-section');
   const settingPromptQaBrowser = document.getElementById('setting-prompt-qa-browser');
   const settingPromptController = document.getElementById('setting-prompt-controller');
@@ -714,6 +715,11 @@
     selfTestToggle.addEventListener('change', () => {
       vscode.postMessage({ type: 'settingsSave', settings: { selfTesting: selfTestToggle.checked } });
       updatePromptsVisibility();
+    });
+  }
+  if (lazyMcpToolsToggle) {
+    lazyMcpToolsToggle.addEventListener('change', () => {
+      vscode.postMessage({ type: 'settingsSave', settings: { lazyMcpToolsEnabled: lazyMcpToolsToggle.checked } });
     });
   }
   if (settingsPromptsSave) {
@@ -7250,6 +7256,9 @@
       const selfTestToggle = document.getElementById('setting-self-testing');
       if (selfTestToggle) {
         selfTestToggle.checked = !!msg.settings.selfTesting;
+      }
+      if (lazyMcpToolsToggle) {
+        lazyMcpToolsToggle.checked = !!msg.settings.lazyMcpToolsEnabled;
       }
       // Populate prompt textareas (custom value or default)
       const defaults = msg.defaults || {};
