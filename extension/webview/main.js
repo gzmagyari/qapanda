@@ -197,6 +197,15 @@
   // ── Settings tab ────────────────────────────────────────────────────
   const selfTestToggle = document.getElementById('setting-self-testing');
   const lazyMcpToolsToggle = document.getElementById('setting-lazy-mcp-tools');
+  const learnedApiToolsToggle = document.getElementById('setting-learned-api-tools');
+  const learnedToolsManageBtn = document.getElementById('settings-learned-tools-manage');
+  const learnedToolsModal = document.getElementById('learned-tools-modal');
+  const learnedToolsModalClose = document.getElementById('learned-tools-modal-close');
+  const learnedToolsFilter = document.getElementById('learned-tools-filter');
+  const learnedToolsSort = document.getElementById('learned-tools-sort');
+  const learnedToolsClearExpired = document.getElementById('learned-tools-clear-expired');
+  const learnedToolsEmpty = document.getElementById('learned-tools-empty');
+  const learnedToolsList = document.getElementById('learned-tools-list');
   const settingsPromptsSection = document.getElementById('settings-prompts-section');
   const settingPromptQaBrowser = document.getElementById('setting-prompt-qa-browser');
   const settingPromptController = document.getElementById('setting-prompt-controller');
@@ -257,6 +266,7 @@
   let cloudNoticeText = '';
   let cloudContextDraft = { mode: 'shared', explicitContextKey: '', contextLabel: '' };
   let guestModeDismissed = false;
+  let learnedApiToolEntries = [];
 
   const promptsExpander = document.getElementById('settings-prompts-expander');
   const promptsContent = document.getElementById('settings-prompts-content');
@@ -275,6 +285,140 @@
         settingsPromptsSection.classList.add('settings-prompts-hidden');
       }
     }
+  }
+
+  function formatLearnedToolTimestamp(value) {
+    if (!value) return 'Never';
+    try { return new Date(value).toLocaleString(); } catch (_) { return String(value); }
+  }
+
+  function isLearnedToolExpired(entry) {
+    if (!entry || entry.pinned || !entry.expiresAt) return false;
+    const time = Date.parse(entry.expiresAt);
+    return Number.isFinite(time) && time <= Date.now();
+  }
+
+  function sortLearnedTools(entries) {
+    const mode = learnedToolsSort && learnedToolsSort.value ? learnedToolsSort.value : 'recent';
+    const list = Array.isArray(entries) ? [...entries] : [];
+    return list.sort((left, right) => {
+      if (!!right.pinned !== !!left.pinned) return Number(right.pinned) - Number(left.pinned);
+      if (mode === 'name') {
+        if (String(left.agentId || '') !== String(right.agentId || '')) {
+          return String(left.agentId || '').localeCompare(String(right.agentId || ''));
+        }
+        return String(left.toolName || '').localeCompare(String(right.toolName || ''));
+      }
+      if (mode === 'expires') {
+        const leftExpires = left && left.expiresAt ? Date.parse(left.expiresAt) : Number.POSITIVE_INFINITY;
+        const rightExpires = right && right.expiresAt ? Date.parse(right.expiresAt) : Number.POSITIVE_INFINITY;
+        if (leftExpires !== rightExpires) return leftExpires - rightExpires;
+      }
+      const leftLastUsed = left && left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0;
+      const rightLastUsed = right && right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0;
+      if (rightLastUsed !== leftLastUsed) return rightLastUsed - leftLastUsed;
+      return String(left.toolName || '').localeCompare(String(right.toolName || ''));
+    });
+  }
+
+  function filteredLearnedTools() {
+    const query = String(learnedToolsFilter && learnedToolsFilter.value || '').trim().toLowerCase();
+    const filtered = !query
+      ? learnedApiToolEntries
+      : learnedApiToolEntries.filter((entry) =>
+          String(entry.agentId || '').toLowerCase().includes(query) ||
+          String(entry.toolName || '').toLowerCase().includes(query)
+        );
+    return sortLearnedTools(filtered);
+  }
+
+  function renderLearnedToolsModal() {
+    if (!learnedToolsList || !learnedToolsEmpty) return;
+    const entries = filteredLearnedTools();
+    learnedToolsList.innerHTML = '';
+    learnedToolsEmpty.style.display = entries.length > 0 ? 'none' : '';
+    learnedToolsList.style.display = entries.length > 0 ? '' : 'none';
+    if (entries.length === 0) return;
+
+    const byAgent = new Map();
+    entries.forEach((entry) => {
+      const key = String(entry.agentId || 'default');
+      if (!byAgent.has(key)) byAgent.set(key, []);
+      byAgent.get(key).push(entry);
+    });
+
+    Array.from(byAgent.entries()).forEach(([agentId, agentEntries]) => {
+      const section = document.createElement('div');
+      section.className = 'learned-tools-group';
+
+      const header = document.createElement('div');
+      header.className = 'learned-tools-group-header';
+      header.textContent = agentId;
+      section.appendChild(header);
+
+      agentEntries.forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'learned-tools-row';
+        if (isLearnedToolExpired(entry)) row.classList.add('expired');
+
+        const info = document.createElement('div');
+        info.className = 'learned-tools-row-info';
+
+        const title = document.createElement('div');
+        title.className = 'learned-tools-row-title';
+        title.textContent = entry.toolName || '';
+        info.appendChild(title);
+
+        const meta = document.createElement('div');
+        meta.className = 'learned-tools-row-meta';
+        const expiryText = entry.pinned
+          ? 'Pinned'
+          : (entry.expiresAt ? `Expires ${formatLearnedToolTimestamp(entry.expiresAt)}` : 'No expiry');
+        meta.textContent = `Uses ${entry.useCount || 0} | Last used ${formatLearnedToolTimestamp(entry.lastUsedAt)} | ${expiryText}`;
+        info.appendChild(meta);
+        row.appendChild(info);
+
+        const actions = document.createElement('div');
+        actions.className = 'learned-tools-row-actions';
+
+        const pinBtn = document.createElement('button');
+        pinBtn.className = 'mcp-btn';
+        pinBtn.type = 'button';
+        pinBtn.textContent = entry.pinned ? 'Unpin' : 'Pin';
+        pinBtn.dataset.action = 'pin';
+        pinBtn.dataset.agentId = agentId;
+        pinBtn.dataset.toolName = entry.toolName || '';
+        pinBtn.dataset.pinned = entry.pinned ? 'false' : 'true';
+        actions.appendChild(pinBtn);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'mcp-btn';
+        removeBtn.type = 'button';
+        removeBtn.textContent = 'Remove';
+        removeBtn.dataset.action = 'remove';
+        removeBtn.dataset.agentId = agentId;
+        removeBtn.dataset.toolName = entry.toolName || '';
+        actions.appendChild(removeBtn);
+
+        row.appendChild(actions);
+        section.appendChild(row);
+      });
+
+      learnedToolsList.appendChild(section);
+    });
+  }
+
+  function openLearnedToolsModal() {
+    if (!learnedToolsModal) return;
+    renderLearnedToolsModal();
+    learnedToolsModal.style.display = 'flex';
+    learnedToolsModal.classList.add('visible');
+  }
+
+  function closeLearnedToolsModal() {
+    if (!learnedToolsModal) return;
+    learnedToolsModal.classList.remove('visible');
+    learnedToolsModal.style.display = 'none';
   }
 
   function formatCloudTime(value) {
@@ -720,6 +864,64 @@
   if (lazyMcpToolsToggle) {
     lazyMcpToolsToggle.addEventListener('change', () => {
       vscode.postMessage({ type: 'settingsSave', settings: { lazyMcpToolsEnabled: lazyMcpToolsToggle.checked } });
+    });
+  }
+  if (learnedApiToolsToggle) {
+    learnedApiToolsToggle.addEventListener('change', () => {
+      vscode.postMessage({ type: 'settingsSave', settings: { learnedApiToolsEnabled: learnedApiToolsToggle.checked } });
+    });
+  }
+  if (learnedToolsManageBtn) {
+    learnedToolsManageBtn.addEventListener('click', () => {
+      openLearnedToolsModal();
+    });
+  }
+  if (learnedToolsModalClose) {
+    learnedToolsModalClose.addEventListener('click', () => {
+      closeLearnedToolsModal();
+    });
+  }
+  if (learnedToolsModal) {
+    learnedToolsModal.addEventListener('click', (event) => {
+      if (event.target && event.target.classList && event.target.classList.contains('learned-tools-modal-backdrop')) {
+        closeLearnedToolsModal();
+      }
+    });
+  }
+  if (learnedToolsFilter) {
+    learnedToolsFilter.addEventListener('input', () => {
+      renderLearnedToolsModal();
+    });
+  }
+  if (learnedToolsSort) {
+    learnedToolsSort.addEventListener('change', () => {
+      renderLearnedToolsModal();
+    });
+  }
+  if (learnedToolsClearExpired) {
+    learnedToolsClearExpired.addEventListener('click', () => {
+      vscode.postMessage({ type: 'settingsLearnedToolsClearExpired' });
+    });
+  }
+  if (learnedToolsList) {
+    learnedToolsList.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const agentId = button.dataset.agentId || '';
+      const toolName = button.dataset.toolName || '';
+      if (!agentId || !toolName) return;
+      if (button.dataset.action === 'remove') {
+        vscode.postMessage({ type: 'settingsLearnedToolRemove', agentId, toolName });
+        return;
+      }
+      if (button.dataset.action === 'pin') {
+        vscode.postMessage({
+          type: 'settingsLearnedToolPin',
+          agentId,
+          toolName,
+          pinned: button.dataset.pinned === 'true',
+        });
+      }
     });
   }
   if (settingsPromptsSave) {
@@ -7260,6 +7462,11 @@
       if (lazyMcpToolsToggle) {
         lazyMcpToolsToggle.checked = !!msg.settings.lazyMcpToolsEnabled;
       }
+      if (learnedApiToolsToggle) {
+        learnedApiToolsToggle.checked = !!msg.settings.learnedApiToolsEnabled;
+      }
+      learnedApiToolEntries = Array.isArray(msg.learnedApiTools) ? msg.learnedApiTools : [];
+      renderLearnedToolsModal();
       // Populate prompt textareas (custom value or default)
       const defaults = msg.defaults || {};
       if (settingPromptController) {

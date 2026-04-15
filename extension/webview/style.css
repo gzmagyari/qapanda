@@ -410,6 +410,130 @@ html, body {
 .settings-item-name { font-size: 14px; font-weight: 500; color: var(--vscode-editor-foreground); }
 .settings-item-desc { font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 4px; line-height: 1.4; }
 .settings-item-desc code { background: var(--vscode-textCodeBlock-background, #1e1e1e); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.settings-item .mcp-btn { white-space: nowrap; }
+.learned-tools-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.learned-tools-modal.visible {
+  display: flex !important;
+}
+.learned-tools-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.learned-tools-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(880px, calc(100vw - 40px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-panel-border, #444);
+  background: var(--vscode-editor-background, #1e1e1e);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+.learned-tools-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.learned-tools-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.learned-tools-modal-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.learned-tools-modal-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 180px auto;
+  gap: 10px;
+  align-items: center;
+}
+.learned-tools-empty {
+  padding: 18px 4px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.learned-tools-list {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+.learned-tools-group {
+  border: 1px solid var(--vscode-widget-border, #333);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.learned-tools-group-header {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
+  border-bottom: 1px solid var(--vscode-widget-border, #333);
+}
+.learned-tools-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--vscode-widget-border, #333);
+}
+.learned-tools-row:first-of-type {
+  border-top: 0;
+}
+.learned-tools-row.expired .learned-tools-row-title,
+.learned-tools-row.expired .learned-tools-row-meta {
+  opacity: 0.75;
+}
+.learned-tools-row-info {
+  min-width: 0;
+  flex: 1;
+}
+.learned-tools-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-editor-foreground);
+  word-break: break-all;
+}
+.learned-tools-row-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.learned-tools-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+@media (max-width: 720px) {
+  .learned-tools-modal-controls {
+    grid-template-columns: 1fr;
+  }
+  .learned-tools-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
 .custom-provider-card {
   display: flex;
   flex-direction: column;

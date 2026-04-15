@@ -24,6 +24,7 @@ const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
 const { buildPromptCacheContext } = require('./prompt-cache');
+const { getLearnedApiToolNamesForAgent, recordLearnedApiToolUsage } = require('./settings-store');
 const { lookupAgentConfig, ensureWorkerSessionState, saveManifest } = require('./state');
 const { workerLabelFor } = require('./render');
 const { baseToolName } = require('./turn-entity-tracker');
@@ -94,31 +95,44 @@ function isLazyMcpEnabledForWorker(manifest, agentConfig) {
   );
 }
 
-function ensureLazyToolSessionState(agentSession, catalog, { lazyEnabled }) {
+function ensureLazyToolSessionState(agentSession, catalog, { lazyEnabled, learnedToolNames = [], learnedToolsEnabled = false }) {
   if (!lazyEnabled) {
     agentSession.apiLazyToolsEnabled = false;
     agentSession.apiToolCatalogFingerprint = catalog.fingerprint;
     agentSession.apiVisibleToolNames = [];
     agentSession.apiActivatedToolOrder = [];
+    agentSession.apiLearnedAutoInjectedToolNames = [];
+    agentSession.apiLearnedToolsEnabled = !!learnedToolsEnabled;
     return { initialized: false };
   }
 
   const sameCatalog = agentSession.apiToolCatalogFingerprint === catalog.fingerprint;
   const sameMode = agentSession.apiLazyToolsEnabled === true;
+  const restoredLearned = sameCatalog && sameMode
+    ? uniqueToolNames(agentSession.apiLearnedAutoInjectedToolNames).filter((name) => catalog.byName[name])
+    : [];
+  const learnedVisible = restoredLearned.length > 0
+    ? restoredLearned
+    : uniqueToolNames(learnedToolNames).filter((name) => name !== SEARCH_MCP_TOOLS_NAME && catalog.byName[name]);
   const restoredVisible = sameCatalog && sameMode
     ? uniqueToolNames(agentSession.apiVisibleToolNames).filter((name) => name === SEARCH_MCP_TOOLS_NAME || catalog.byName[name])
     : [];
   const baseVisible = [SEARCH_MCP_TOOLS_NAME];
-  const visibleNames = uniqueToolNames([...baseVisible, ...restoredVisible]);
+  const visibleNames = uniqueToolNames([...baseVisible, ...learnedVisible, ...restoredVisible]);
   const activatedOrder = sameCatalog && sameMode
     ? uniqueToolNames(agentSession.apiActivatedToolOrder).filter((name) => name !== SEARCH_MCP_TOOLS_NAME && catalog.byName[name])
     : [];
 
   agentSession.apiLazyToolsEnabled = true;
+  agentSession.apiLearnedToolsEnabled = !!learnedToolsEnabled;
   agentSession.apiToolCatalogFingerprint = catalog.fingerprint;
   agentSession.apiVisibleToolNames = visibleNames;
   agentSession.apiActivatedToolOrder = activatedOrder;
-  return { initialized: restoredVisible.length === 0 };
+  agentSession.apiLearnedAutoInjectedToolNames = learnedVisible;
+  return {
+    initialized: restoredVisible.length === 0,
+    learnedAutoInjectedToolNames: learnedVisible,
+  };
 }
 
 function touchActivatedTool(agentSession, toolName) {
@@ -327,6 +341,9 @@ async function runApiWorkerTurn({
   const agentSession = ensureWorkerSessionState(manifest.worker.agentSessions[manifestSessionKey]);
   manifest.worker.agentSessions[manifestSessionKey] = agentSession;
   const lazyMcpToolsEnabled = isLazyMcpEnabledForWorker(manifest, agentConfig);
+  const learnedApiToolsEnabled = !!manifest.learnedApiToolsEnabled;
+  const learnedWarmStartEnabled = lazyMcpToolsEnabled && learnedApiToolsEnabled;
+  const learnedAgentId = String(manifestSessionKey || 'default');
   const toolCatalog = await loadToolCatalog(allMcpServers, manifest.repoRoot);
   const eagerTools = lazyMcpToolsEnabled
     ? null
@@ -334,10 +351,18 @@ async function runApiWorkerTurn({
   const mcpCapabilityIndex = lazyMcpToolsEnabled
     ? buildMcpCapabilityIndex(toolCatalog)
     : '';
+  const learnedStartupToolNames = learnedWarmStartEnabled
+    ? getLearnedApiToolNamesForAgent(learnedAgentId, {
+        catalogNames: new Set(toolCatalog.toolNames),
+      })
+    : [];
   const lazyToolLimit = resolveLazyToolLimit(agentConfig);
-  ensureLazyToolSessionState(agentSession, toolCatalog, {
+  const lazyToolInit = ensureLazyToolSessionState(agentSession, toolCatalog, {
     lazyEnabled: lazyMcpToolsEnabled,
+    learnedToolNames: learnedStartupToolNames,
+    learnedToolsEnabled: learnedApiToolsEnabled,
   });
+  const learnedAutoInjectedToolNames = uniqueToolNames(agentSession.apiLearnedAutoInjectedToolNames);
   const promptsDirs = buildPromptsDirs(manifest.repoRoot);
   if (!agentSession.apiSystemPromptSnapshot) {
     let built = buildAgentWorkerSystemPrompt(
@@ -512,6 +537,14 @@ async function runApiWorkerTurn({
   }
 
   emitEvent({ source: 'worker-api', type: 'start', agentId, model, provider: providerId });
+  if (lazyToolInit.learnedAutoInjectedToolNames && lazyToolInit.learnedAutoInjectedToolNames.length > 0) {
+    emitEvent({
+      source: 'worker-api',
+      type: 'learned_tool_warm_start',
+      agentId,
+      tools: lazyToolInit.learnedAutoInjectedToolNames.slice(),
+    });
+  }
   renderer.claude(`Using ${providerId}/${model}`);
 
   let iterations = 0;
@@ -558,6 +591,9 @@ async function runApiWorkerTurn({
       visibleToolCount: visibleToolNames.length,
       visibleToolNames,
       lazyMcpToolsEnabled,
+      learnedApiToolsEnabled,
+      learnedAutoInjectEnabled: learnedWarmStartEnabled,
+      learnedAutoInjectedToolNames,
       cacheSupport: cacheContext.cacheSupport,
       cacheMode: cacheContext.cacheMode,
       promptCacheKey: cacheContext.promptCacheKey || null,
@@ -767,6 +803,9 @@ async function runApiWorkerTurn({
         });
         if (lazyMcpToolsEnabled) {
           touchActivatedTool(agentSession, toolName);
+        }
+        if (learnedApiToolsEnabled && !result.isError) {
+          recordLearnedApiToolUsage(learnedAgentId, toolName);
         }
       }
       const toolResultEntry = createTranscriptRecord({

@@ -19,7 +19,7 @@ let startTestsMcpServer, stopTestsMcpServer;
 let startMemoryMcpServer, stopMemoryMcpServer;
 let startQaDesktopMcpServer, stopQaDesktopMcpServer;
 let loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix;
-let loadSettings, saveSettings;
+let loadSettings, saveSettings, listLearnedApiTools, removeLearnedApiTool, updateLearnedApiToolPin, clearExpiredLearnedApiTools;
 let buildSelfTestingPrompt;
 let loadFeatureFlags;
 let exportQaReportPdf;
@@ -82,7 +82,14 @@ try {
   _aDbg('require OK: qa-desktop-mcp-server');
   ({ loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix } = require('./onboarding'));
   _aDbg('require OK: onboarding');
-  ({ loadSettings, saveSettings } = require('./settings-store'));
+  ({
+    loadSettings,
+    saveSettings,
+    listLearnedApiTools,
+    removeLearnedApiTool,
+    updateLearnedApiToolPin,
+    clearExpiredLearnedApiTools,
+  } = require('./settings-store'));
   _aDbg('require OK: settings-store');
   ({ buildSelfTestingPrompt } = require('./src/prompts'));
   _aDbg('require OK: prompts');
@@ -702,6 +709,7 @@ async function postSettingsData(panel, session, cloudBoundary, context) {
   const payload = {
     type: 'settingsData',
     settings,
+    learnedApiTools: listLearnedApiTools(settings),
     apiCatalog: buildApiCatalogPayload(settings),
     defaults: buildSelfTestingPrompt.DEFAULTS,
     cloudSession,
@@ -1067,6 +1075,22 @@ function _activateInner(context) {
           const updated = saveSettings(msg.settings || {});
           session._selfTesting = !!updated.selfTesting;
           session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
+          session._learnedApiToolsEnabled = !!updated.learnedApiToolsEnabled;
+          await postSettingsData(panel, session, cloudBoundary, context);
+          return;
+        }
+        if (msg.type === 'settingsLearnedToolRemove') {
+          removeLearnedApiTool(msg.agentId, msg.toolName);
+          await postSettingsData(panel, session, cloudBoundary, context);
+          return;
+        }
+        if (msg.type === 'settingsLearnedToolPin') {
+          updateLearnedApiToolPin(msg.agentId, msg.toolName, !!msg.pinned);
+          await postSettingsData(panel, session, cloudBoundary, context);
+          return;
+        }
+        if (msg.type === 'settingsLearnedToolsClearExpired') {
+          clearExpiredLearnedApiTools();
           await postSettingsData(panel, session, cloudBoundary, context);
           return;
         }
@@ -1421,6 +1445,22 @@ async function _deserializeInner(panel, state, context) {
             const updated = saveSettings(msg.settings || {});
             session._selfTesting = !!updated.selfTesting;
             session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
+            session._learnedApiToolsEnabled = !!updated.learnedApiToolsEnabled;
+            await postSettingsData(panel, session, cloudBoundary, context);
+            return;
+          }
+          if (msg.type === 'settingsLearnedToolRemove') {
+            removeLearnedApiTool(msg.agentId, msg.toolName);
+            await postSettingsData(panel, session, cloudBoundary, context);
+            return;
+          }
+          if (msg.type === 'settingsLearnedToolPin') {
+            updateLearnedApiToolPin(msg.agentId, msg.toolName, !!msg.pinned);
+            await postSettingsData(panel, session, cloudBoundary, context);
+            return;
+          }
+          if (msg.type === 'settingsLearnedToolsClearExpired') {
+            clearExpiredLearnedApiTools();
             await postSettingsData(panel, session, cloudBoundary, context);
             return;
           }

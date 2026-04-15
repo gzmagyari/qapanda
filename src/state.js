@@ -191,6 +191,7 @@ function normalizeRunOptions(options = {}) {
     controllerSystemPrompt: options.controllerSystemPrompt || null,
     selfTesting: !!options.selfTesting,
     lazyMcpToolsEnabled: !!options.lazyMcpToolsEnabled,
+    learnedApiToolsEnabled: !!options.learnedApiToolsEnabled,
     selfTestPrompts: options.selfTestPrompts || null,
   };
 }
@@ -226,6 +227,12 @@ function ensureWorkerSessionState(session) {
   }
   if (!Array.isArray(target.apiActivatedToolOrder)) {
     target.apiActivatedToolOrder = [];
+  }
+  if (!Array.isArray(target.apiLearnedAutoInjectedToolNames)) {
+    target.apiLearnedAutoInjectedToolNames = [];
+  }
+  if (typeof target.apiLearnedToolsEnabled !== 'boolean') {
+    target.apiLearnedToolsEnabled = false;
   }
   return target;
 }
@@ -324,6 +331,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     controllerSystemPrompt: normalized.controllerSystemPrompt || null,
     selfTesting: !!normalized.selfTesting,
     lazyMcpToolsEnabled: !!normalized.lazyMcpToolsEnabled,
+    learnedApiToolsEnabled: !!normalized.learnedApiToolsEnabled,
     selfTestPrompts: normalized.selfTestPrompts || null,
     apiConfig: normalized.controller.apiConfig || normalized.worker.apiConfig || null,
     usageSummary: createEmptyUsageSummary(),

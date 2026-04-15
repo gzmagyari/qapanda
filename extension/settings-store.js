@@ -1,1 +1,5 @@
-module.exports = require('./src/settings-store');
+try {
+  module.exports = require('./src/settings-store');
+} catch {
+  module.exports = require('../src/settings-store');
+}

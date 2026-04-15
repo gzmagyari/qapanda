@@ -173,6 +173,15 @@ async function runInteractiveShell(options = {}) {
           return false;
         }
       })();
+  let learnedApiToolsEnabled = typeof options.learnedApiToolsEnabled === 'boolean'
+    ? options.learnedApiToolsEnabled
+    : (() => {
+        try {
+          return !!loadSharedSettings().learnedApiToolsEnabled;
+        } catch {
+          return false;
+        }
+      })();
 
   let activeManifest = null;
   let waitDelay = options.wait || '';
@@ -235,6 +244,7 @@ async function runInteractiveShell(options = {}) {
       rootIdentity: currentWorkspace ? `workspace:${currentWorkspace}` : `repo:${cwd}`,
       resumeToken: saveResumeAs || pendingResumeAlias || null,
       lazyMcpToolsEnabled,
+      learnedApiToolsEnabled,
       controllerCli,
       workerCli,
       controllerModel,

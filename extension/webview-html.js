@@ -93,6 +93,30 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
       </div>
     </div>
 
+    <div id="learned-tools-modal" class="learned-tools-modal" style="display:none;">
+      <div class="learned-tools-modal-backdrop"></div>
+      <div class="learned-tools-modal-panel">
+        <div class="learned-tools-modal-header">
+          <div>
+            <h3>Learned API Tools</h3>
+            <div class="learned-tools-modal-subtitle">Warm-started for API workers when lazy MCP loading is enabled.</div>
+          </div>
+          <button id="learned-tools-modal-close" class="mcp-btn" type="button">Close</button>
+        </div>
+        <div class="learned-tools-modal-controls">
+          <input id="learned-tools-filter" class="mcp-input" type="text" placeholder="Filter by agent or tool name" />
+          <select id="learned-tools-sort" class="mcp-input">
+            <option value="recent">Sort: Recently used</option>
+            <option value="expires">Sort: Expiry</option>
+            <option value="name">Sort: Name</option>
+          </select>
+          <button id="learned-tools-clear-expired" class="mcp-btn" type="button">Clear Expired</button>
+        </div>
+        <div id="learned-tools-empty" class="learned-tools-empty">No learned API tools yet.</div>
+        <div id="learned-tools-list" class="learned-tools-list"></div>
+      </div>
+    </div>
+
     <div id="tab-agent">
       <div id="progress-bubble" class="progress-bubble hidden">
         <div class="progress-header">Progress</div>
@@ -539,6 +563,20 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
                 <div class="settings-item-desc">Reduce API prompt cost by exposing a smaller MCP tool set first and loading extra tools on demand during API worker runs.</div>
               </div>
               <input type="checkbox" id="setting-lazy-mcp-tools" class="settings-checkbox" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Learn and auto-inject API tools</div>
+                <div class="settings-item-desc">Remember API worker MCP tools after they are used once, auto-inject them on future lazy-loading runs for the same agent, and expire them after 30 days unless reused.</div>
+              </div>
+              <input type="checkbox" id="setting-learned-api-tools" class="settings-checkbox" />
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <div class="settings-item-name">Manage learned tools</div>
+                <div class="settings-item-desc">Inspect per-agent learned tools, pin them, remove them, or clear expired entries.</div>
+              </div>
+              <button id="settings-learned-tools-manage" class="mcp-btn" type="button">Manage learned tools</button>
             </div>
           </div>
         </div>

@@ -146,9 +146,11 @@ class SessionManager {
       const settingsStore = require('./settings-store');
       this._selfTesting = !!settingsStore.getSetting('selfTesting');
       this._lazyMcpToolsEnabled = !!settingsStore.getSetting('lazyMcpToolsEnabled');
+      this._learnedApiToolsEnabled = !!settingsStore.getSetting('learnedApiToolsEnabled');
     } catch {
       this._selfTesting = false;
       this._lazyMcpToolsEnabled = false;
+      this._learnedApiToolsEnabled = false;
     }
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
@@ -2311,6 +2313,7 @@ class SessionManager {
       if (Object.keys(customPrompts).length > 0) opts.selfTestPrompts = customPrompts;
     }
     opts.lazyMcpToolsEnabled = !!this._lazyMcpToolsEnabled;
+    opts.learnedApiToolsEnabled = !!this._learnedApiToolsEnabled;
     if (this._controllerThinking) {
       // Only pass reasoning effort config for Codex; Claude uses env var or ignores it
       if (this._controllerCli !== 'claude') {

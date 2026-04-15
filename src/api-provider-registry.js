@@ -133,6 +133,42 @@ function normalizeCustomProviders(entries) {
   return normalized;
 }
 
+function normalizeLearnedToolIso(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function normalizeLearnedApiTools(data) {
+  const source = data && typeof data === 'object' ? data : {};
+  const normalized = {};
+  for (const [agentId, tools] of Object.entries(source)) {
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId || !tools || typeof tools !== 'object') continue;
+    const normalizedTools = {};
+    for (const [toolName, record] of Object.entries(tools)) {
+      const normalizedToolName = String(toolName || '').trim();
+      if (!normalizedToolName || !record || typeof record !== 'object') continue;
+      const useCount = Number(record.useCount);
+      const lastUsedAt = normalizeLearnedToolIso(record.lastUsedAt);
+      const pinned = !!record.pinned;
+      const expiresAt = pinned ? null : normalizeLearnedToolIso(record.expiresAt);
+      normalizedTools[normalizedToolName] = {
+        toolName: normalizedToolName,
+        useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 1,
+        lastUsedAt,
+        expiresAt,
+        pinned,
+      };
+    }
+    if (Object.keys(normalizedTools).length > 0) {
+      normalized[normalizedAgentId] = normalizedTools;
+    }
+  }
+  return normalized;
+}
+
 function listApiProviders(settings = null) {
   const source = settings || {};
   return [
@@ -177,6 +213,8 @@ function normalizeSettingsData(data = {}) {
   return {
     ...settings,
     lazyMcpToolsEnabled: Boolean(settings.lazyMcpToolsEnabled),
+    learnedApiToolsEnabled: Boolean(settings.learnedApiToolsEnabled),
+    learnedApiTools: normalizeLearnedApiTools(settings.learnedApiTools),
     apiKeys,
     customProviders: normalizeCustomProviders(settings.customProviders).map((provider) => ({
       id: provider.id,
@@ -195,6 +233,7 @@ module.exports = {
   loadProviderSettings,
   normalizeCustomProvider,
   normalizeCustomProviders,
+  normalizeLearnedApiTools,
   normalizeSettingsData,
   providerCatalogKey,
   resolveApiProvider,

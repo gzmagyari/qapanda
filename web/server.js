@@ -32,7 +32,14 @@ const {
   runAutoFix,
 } = require(path.join(EXTENSION_DIR, 'onboarding'));
 const handlers = require(path.join(EXTENSION_DIR, 'message-handlers'));
-const { loadSettings, saveSettings } = require(path.join(EXTENSION_DIR, 'settings-store'));
+const {
+  loadSettings,
+  saveSettings,
+  listLearnedApiTools,
+  removeLearnedApiTool,
+  updateLearnedApiToolPin,
+  clearExpiredLearnedApiTools,
+} = require(path.join(EXTENSION_DIR, 'settings-store'));
 const { buildSelfTestingPrompt } = require(path.join(__dirname, '..', 'src', 'prompts'));
 const { loadFeatureFlags } = require(path.join(__dirname, '..', 'src', 'feature-flags'));
 const { buildApiCatalogPayload } = require(path.join(__dirname, '..', 'src', 'model-catalog'));
@@ -519,6 +526,7 @@ wss.on('connection', (ws) => {
         entryPostMessage({
           type: 'settingsData',
           settings,
+          learnedApiTools: listLearnedApiTools(settings),
           apiCatalog: buildApiCatalogPayload(settings),
           defaults: buildSelfTestingPrompt.DEFAULTS,
         });
@@ -529,9 +537,47 @@ wss.on('connection', (ws) => {
         const updated = saveSettings(msg.settings || {});
         attachedEntry.session._selfTesting = !!updated.selfTesting;
         attachedEntry.session._lazyMcpToolsEnabled = !!updated.lazyMcpToolsEnabled;
+        attachedEntry.session._learnedApiToolsEnabled = !!updated.learnedApiToolsEnabled;
         entryPostMessage({
           type: 'settingsData',
           settings: updated,
+          learnedApiTools: listLearnedApiTools(updated),
+          apiCatalog: buildApiCatalogPayload(updated),
+          defaults: buildSelfTestingPrompt.DEFAULTS,
+        });
+        return;
+      }
+
+      if (msg.type === 'settingsLearnedToolRemove') {
+        const updated = removeLearnedApiTool(msg.agentId, msg.toolName);
+        entryPostMessage({
+          type: 'settingsData',
+          settings: updated,
+          learnedApiTools: listLearnedApiTools(updated),
+          apiCatalog: buildApiCatalogPayload(updated),
+          defaults: buildSelfTestingPrompt.DEFAULTS,
+        });
+        return;
+      }
+
+      if (msg.type === 'settingsLearnedToolPin') {
+        const updated = updateLearnedApiToolPin(msg.agentId, msg.toolName, !!msg.pinned);
+        entryPostMessage({
+          type: 'settingsData',
+          settings: updated,
+          learnedApiTools: listLearnedApiTools(updated),
+          apiCatalog: buildApiCatalogPayload(updated),
+          defaults: buildSelfTestingPrompt.DEFAULTS,
+        });
+        return;
+      }
+
+      if (msg.type === 'settingsLearnedToolsClearExpired') {
+        const updated = clearExpiredLearnedApiTools();
+        entryPostMessage({
+          type: 'settingsData',
+          settings: updated,
+          learnedApiTools: listLearnedApiTools(updated),
           apiCatalog: buildApiCatalogPayload(updated),
           defaults: buildSelfTestingPrompt.DEFAULTS,
         });

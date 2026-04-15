@@ -273,9 +273,19 @@ function resolveLazyMcpToolsSetting(options = {}) {
   }
 }
 
+function resolveLearnedApiToolsSetting(options = {}) {
+  if (typeof options.learnedApiToolsEnabled === 'boolean') return options.learnedApiToolsEnabled;
+  try {
+    return !!loadSharedSettings().learnedApiToolsEnabled;
+  } catch {
+    return false;
+  }
+}
+
 function applyPersistedRunSettings(options = {}) {
   const next = { ...options };
   next.lazyMcpToolsEnabled = resolveLazyMcpToolsSetting(next);
+  next.learnedApiToolsEnabled = resolveLearnedApiToolsSetting(next);
   delete next.lazyMcpTools;
   delete next.noLazyMcpTools;
   return next;

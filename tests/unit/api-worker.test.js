@@ -134,6 +134,91 @@ describe('API Worker - lazy MCP tools', () => {
     assert.match(JSON.stringify(hiddenToolResult.result), /search_mcp_tools/i);
   });
 
+  it('records learned tools and auto-injects them on the next lazy run', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const settingsStore = require('../../src/settings-store');
+    const builtinServerPath = path.resolve(__dirname, '../../extension/builtin-tools-mcp-server.js');
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-learned-tools-'));
+    const originalHomedir = os.homedir;
+    const seenTools = [];
+    let apiCalls = 0;
+
+    os.homedir = () => tempHome;
+    try {
+      const firstManifest = makeManifest((_req, body) => {
+        apiCalls += 1;
+        seenTools.push((body.tools || []).map((tool) => tool.function && tool.function.name).filter(Boolean));
+        if (apiCalls === 1) {
+          return {
+            toolCalls: [{ id: 'search_1', name: 'search_mcp_tools', arguments: { query: 'read file' } }],
+          };
+        }
+        if (apiCalls === 2) {
+          return {
+            toolCalls: [{ id: 'read_1', name: 'builtin_tools__read_file', arguments: { path: 'sample.txt' } }],
+          };
+        }
+        return { text: 'learned' };
+      });
+      firstManifest.lazyMcpToolsEnabled = true;
+      firstManifest.learnedApiToolsEnabled = true;
+      firstManifest.agents = {
+        dev: {
+          id: 'dev',
+          name: 'Developer',
+          cli: 'api',
+          apiLazyTools: true,
+        },
+      };
+      firstManifest.workerMcpServers = {
+        'builtin-tools': { command: 'node', args: [builtinServerPath], env: { CWD: tmpDir } },
+      };
+
+      await runApiWorkerTurn({
+        manifest: firstManifest,
+        request: { id: 'learn-1' },
+        loop: { index: 1, controller: {} },
+        workerRecord: makeWorkerRecord(),
+        prompt: 'learn the read tool',
+        renderer: makeRenderer(),
+        emitEvent: noopEmit,
+        agentId: 'dev',
+      });
+
+      let learnedSettings = settingsStore.loadSettings();
+      assert.equal(learnedSettings.learnedApiToolsEnabled, false, 'recording usage should not force-enable the toggle');
+      assert.equal(learnedSettings.learnedApiTools.dev.builtin_tools__read_file.useCount, 1);
+      assert.equal(learnedSettings.learnedApiTools.dev.search_mcp_tools, undefined);
+
+      const secondManifest = makeManifest((_req, body) => {
+        seenTools.push((body.tools || []).map((tool) => tool.function && tool.function.name).filter(Boolean));
+        return { text: 'warm started' };
+      });
+      secondManifest.lazyMcpToolsEnabled = true;
+      secondManifest.learnedApiToolsEnabled = true;
+      secondManifest.agents = firstManifest.agents;
+      secondManifest.workerMcpServers = firstManifest.workerMcpServers;
+
+      await runApiWorkerTurn({
+        manifest: secondManifest,
+        request: { id: 'learn-2' },
+        loop: { index: 1, controller: {} },
+        workerRecord: makeWorkerRecord(),
+        prompt: 'use the warm-started tool set',
+        renderer: makeRenderer(),
+        emitEvent: noopEmit,
+        agentId: 'dev',
+      });
+
+      assert.deepEqual(seenTools[0], ['search_mcp_tools']);
+      assert.equal(seenTools[3].includes('search_mcp_tools'), true);
+      assert.equal(seenTools[3].includes('builtin_tools__read_file'), true);
+    } finally {
+      os.homedir = originalHomedir;
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it('injects a grouped MCP capability index into the lazy API worker system prompt', async () => {
     const { runApiWorkerTurn } = require('../../src/api-worker');
     const builtinServerPath = path.resolve(__dirname, '../../extension/builtin-tools-mcp-server.js');
