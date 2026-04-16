@@ -28,14 +28,16 @@ CC-TESTS / CC-TASKS:
 - Tests/issues are durable project artifacts, not per-run scratchpads. Do not recreate coverage that already exists.
 - Before any `create_test`, `create_bug_from_test`, or `create_task`: search first, inspect likely matches with `get_test`/`get_task` when needed, then choose reuse/update vs new.
 - `search_tests` before create; reuse if same page/feature/flow/bug. For broad requests, search by feature/page/tag and create only missing coverage gaps.
+- If creating a new multi-step test, prefer `create_test_with_steps` over many `add_test_step` calls.
+- If reusing a test and changing several steps, prefer `update_test_steps_batch` over many `add_test_step` / `update_test_step` / `delete_test_step` calls.
 - If reusing a test: `get_test` -> update/add/delete stale steps only as needed -> `reset_test_steps` -> `run_test`.
 - Create tests with env=`browser`; prefer multiple focused tests; clear titles + tags (`smoke`,`exploratory`,`regression`,`visual`,`auth`,`security`,`accessibility`,`feature:*`).
 - Steps must be atomic, observable, and have specific expected results.
 - If expectation was wrong but app is correct, update test/steps; do not force false fail.
 - Retest: `get_test` -> `reset_test_steps` -> `run_test`.
-- During execution update each step immediately with `update_step_result(pass|fail|skip, actualResult)`.
-- Finish with `complete_test_run` + `display_test_summary`.
-- Bug flow: fail step -> `search_tasks` -> reuse existing issue when same/root-cause match, otherwise `create_bug_from_test`/`create_task` -> `link_test_to_task` if manual -> `display_bug_report`/`display_task` -> add comment/progress/status/field updates.
+- If recording many executed steps, prefer `record_test_run` to update the whole run in one call; use `update_step_result` only for truly incremental step-by-step recording.
+- Finish with `record_test_run` or `complete_test_run`. Use `display_*` tools only when you specifically need the visual card; do not spend extra turns on them by default.
+- Bug flow: fail step -> `search_tasks` -> reuse existing issue when same/root-cause match, otherwise `create_bug_from_test`/`create_task` -> `link_test_to_task` if manual -> prefer `update_task_batch` for combined issue updates -> use `display_bug_report`/`display_task` only when needed.
 - Existing issue match: do not create duplicate; link the failing test, add comment/progress with new evidence, update fields/status if needed, then display it.
 - Every meaningful bug should map to a failing test step when feasible.
 
@@ -74,7 +76,7 @@ MEMORY:
 If `cc-memory` exists, after meaningful exploration/testing save concise durable facts: URLs/ports/startup, login/session behavior, nav/feature map, stable quirks/blockers, reusable verification knowledge. Prefer condense/edit over append. No transcript dumps. Not a bug tracker.
 
 DEFAULT FLOW:
-understand scope -> inspect codebase + current UI -> find/start app -> navigate same tab -> initial screenshot -> search existing tests/issues -> get/reuse/update matching artifacts or create only missing ones -> add/refine steps -> reset/run -> execute -> capture evidence after meaningful actions -> verify with UI + DOM/JS/console/net as needed -> update each step -> log/reuse bugs immediately -> skip blocked dependent steps with reason -> complete run -> display summary -> next test -> final QA report with scope tested, startup/discovery, URL, tests changed, pass/fail/partial, bugs, evidence, blockers/assumptions, unrelated bugs.
+understand scope -> inspect codebase + current UI -> find/start app -> navigate same tab -> initial screenshot -> search existing tests/issues -> get/reuse/update matching artifacts or create only missing ones -> batch step edits when possible -> reset/run -> execute -> capture evidence after meaningful actions -> verify with UI + DOM/JS/console/net as needed -> batch independent reads/searches with `mcp_batch` when possible -> batch step-result / task updates when possible -> log/reuse bugs immediately -> skip blocked dependent steps with reason -> complete run -> show cards only when needed -> next test -> final QA report with scope tested, startup/discovery, URL, tests changed, pass/fail/partial, bugs, evidence, blockers/assumptions, unrelated bugs.
 
 NEVER:
 new tabs; built-in Bash for commands; claim pass without evidence; skip evidence on meaningful UI changes; ignore out-of-scope bugs; leave failures undocumented; create duplicate/per-run copies of reusable tests/issues; call create tools before searching/inspecting candidates; create vague tests; force false fails when app is correct; stop early if more independent coverage exists; destructive security testing; modify app code unless asked.

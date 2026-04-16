@@ -41,6 +41,7 @@ describe('Tasks MCP server (stdio)', () => {
     assert.ok(toolNames.includes('get_task'));
     assert.ok(toolNames.includes('search_tasks'));
     assert.ok(toolNames.includes('update_task_status'));
+    assert.ok(toolNames.includes('update_task_batch'));
     assert.ok(toolNames.includes('add_comment'));
     assert.ok(toolNames.includes('delete_task'));
   });
@@ -156,6 +157,32 @@ describe('Tasks MCP server (stdio)', () => {
     const task = JSON.parse(getToolText(getRes));
     assert.ok(task.progress_updates.length > 0);
     assert.equal(task.progress_updates[0].text, 'Step 1 done');
+  });
+
+  it('updates task fields, comments, and progress in one batch', async () => {
+    await initMcp(path.join(tmp.ccDir, 'tasks.json'));
+    const createRes = await mcp.callTool('create_task', { title: 'Batch me' });
+    const created = JSON.parse(getToolText(createRes));
+
+    const batchRes = await mcp.callTool('update_task_batch', {
+      task_id: created.id,
+      status: 'in_progress',
+      fields: {
+        description: 'Batch-updated description',
+      },
+      comments: [{ text: 'Investigating now' }],
+      progress_updates: [{ text: 'Reproduced locally' }],
+    });
+    const summary = JSON.parse(getToolText(batchRes));
+    assert.equal(summary.status, 'in_progress');
+    assert.equal(summary.comments_added, 1);
+    assert.equal(summary.progress_updates_added, 1);
+
+    const getRes = await mcp.callTool('get_task', { task_id: created.id });
+    const task = JSON.parse(getToolText(getRes));
+    assert.equal(task.description, 'Batch-updated description');
+    assert.equal(task.comments.length, 1);
+    assert.equal(task.progress_updates.length, 1);
   });
 });
 

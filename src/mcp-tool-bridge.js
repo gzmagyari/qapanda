@@ -13,6 +13,7 @@ let _toolRegistry = {};
 // Active MCP client connections (for stdio MCPs that need to stay alive)
 let _activeClients = {};
 const SEARCH_MCP_TOOLS_NAME = 'search_mcp_tools';
+const MCP_BATCH_NAME = 'mcp_batch';
 
 function _isChromeDevtoolsServer(serverName, toolName) {
   const serverText = String(serverName || '').toLowerCase();
@@ -372,6 +373,39 @@ function buildSearchMcpToolDefinition() {
   };
 }
 
+function buildMcpBatchToolDefinition() {
+  return {
+    type: 'function',
+    function: {
+      name: MCP_BATCH_NAME,
+      description: 'Execute multiple already-visible MCP tools in one model turn. Use only for independent calls that do not require model reasoning between subcalls.',
+      parameters: {
+        type: 'object',
+        properties: {
+          calls: {
+            type: 'array',
+            description: 'Ordered list of MCP tool calls to execute.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Optional client-side subcall id.' },
+                tool: { type: 'string', description: 'Visible MCP tool name, such as cc_tests__search_tests.' },
+                arguments: { type: 'object', description: 'Arguments for the tool call.' },
+              },
+              required: ['tool'],
+            },
+          },
+          continueOnError: {
+            type: 'boolean',
+            description: 'When false, stop after the first failed subcall. Defaults to false.',
+          },
+        },
+        required: ['calls'],
+      },
+    },
+  };
+}
+
 // ── Unified API ──────────────────────────────────────────────────
 
 /**
@@ -550,7 +584,9 @@ async function closeAll() {
 }
 
 module.exports = {
+  MCP_BATCH_NAME,
   SEARCH_MCP_TOOLS_NAME,
+  buildMcpBatchToolDefinition,
   buildSearchMcpToolDefinition,
   buildMcpCapabilityIndex,
   loadToolCatalog,

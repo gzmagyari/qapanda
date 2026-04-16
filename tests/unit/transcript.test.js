@@ -303,6 +303,33 @@ describe('transcript helpers', () => {
     assert.match(replayMessages[0].content, /asset_id=asset_call_123/);
   });
 
+  it('uses the stored compact tool summary for provider replay text', () => {
+    const entry = createTranscriptRecord({
+      kind: 'tool_result',
+      sessionKey: 'worker:default',
+      backend: 'worker:api',
+      requestId: 'r1',
+      toolCallId: 'call_search',
+      toolName: 'cc_tests__search_tests',
+      text: 'Found 2 tests: test-1 "Login"; test-2 "Forgot password"',
+      result: {
+        content: [{
+          type: 'text',
+          text: JSON.stringify([
+            { id: 'test-1', title: 'Login validation flow', status: 'partial', match_score: 91 },
+            { id: 'test-2', title: 'Forgot password flow', status: 'untested', match_score: 77 },
+          ]),
+        }],
+      },
+    });
+
+    const replayMessages = providerMessagesForToolResult(entry, { includeInlineImages: false });
+    assert.equal(replayMessages.length, 1);
+    assert.equal(replayMessages[0].role, 'tool');
+    assert.match(replayMessages[0].content, /Found 2 tests/);
+    assert.doesNotMatch(replayMessages[0].content, /Login validation flow/);
+  });
+
   it('only replays inline screenshot images for trailing fresh tool results in tail-only mode', () => {
     const entries = [
       Object.assign(createTranscriptRecord({

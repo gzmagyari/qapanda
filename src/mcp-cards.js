@@ -17,9 +17,12 @@ const { normalizeToolResultOutput } = require('./tool-result-normalizer');
 const CARD_MAP = {
   // ── cc-tests ──────────────────────────────
   create_test:          { icon: '\uD83D\uDC3C\uD83E\uDDEA', text: 'Test Created', startText: 'Creating test', field: 'title' },
+  create_test_with_steps: { icon: '\uD83D\uDC3C\uD83E\uDDEA', text: 'Test Created', startText: 'Creating test', field: 'title' },
   add_test_step:        { icon: '\uD83D\uDCDD', text: 'Step added', startText: 'Adding step', field: 'description' },
+  update_test_steps_batch: { icon: '\uD83D\uDCDD', text: 'Test steps updated', startText: 'Updating test steps', field: 'test_id' },
   run_test:             { icon: '\uD83D\uDC3C\uD83C\uDFC3', text: 'Test started', startText: 'Starting test run' },
   update_step_result:   { icon: '\u2705', text: 'Step result updated', startText: 'Updating step result', template: 'testCard' },
+  record_test_run:      { icon: '\uD83C\uDFC1', text: 'Test run recorded', startText: 'Recording test run', template: 'testCard' },
   complete_test_run:    { icon: '\uD83C\uDFC1', text: 'Test run complete', startText: 'Completing test run', template: 'testCard' },
   create_bug_from_test: { icon: '\uD83D\uDC1B', text: 'Bug Filed', startText: 'Filing bug', field: 'title' },
   get_test_summary:     { icon: '\uD83D\uDC3C\uD83D\uDCCA', text: 'Test suite summary', startText: 'Getting test summary', template: 'testSuite' },
@@ -34,6 +37,7 @@ const CARD_MAP = {
   // ── cc-tasks ──────────────────────────────
   create_task:          { icon: '\uD83D\uDCCB', text: 'Task Created', startText: 'Creating task', field: 'title' },
   update_task_status:   { icon: '\uD83D\uDCCB', text: 'Status changed', startText: 'Updating status', template: 'statusChange' },
+  update_task_batch:    { icon: '\uD83D\uDCCB', text: 'Task updated', startText: 'Updating task', field: 'task_id' },
   add_comment:          { icon: '\uD83D\uDCAC', text: 'Comment added', startText: 'Adding comment', template: 'comment' },
   add_progress_update:  { icon: '\uD83D\uDCCA', text: 'Progress updated', startText: 'Adding progress' },
   list_tasks:           { icon: '\uD83D\uDCCB', text: 'Listed tasks', startText: 'Listing tasks' },

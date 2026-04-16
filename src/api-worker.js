@@ -11,7 +11,9 @@ const {
   workerApiLogFiles,
 } = require('./api-io-log');
 const {
+  MCP_BATCH_NAME,
   SEARCH_MCP_TOOLS_NAME,
+  buildMcpBatchToolDefinition,
   buildMcpCapabilityIndex,
   buildSearchMcpToolDefinition,
   errorToolResult,
@@ -20,6 +22,7 @@ const {
   materializeToolDefinitions,
   searchToolCatalog,
 } = require('./mcp-tool-bridge');
+const { summarizeToolResultForModel } = require('./model-tool-result-summary');
 const { renderStartCard, renderCompleteCard } = require('./mcp-cards');
 const { buildAgentWorkerSystemPrompt } = require('./prompts');
 const { buildPromptsDirs } = require('./prompt-tags');
@@ -46,7 +49,6 @@ const {
   hasTranscriptV2,
   providerMessagesForToolResult,
   readTranscriptEntries,
-  summarizeToolResult,
   transcriptBackend,
   workerSessionKey,
 } = require('./transcript');
@@ -191,6 +193,19 @@ function buildSearchToolResult(query, matches, { activated = [], alreadyActive =
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
+  };
+}
+
+function buildBatchToolResult(calls, { continueOnError = false, stoppedEarly = false } = {}) {
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify({
+        continueOnError: !!continueOnError,
+        stoppedEarly: !!stoppedEarly,
+        calls,
+      }),
+    }],
   };
 }
 
@@ -373,9 +388,9 @@ async function runApiWorkerTurn({
       promptsDirs
     );
     if (!lazyMcpToolsEnabled) {
-      built += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file - Read files\n- builtin_tools__write_file - Write/create files\n- builtin_tools__edit_file - Edit files (find and replace)\n- builtin_tools__run_command - Execute shell commands\n- builtin_tools__list_directory - List directory contents\n- builtin_tools__glob_search - Find files by pattern\n- builtin_tools__grep_search - Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns.';
+      built += '\n\n## API Mode Tools\nYou are running in API mode. Your built-in tools (prefixed with builtin_tools__) are your primary tools for file and command operations:\n- builtin_tools__read_file - Read files\n- builtin_tools__write_file - Write/create files\n- builtin_tools__edit_file - Edit files (find and replace)\n- builtin_tools__run_command - Execute shell commands\n- builtin_tools__list_directory - List directory contents\n- builtin_tools__glob_search - Find files by pattern\n- builtin_tools__grep_search - Search file contents\n\nUse these tools freely. The detached-command MCP is also available for long-running background processes that need to persist across turns. When several independent tool calls are needed and none require intermediate reasoning, prefer `mcp_batch` to bundle them into one turn.';
     } else {
-      built += '\n\n## Lazy MCP Tool Loading\nYou start with only one visible tool: `search_mcp_tools`. All other MCP tools are hidden until you load them. The host still knows the full MCP capability map listed below. Use `search_mcp_tools` whenever you need any capability beyond the current visible tool set. Search by MCP name or by tool/capability name from the index instead of guessing broadly. Matching tools will be activated for later turns and stay available during this task unless the active tool budget is exceeded. Do not repeatedly search for the same capability once the tool is already visible.';
+      built += '\n\n## Lazy MCP Tool Loading\nYou start with only one visible tool: `search_mcp_tools`. All other MCP tools are hidden until you load them. The host still knows the full MCP capability map listed below. Use `search_mcp_tools` whenever you need any capability beyond the current visible tool set. Search by MCP name or by tool/capability name from the index instead of guessing broadly. Matching tools will be activated for later turns and stay available during this task unless the active tool budget is exceeded. Do not repeatedly search for the same capability once the tool is already visible. Use `mcp_batch` when multiple already-visible tools can be called independently in one turn.';
       if (mcpCapabilityIndex) {
         built += `\n\n## MCP Capability Index\nThe following MCP groups and tool names are known to the host:\n${mcpCapabilityIndex}`;
       }
@@ -388,29 +403,42 @@ async function runApiWorkerTurn({
     return uniqueToolNames(agentSession.apiVisibleToolNames);
   }
   function currentVisibleTools() {
-    if (!lazyMcpToolsEnabled) return eagerTools || [];
+    if (!lazyMcpToolsEnabled) {
+      return [...(eagerTools || []), buildMcpBatchToolDefinition()];
+    }
     const visibleNames = currentVisibleToolNames();
     const realToolNames = visibleNames.filter((name) => name !== SEARCH_MCP_TOOLS_NAME);
     return [
       ...materializeToolDefinitions(toolCatalog, realToolNames),
       buildSearchMcpToolDefinition(),
+      buildMcpBatchToolDefinition(),
     ];
   }
   if (manifest.chromeDebugPort != null) {
     agentSession.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
     manifest.worker.boundBrowserPort = Number(manifest.chromeDebugPort) || null;
   }
-  const recordedPrompt = visiblePrompt == null ? prompt : visiblePrompt;
+  const recordedVisiblePrompt = visiblePrompt == null ? prompt : visiblePrompt;
+  const recordedActualPrompt = prompt;
 
   const transcriptEntries = manifest.files && manifest.files.transcript
     ? await readTranscriptEntries(manifest.files.transcript)
     : [];
   const sessionEntries = transcriptEntries.filter((entry) => entry && entry.v === 2 && entry.sessionKey === localSessionKey);
   const lastSessionEntry = sessionEntries[sessionEntries.length - 1] || null;
+  const lastRecordedActualPrompt = lastSessionEntry &&
+    lastSessionEntry.payload &&
+    lastSessionEntry.payload.role === 'user'
+      ? String(lastSessionEntry.payload.content || '')
+      : String((lastSessionEntry && lastSessionEntry.text) || '');
   const promptAlreadyRecorded = !!lastSessionEntry &&
     lastSessionEntry.kind === 'user_message' &&
     lastSessionEntry.requestId === request.id &&
-    lastSessionEntry.text === recordedPrompt &&
+    lastRecordedActualPrompt === recordedActualPrompt &&
+    (
+      lastSessionEntry.text === recordedVisiblePrompt ||
+      lastSessionEntry.text === recordedActualPrompt
+    ) &&
     (lastSessionEntry.loopIndex == null || lastSessionEntry.loopIndex === loop.index);
   const shouldAppendPromptRecord = !promptAlreadyRecorded;
 
@@ -424,8 +452,8 @@ async function runApiWorkerTurn({
       loopIndex: loop.index,
       agentId: isCustomAgent ? agentId : null,
       workerCli: 'api',
-      text: recordedPrompt,
-      payload: { role: 'user', content: recordedPrompt },
+      text: recordedVisiblePrompt,
+      payload: { role: 'user', content: recordedActualPrompt },
     });
     await appendTranscriptRecord(manifest, userEntry);
     replayEntries = [...transcriptEntries, userEntry];
@@ -546,6 +574,140 @@ async function runApiWorkerTurn({
     });
   }
   renderer.claude(`Using ${providerId}/${model}`);
+
+  async function executeSingleToolCall(tc, {
+    visibleToolNamesSnapshot = null,
+    replayToModel = true,
+    renderLifecycle = true,
+    syntheticToolCallId = null,
+  } = {}) {
+    const toolName = tc.function.name;
+    const baseName = baseToolName(toolName);
+    const toolArgs = tc.function.arguments;
+    const parsedInput = parseToolInput(toolArgs);
+    const visibleSnapshot = typeof visibleToolNamesSnapshot === 'function'
+      ? visibleToolNamesSnapshot()
+      : (Array.isArray(visibleToolNamesSnapshot) ? visibleToolNamesSnapshot : currentVisibleToolNames());
+    const argsPreview = parsedInput.path || parsedInput.command || parsedInput.pattern || '';
+    const toolCallId = syntheticToolCallId || tc.id;
+    const cardId = toolCallId ? `api-${toolCallId}` : `api-${request.id}-${iterations}-${(fullMessages && fullMessages.length) || 0}`;
+    const isChromeDevtools = toolName.includes('chrome_devtools') || toolName.includes('chrome-devtools');
+    const isComputerUse = isChromeDevtools || toolName.includes('computer_control') || toolName.includes('computer-control');
+    const cardMeta = { isComputerUse, isChromeDevtools };
+
+    if (renderLifecycle && toolName !== MCP_BATCH_NAME) {
+      const renderedStartCard = renderStartCard(baseName, parsedInput, renderer, label, cardId, cardMeta);
+      if (!renderedStartCard) {
+        renderer.claude(`Calling ${toolName}${argsPreview ? ': ' + argsPreview : ''}`);
+      }
+    }
+
+    emitEvent({ source: 'worker-api', type: 'tool_call', name: toolName, args: toolArgs, input: parsedInput });
+    await appendTranscriptRecord(manifest, createTranscriptRecord({
+      kind: 'tool_call',
+      sessionKey: localSessionKey,
+      backend,
+      requestId: request.id,
+      loopIndex: loop.index,
+      agentId: isCustomAgent ? agentId : null,
+      workerCli: 'api',
+      toolCallId,
+      toolName,
+      input: parsedInput,
+      payload: tc,
+    }));
+
+    let result;
+    if (toolName === SEARCH_MCP_TOOLS_NAME) {
+      const maxResults = Math.max(1, Math.min(5, Number(parsedInput.maxResults) || 5));
+      const matches = searchToolCatalog(toolCatalog, parsedInput.query, {
+        maxResults,
+        server: parsedInput.server || '',
+      });
+      const activated = [];
+      const alreadyActive = [];
+      for (const match of matches) {
+        if (agentSession.apiVisibleToolNames.includes(match.name)) {
+          alreadyActive.push(match.name);
+          touchActivatedTool(agentSession, match.name);
+          continue;
+        }
+        agentSession.apiVisibleToolNames = uniqueToolNames([...agentSession.apiVisibleToolNames, match.name]);
+        activated.push(match.name);
+        touchActivatedTool(agentSession, match.name);
+      }
+      const evicted = pruneVisibleTools(agentSession, lazyToolLimit);
+      result = buildSearchToolResult(parsedInput.query, matches, {
+        activated,
+        alreadyActive,
+        evicted,
+      });
+      emitEvent({
+        source: 'worker-api',
+        type: 'tool_activation',
+        name: SEARCH_MCP_TOOLS_NAME,
+        activated,
+        alreadyActive,
+        evicted,
+      });
+      await saveManifest(manifest);
+    } else if (lazyMcpToolsEnabled && !visibleSnapshot.includes(toolName)) {
+      result = errorToolResult(`Error: tool "${toolName}" is not currently active. Use ${SEARCH_MCP_TOOLS_NAME} first.`);
+    } else {
+      result = await executeTool(tc, allMcpServers, manifest.repoRoot, {
+        onRecoverChromeDevtools: async ({ toolName: recoverToolName, error }) => {
+          await recoverChromeDevtoolsSession(manifest, agentSession, { toolName: recoverToolName, error });
+        },
+      });
+      if (lazyMcpToolsEnabled) {
+        touchActivatedTool(agentSession, toolName);
+      }
+      if (learnedApiToolsEnabled && !result.isError && toolName !== MCP_BATCH_NAME) {
+        recordLearnedApiToolUsage(learnedAgentId, toolName);
+      }
+    }
+
+    const toolText = summarizeToolResultForModel(toolName, parsedInput, result);
+    const toolResultEntry = createTranscriptRecord({
+      kind: 'tool_result',
+      sessionKey: localSessionKey,
+      backend,
+      requestId: request.id,
+      loopIndex: loop.index,
+      agentId: isCustomAgent ? agentId : null,
+      workerCli: 'api',
+      toolCallId,
+      toolName,
+      input: parsedInput,
+      text: toolText,
+      result,
+    });
+    await appendTranscriptRecord(manifest, toolResultEntry);
+    if (!canonicalHistoryAvailable && replayToModel) {
+      messages.push(...providerMessagesForToolResult(toolResultEntry));
+    }
+
+    if (renderLifecycle && toolName !== MCP_BATCH_NAME) {
+      const renderedCompleteCard = renderCompleteCard(baseName, parsedInput, result, renderer, label, cardId, cardMeta);
+      if (!renderedCompleteCard) {
+        renderer.claude(`Finished ${toolName}`);
+      }
+      if (turnTracker) {
+        turnTracker.noteRenderedToolCard(baseName, parsedInput, label);
+        await turnTracker.noteToolCompletion(baseName, parsedInput, result, label);
+      }
+    }
+
+    emitEvent({
+      source: 'worker-api',
+      type: 'tool_result',
+      name: toolName,
+      summary: toolText,
+      resultLength: JSON.stringify(result).length,
+    });
+
+    return { parsedInput, result, toolText };
+  }
 
   let iterations = 0;
   let finalText = '';
@@ -730,21 +892,23 @@ async function runApiWorkerTurn({
 
     for (const tc of toolCalls) {
       const toolName = tc.function.name;
-      const baseName = baseToolName(toolName);
-      const toolArgs = tc.function.arguments;
-      const parsedInput = parseToolInput(toolArgs);
-      const argsPreview = parsedInput.path || parsedInput.command || parsedInput.pattern || '';
-      const cardId = tc.id ? `api-${tc.id}` : `api-${request.id}-${iterations}-${(fullMessages && fullMessages.length) || 0}`;
-
-      const isChromeDevtools = toolName.includes('chrome_devtools') || toolName.includes('chrome-devtools');
-      const isComputerUse = isChromeDevtools || toolName.includes('computer_control') || toolName.includes('computer-control');
-      const cardMeta = { isComputerUse, isChromeDevtools };
-      const renderedStartCard = renderStartCard(baseName, parsedInput, renderer, label, cardId, cardMeta);
-      if (!renderedStartCard) {
-        renderer.claude(`Calling ${toolName}${argsPreview ? ': ' + argsPreview : ''}`);
+      if (toolName !== MCP_BATCH_NAME) {
+        await executeSingleToolCall(tc, {
+          visibleToolNamesSnapshot: visibleToolNames,
+          replayToModel: true,
+          renderLifecycle: true,
+        });
+        continue;
       }
 
-      emitEvent({ source: 'worker-api', type: 'tool_call', name: toolName, args: toolArgs, input: parsedInput });
+      const parentInput = parseToolInput(tc.function.arguments);
+      const snapshotVisibleNames = Array.isArray(visibleToolNames) ? visibleToolNames.slice() : [];
+      const subcalls = Array.isArray(parentInput.calls) ? parentInput.calls : [];
+      const continueOnError = parentInput.continueOnError === true;
+      const batchCalls = [];
+      let stoppedEarly = false;
+
+      emitEvent({ source: 'worker-api', type: 'tool_call', name: toolName, args: tc.function.arguments, input: parentInput });
       await appendTranscriptRecord(manifest, createTranscriptRecord({
         kind: 'tool_call',
         sessionKey: localSessionKey,
@@ -755,60 +919,75 @@ async function runApiWorkerTurn({
         workerCli: 'api',
         toolCallId: tc.id,
         toolName,
-        input: parsedInput,
+        input: parentInput,
         payload: tc,
       }));
 
-      let result;
-      if (toolName === SEARCH_MCP_TOOLS_NAME) {
-        const maxResults = Math.max(1, Math.min(5, Number(parsedInput.maxResults) || 5));
-        const matches = searchToolCatalog(toolCatalog, parsedInput.query, {
-          maxResults,
-          server: parsedInput.server || '',
+      if (!Array.isArray(parentInput.calls)) {
+        batchCalls.push({
+          id: 'invalid_calls',
+          tool: MCP_BATCH_NAME,
+          ok: false,
+          error: 'calls must be an array',
         });
-        const activated = [];
-        const alreadyActive = [];
-        for (const match of matches) {
-          if (agentSession.apiVisibleToolNames.includes(match.name)) {
-            alreadyActive.push(match.name);
-            touchActivatedTool(agentSession, match.name);
+      } else {
+        for (let index = 0; index < subcalls.length; index += 1) {
+          const subcall = subcalls[index] || {};
+          const subToolName = String(subcall.tool || '').trim();
+          const subToolCallId = `${tc.id || `batch_${request.id}_${iterations}`}:${index}`;
+
+          if (!subToolName) {
+            batchCalls.push({ id: subcall.id || String(index), tool: '(missing)', ok: false, error: 'Missing tool name' });
+            if (!continueOnError) {
+              stoppedEarly = true;
+              break;
+            }
             continue;
           }
-          agentSession.apiVisibleToolNames = uniqueToolNames([...agentSession.apiVisibleToolNames, match.name]);
-          activated.push(match.name);
-          touchActivatedTool(agentSession, match.name);
-        }
-        const evicted = pruneVisibleTools(agentSession, lazyToolLimit);
-        result = buildSearchToolResult(parsedInput.query, matches, {
-          activated,
-          alreadyActive,
-          evicted,
-        });
-        emitEvent({
-          source: 'worker-api',
-          type: 'tool_activation',
-          name: SEARCH_MCP_TOOLS_NAME,
-          activated,
-          alreadyActive,
-          evicted,
-        });
-        await saveManifest(manifest);
-      } else if (lazyMcpToolsEnabled && !visibleToolNames.includes(toolName)) {
-        result = errorToolResult(`Error: tool "${toolName}" is not currently active. Use ${SEARCH_MCP_TOOLS_NAME} first.`);
-      } else {
-        result = await executeTool(tc, allMcpServers, manifest.repoRoot, {
-          onRecoverChromeDevtools: async ({ toolName: recoverToolName, error }) => {
-            await recoverChromeDevtoolsSession(manifest, agentSession, { toolName: recoverToolName, error });
-          },
-        });
-        if (lazyMcpToolsEnabled) {
-          touchActivatedTool(agentSession, toolName);
-        }
-        if (learnedApiToolsEnabled && !result.isError) {
-          recordLearnedApiToolUsage(learnedAgentId, toolName);
+          if (subToolName === MCP_BATCH_NAME) {
+            batchCalls.push({ id: subcall.id || String(index), tool: subToolName, ok: false, error: 'Nested mcp_batch calls are not allowed' });
+            if (!continueOnError) {
+              stoppedEarly = true;
+              break;
+            }
+            continue;
+          }
+
+          const childToolCall = {
+            id: subToolCallId,
+            type: 'function',
+            function: {
+              name: subToolName,
+              arguments: JSON.stringify(subcall.arguments || {}),
+            },
+          };
+          const execution = await executeSingleToolCall(childToolCall, {
+            visibleToolNamesSnapshot: snapshotVisibleNames,
+            replayToModel: false,
+            renderLifecycle: true,
+            syntheticToolCallId: subToolCallId,
+          });
+          batchCalls.push({
+            id: subcall.id || String(index),
+            tool: subToolName,
+            ok: !execution.result.isError,
+            summary: execution.result.isError ? undefined : execution.toolText,
+            error: execution.result.isError ? execution.toolText : undefined,
+            tool_call_id: subToolCallId,
+          });
+          if (execution.result.isError && !continueOnError) {
+            stoppedEarly = true;
+            break;
+          }
         }
       }
-      const toolResultEntry = createTranscriptRecord({
+
+      const batchResult = buildBatchToolResult(batchCalls, {
+        continueOnError,
+        stoppedEarly,
+      });
+      const parentToolText = summarizeToolResultForModel(MCP_BATCH_NAME, parentInput, batchResult);
+      const parentResultEntry = createTranscriptRecord({
         kind: 'tool_result',
         sessionKey: localSessionKey,
         backend,
@@ -818,29 +997,20 @@ async function runApiWorkerTurn({
         workerCli: 'api',
         toolCallId: tc.id,
         toolName,
-        input: parsedInput,
-        text: summarizeToolResult(result),
-        result,
+        input: parentInput,
+        text: parentToolText,
+        result: batchResult,
       });
-      await appendTranscriptRecord(manifest, toolResultEntry);
+      await appendTranscriptRecord(manifest, parentResultEntry);
       if (!canonicalHistoryAvailable) {
-        messages.push(...providerMessagesForToolResult(toolResultEntry));
-      }
-
-      const renderedCompleteCard = renderCompleteCard(baseName, parsedInput, result, renderer, label, cardId, cardMeta);
-      if (!renderedCompleteCard) {
-        renderer.claude(`Finished ${toolName}`);
-      }
-      if (turnTracker) {
-        turnTracker.noteRenderedToolCard(baseName, parsedInput, label);
-        await turnTracker.noteToolCompletion(baseName, parsedInput, result, label);
+        messages.push(...providerMessagesForToolResult(parentResultEntry));
       }
       emitEvent({
         source: 'worker-api',
         type: 'tool_result',
         name: toolName,
-        summary: summarizeToolResult(result),
-        resultLength: JSON.stringify(result).length,
+        summary: parentToolText,
+        resultLength: JSON.stringify(batchResult).length,
       });
     }
   }
@@ -867,7 +1037,7 @@ async function runApiWorkerTurn({
 
   renderer.workerLabel = prevWorkerLabel;
   return {
-    prompt: recordedPrompt,
+    prompt: recordedActualPrompt,
     exitCode: 0,
     signal: null,
     sessionId: localSessionKey,

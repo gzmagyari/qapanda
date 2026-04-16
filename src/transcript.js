@@ -627,7 +627,7 @@ function toolReturnsScreenshot(entry) {
 }
 
 function normalizedToolProvenanceText(entry, result, options = {}) {
-  const rawToolText = summarizeToolResult(result)
+  const rawToolText = String(entry && entry.text ? entry.text : summarizeToolResult(result))
     .replace(/\n?\[Screenshot captured:[^\]]+\]/g, '')
     .trim();
   const assetId = toolResultAssetId(entry);

@@ -8,10 +8,13 @@ const {
 
 const TEST_MUTATION_TOOLS = new Set([
   'create_test',
+  'create_test_with_steps',
   'add_test_step',
   'update_test_step',
+  'update_test_steps_batch',
   'run_test',
   'update_step_result',
+  'record_test_run',
   'complete_test_run',
   'create_bug_from_test',
   'link_test_to_task',
@@ -22,6 +25,7 @@ const TASK_MUTATION_TOOLS = new Set([
   'create_task',
   'update_task_status',
   'update_task_fields',
+  'update_task_batch',
   'add_comment',
   'add_progress_update',
   'edit_comment',

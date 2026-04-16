@@ -83,7 +83,7 @@ describe('API Worker - lazy MCP tools', () => {
     });
 
     assert.equal(seenTools[0].includes('search_mcp_tools'), true);
-    assert.deepEqual(seenTools[0], ['search_mcp_tools']);
+    assert.equal(seenTools[0].includes('mcp_batch'), true);
     assert.equal(seenTools[0].includes('builtin_tools__read_file'), false);
     assert.equal(seenTools[1].includes('builtin_tools__read_file'), true);
     assert.equal(seenTools[3].includes('builtin_tools__read_file'), true);
@@ -210,7 +210,8 @@ describe('API Worker - lazy MCP tools', () => {
         agentId: 'dev',
       });
 
-      assert.deepEqual(seenTools[0], ['search_mcp_tools']);
+      assert.equal(seenTools[0].includes('search_mcp_tools'), true);
+      assert.equal(seenTools[0].includes('mcp_batch'), true);
       assert.equal(seenTools[3].includes('search_mcp_tools'), true);
       assert.equal(seenTools[3].includes('builtin_tools__read_file'), true);
     } finally {
@@ -307,6 +308,106 @@ describe('API Worker - lazy MCP tools', () => {
     assert.match(seenSystemPrompts[0], /builtin-tools: .*grep_search.*read_file/i);
     assert.match(seenSystemPrompts[0], /cc_tasks: add_comment, search_tasks/);
     assert.doesNotMatch(seenSystemPrompts[0], /cc_tasks__search_tasks/);
+  });
+});
+
+describe('API Worker - mcp_batch', () => {
+  it('executes multiple visible tools inside one batch turn and replays only the parent batch result to the model', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const seenToolLists = [];
+    let apiCalls = 0;
+    const mcpServer = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        const parsed = JSON.parse(body || '{}');
+        if (parsed.method === 'tools/list') {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: parsed.id,
+            result: {
+              tools: [
+                { name: 'search_tests', description: 'Search tests', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } },
+                { name: 'get_test', description: 'Get test', inputSchema: { type: 'object', properties: { test_id: { type: 'string' } } } },
+              ],
+            },
+          }));
+          return;
+        }
+        if (parsed.method === 'tools/call') {
+          const name = parsed.params && parsed.params.name;
+          let text = '{}';
+          if (name === 'search_tests') {
+            text = JSON.stringify([{ id: 'test-1', title: 'Login flow', status: 'partial', match_score: 93 }]);
+          } else if (name === 'get_test') {
+            text = JSON.stringify({
+              id: 'test-1',
+              title: 'Login flow',
+              environment: 'browser',
+              status: 'partial',
+              steps: [{ id: 1, description: 'Open login page', status: 'pass' }],
+              runs: [{ id: 1, status: 'partial' }],
+            });
+          }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result: { content: [{ type: 'text', text }] } }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end();
+      });
+    });
+    await new Promise((resolve) => mcpServer.listen(0, '127.0.0.1', resolve));
+    const address = mcpServer.address();
+    const manifest = makeManifest((_req, body) => {
+      apiCalls += 1;
+      seenToolLists.push((body.tools || []).map((tool) => tool.function && tool.function.name).filter(Boolean));
+      if (apiCalls === 1) {
+        return {
+          toolCalls: [{
+            id: 'batch_1',
+            name: 'mcp_batch',
+            arguments: {
+              calls: [
+                { id: 's1', tool: 'cc_tests__search_tests', arguments: { query: 'login' } },
+                { id: 'g1', tool: 'cc_tests__get_test', arguments: { test_id: 'test-1' } },
+              ],
+            },
+          }],
+        };
+      }
+      return { text: 'Batch completed.' };
+    });
+    manifest.workerMcpServers = {
+      'cc-tests': { url: `http://127.0.0.1:${address.port}/mcp` },
+    };
+
+    try {
+      await runApiWorkerTurn({
+        manifest,
+        request: { id: 'batch-run' },
+        loop: { index: 1, controller: {} },
+        workerRecord: makeWorkerRecord(),
+        prompt: 'find and inspect the login test',
+        renderer: makeRenderer(),
+        emitEvent: noopEmit,
+      });
+    } finally {
+      await new Promise((resolve) => mcpServer.close(resolve));
+    }
+
+    assert.equal(seenToolLists[0].includes('mcp_batch'), true);
+    const entries = transcriptEntries(manifest);
+    assert.ok(entries.find((entry) => entry.kind === 'tool_call' && entry.toolName === 'mcp_batch'));
+    assert.ok(entries.find((entry) => entry.kind === 'tool_call' && entry.toolName === 'cc_tests__search_tests'));
+    assert.ok(entries.find((entry) => entry.kind === 'tool_call' && entry.toolName === 'cc_tests__get_test'));
+    const batchResult = entries.find((entry) => entry.kind === 'tool_result' && entry.toolName === 'mcp_batch');
+    assert.ok(batchResult);
+    assert.match(batchResult.text, /Batch executed 2\/2 calls/);
+    const replay = buildSessionReplay(entries, 'worker:default');
+    assert.ok(replay.some((msg) => msg.role === 'tool' && /Batch executed 2\/2 calls/.test(msg.content)));
+    assert.equal(replay.filter((msg) => msg.role === 'tool' && /Found 1 tests/.test(msg.content)).length, 1);
   });
 });
 after(async () => {
@@ -1037,6 +1138,53 @@ describe('API Worker - unlimited tool iterations', () => {
 });
 
 describe('API Worker — transcript prompt dedupe', () => {
+  it('replays the real prompt while keeping the visible prompt in transcript text', async () => {
+    const { runApiWorkerTurn } = require('../../src/api-worker');
+    const seenMessages = [];
+    const manifest = makeManifest((_req, body) => {
+      seenMessages.push(body.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })));
+      return { text: `response ${seenMessages.length}` };
+    });
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r-visible-1' },
+      loop: { index: 1, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'Hidden worker instructions for run 1',
+      visiblePrompt: 'User-facing prompt 1',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+    });
+
+    await runApiWorkerTurn({
+      manifest,
+      request: { id: 'r-visible-2' },
+      loop: { index: 2, controller: {} },
+      workerRecord: makeWorkerRecord(),
+      prompt: 'Hidden worker instructions for run 2',
+      visiblePrompt: 'User-facing prompt 2',
+      renderer: makeRenderer(),
+      emitEvent: noopEmit,
+    });
+
+    assert.equal(seenMessages.length, 2);
+    assert.ok(seenMessages[0].some((message) => message.role === 'user' && message.content === 'Hidden worker instructions for run 1'));
+    assert.ok(!seenMessages[0].some((message) => message.role === 'user' && message.content === 'User-facing prompt 1'));
+    assert.ok(seenMessages[1].some((message) => message.role === 'user' && message.content === 'Hidden worker instructions for run 1'));
+    assert.ok(seenMessages[1].some((message) => message.role === 'user' && message.content === 'Hidden worker instructions for run 2'));
+    assert.ok(!seenMessages[1].some((message) => message.role === 'user' && message.content === 'User-facing prompt 1'));
+
+    const userEntries = transcriptEntries(manifest).filter((entry) => entry.kind === 'user_message');
+    assert.equal(userEntries[0].text, 'User-facing prompt 1');
+    assert.equal(userEntries[0].payload.content, 'Hidden worker instructions for run 1');
+    assert.equal(userEntries[1].text, 'User-facing prompt 2');
+    assert.equal(userEntries[1].payload.content, 'Hidden worker instructions for run 2');
+  });
+
   it('does not append a duplicate direct-turn user_message when the request prompt is already in transcript', async () => {
     const { runApiWorkerTurn } = require('../../src/api-worker');
     const manifest = makeManifest(() => ({ text: 'Hello again.' }));
@@ -1046,8 +1194,8 @@ describe('API Worker — transcript prompt dedupe', () => {
       backend: 'user',
       requestId: 'r1',
       loopIndex: null,
-      text: 'hi',
-      payload: { role: 'user', content: 'hi' },
+      text: 'Visible hi',
+      payload: { role: 'user', content: 'Hidden hi' },
     });
     fs.appendFileSync(manifest.files.transcript, JSON.stringify(existingPrompt) + '\n');
 
@@ -1056,7 +1204,8 @@ describe('API Worker — transcript prompt dedupe', () => {
       request: { id: 'r1' },
       loop: { index: 1, controller: {} },
       workerRecord: makeWorkerRecord(),
-      prompt: 'hi',
+      prompt: 'Hidden hi',
+      visiblePrompt: 'Visible hi',
       renderer: makeRenderer(),
       emitEvent: noopEmit,
     });

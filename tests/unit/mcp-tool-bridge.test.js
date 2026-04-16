@@ -5,7 +5,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { createMcpHttpServer } = require('../../extension/mcp-http-server');
 const {
+  MCP_BATCH_NAME,
   SEARCH_MCP_TOOLS_NAME,
+  buildMcpBatchToolDefinition,
   buildMcpCapabilityIndex,
   buildSearchMcpToolDefinition,
   loadAllTools,
@@ -52,6 +54,13 @@ describe('lazy MCP catalog helpers', () => {
     assert.equal(tool.type, 'function');
     assert.equal(tool.function.name, SEARCH_MCP_TOOLS_NAME);
     assert.ok(tool.function.parameters.required.includes('query'));
+  });
+
+  it('exposes a synthetic mcp_batch definition', () => {
+    const tool = buildMcpBatchToolDefinition();
+    assert.equal(tool.type, 'function');
+    assert.equal(tool.function.name, MCP_BATCH_NAME);
+    assert.ok(tool.function.parameters.required.includes('calls'));
   });
 
   it('builds a deterministic MCP capability index grouped by server name', () => {

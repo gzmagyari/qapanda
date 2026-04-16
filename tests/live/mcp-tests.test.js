@@ -63,12 +63,15 @@ describe('Tests MCP server (stdio)', () => {
     const res = await mcp.call('tools/list', {});
     const names = res.result.tools.map(t => t.name);
     assert.ok(names.includes('create_test'));
+    assert.ok(names.includes('create_test_with_steps'));
     assert.ok(names.includes('list_tests'));
     assert.ok(names.includes('add_test_step'));
     assert.ok(names.includes('run_test'));
     assert.ok(names.includes('search_tests'));
     assert.ok(names.includes('reset_test_steps'));
     assert.ok(names.includes('update_step_result'));
+    assert.ok(names.includes('update_test_steps_batch'));
+    assert.ok(names.includes('record_test_run'));
     assert.ok(names.includes('complete_test_run'));
     assert.ok(names.includes('create_bug_from_test'));
     assert.ok(names.includes('get_test_summary'));
@@ -172,6 +175,81 @@ describe('Tests MCP server (stdio)', () => {
     assert.equal(tests[0].title, 'Browser test');
   });
 
+  it('creates a test with steps in one call', async () => {
+    mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
+    await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+
+    const res = await mcp.callTool('create_test_with_steps', {
+      title: 'Batch-created login test',
+      environment: 'browser',
+      steps: [
+        { description: 'Open login page', expectedResult: 'Login page loads' },
+        { description: 'Submit invalid credentials', expectedResult: 'Inline error is shown' },
+      ],
+    });
+    const created = JSON.parse(res.result.content[0].text);
+    assert.equal(created.steps.length, 2);
+    assert.equal(created.steps_added, 2);
+  });
+
+  it('updates test steps in one ordered batch', async () => {
+    mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
+    await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+    await mcp.callTool('create_test_with_steps', {
+      title: 'Reusable login test',
+      environment: 'browser',
+      steps: [
+        { description: 'Open page', expectedResult: 'Page loads' },
+        { description: 'Submit form', expectedResult: 'Form submits' },
+      ],
+    });
+
+    const batchRes = await mcp.callTool('update_test_steps_batch', {
+      test_id: 'test-1',
+      operations: [
+        { action: 'update', step_id: 1, description: 'Open login page' },
+        { action: 'delete', step_id: 2 },
+        { action: 'add', description: 'Submit invalid credentials', expectedResult: 'Validation error is shown' },
+      ],
+    });
+    const summary = JSON.parse(batchRes.result.content[0].text);
+    assert.equal(summary.added, 1);
+    assert.equal(summary.updated, 1);
+    assert.equal(summary.deleted, 1);
+
+    const testRes = await mcp.callTool('get_test', { test_id: 'test-1' });
+    const test = JSON.parse(testRes.result.content[0].text);
+    assert.equal(test.steps.length, 2);
+    assert.equal(test.steps[0].description, 'Open login page');
+  });
+
+  it('records an entire test run in one call', async () => {
+    mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
+    await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+    await mcp.callTool('create_test_with_steps', {
+      title: 'One-shot run test',
+      environment: 'browser',
+      steps: [
+        { description: 'Open page', expectedResult: 'Page loads' },
+        { description: 'Submit form', expectedResult: 'Validation is shown' },
+      ],
+    });
+
+    const runRes = await mcp.callTool('record_test_run', {
+      test_id: 'test-1',
+      agent: 'QA Browser',
+      step_results: [
+        { step_id: 1, status: 'pass' },
+        { step_id: 2, status: 'fail', actualResult: 'Submitted successfully' },
+      ],
+      notes: 'Validation bug reproduced',
+    });
+    const summary = JSON.parse(runRes.result.content[0].text);
+    assert.equal(summary.created_run, true);
+    assert.equal(summary.status, 'partial');
+    assert.equal(summary.updated_steps, 2);
+  });
+
   it('searches for reusable tests and resets steps before rerun', async () => {
     mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
     await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
@@ -199,6 +277,56 @@ describe('Tests MCP server (stdio)', () => {
     assert.equal(test.steps[0].status, 'untested');
     assert.equal(test.steps[0].actualResult, null);
     assert.equal(test.runs.length, 1, 'should preserve run history');
+    assert.equal(test.runs[0].stepResults[0].status, 'fail', 'reset should not rewrite historical run evidence');
+    assert.equal(test.runs[0].stepResults[0].actualResult, 'No validation message');
+  });
+
+  it('record_test_run reset_first preserves earlier run evidence', async () => {
+    mcp = startTestsMcp(path.join(tmp.ccDir, 'tests.json'));
+    await mcp.call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+    await mcp.callTool('create_test_with_steps', {
+      title: 'Login rerun history',
+      environment: 'browser',
+      steps: [
+        { description: 'Open login page', expectedResult: 'Page loads' },
+        { description: 'Submit invalid credentials', expectedResult: 'Validation error appears' },
+      ],
+    });
+
+    const firstRunRes = await mcp.callTool('record_test_run', {
+      test_id: 'test-1',
+      agent: 'QA Browser',
+      step_results: [
+        { step_id: 1, status: 'pass' },
+        { step_id: 2, status: 'fail', actualResult: 'No validation shown' },
+      ],
+      notes: 'Initial failure',
+    });
+    const firstRun = JSON.parse(firstRunRes.result.content[0].text);
+
+    const rerunRes = await mcp.callTool('record_test_run', {
+      test_id: 'test-1',
+      agent: 'QA Browser',
+      reset_first: true,
+      step_results: [
+        { step_id: 1, status: 'pass' },
+        { step_id: 2, status: 'pass', actualResult: 'Validation shown correctly' },
+      ],
+      notes: 'Rerun passing',
+    });
+    const rerun = JSON.parse(rerunRes.result.content[0].text);
+    assert.equal(firstRun.run_id, 1);
+    assert.equal(rerun.run_id, 2);
+
+    const testRes = await mcp.callTool('get_test', { test_id: 'test-1' });
+    const test = JSON.parse(testRes.result.content[0].text);
+    assert.equal(test.runs.length, 2);
+    assert.equal(test.runs[0].stepResults[1].status, 'fail');
+    assert.equal(test.runs[0].stepResults[1].actualResult, 'No validation shown');
+    assert.equal(test.runs[1].stepResults[1].status, 'pass');
+    assert.equal(test.runs[1].stepResults[1].actualResult, 'Validation shown correctly');
+    assert.equal(test.steps[0].status, 'pass');
+    assert.equal(test.steps[1].status, 'pass');
   });
 
   it('links and unlinks tests to tasks', async () => {
