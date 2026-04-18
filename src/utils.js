@@ -26,6 +26,63 @@ async function readText(filePath, fallback = '') {
   }
 }
 
+async function readTextTail(filePath, options = {}) {
+  const fallback = Object.prototype.hasOwnProperty.call(options, 'fallback')
+    ? options.fallback
+    : '';
+  const requestedBytes = Number.isFinite(options.bytes)
+    ? Math.max(1, Number(options.bytes))
+    : 256 * 1024;
+  const trimPartialFirstLine = options.trimPartialFirstLine !== false;
+  const truncationBannerText = typeof options.truncationBannerText === 'string' && options.truncationBannerText.trim()
+    ? options.truncationBannerText
+    : null;
+
+  let handle = null;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const stat = await handle.stat();
+    const fileSize = Number(stat && stat.size) || 0;
+    if (fileSize <= 0) {
+      return { text: '', truncated: false, fileSize: 0, bytesRead: 0, startOffset: 0 };
+    }
+
+    const bytesRead = Math.min(fileSize, requestedBytes);
+    const startOffset = Math.max(0, fileSize - bytesRead);
+    const buffer = Buffer.alloc(bytesRead);
+    await handle.read(buffer, 0, bytesRead, startOffset);
+
+    let sliceStart = 0;
+    if (trimPartialFirstLine && startOffset > 0) {
+      const newlineByteIndex = buffer.indexOf(0x0A);
+      sliceStart = newlineByteIndex >= 0 ? newlineByteIndex + 1 : bytesRead;
+    }
+
+    let text = buffer.subarray(sliceStart).toString('utf8');
+    const truncated = startOffset > 0;
+    if (truncated && truncationBannerText) {
+      text = `${truncationBannerText}\n${text}`;
+    }
+
+    return {
+      text,
+      truncated,
+      fileSize,
+      bytesRead,
+      startOffset,
+    };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { text: fallback, truncated: false, fileSize: 0, bytesRead: 0, startOffset: 0 };
+    }
+    throw error;
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
 async function writeText(filePath, text) {
   await ensureDir(path.dirname(filePath));
   await fs.writeFile(filePath, text, 'utf8');
@@ -179,6 +236,7 @@ module.exports = {
   readAllStdin,
   readJson,
   readText,
+  readTextTail,
   safeJsonParse,
   slugify,
   summarizeError,

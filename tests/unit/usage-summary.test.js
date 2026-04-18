@@ -227,6 +227,48 @@ describe('usage summary helper', () => {
     assert.equal(manifest.usageSummary.updatedAt, '2026-04-14T10:00:02.000Z');
   });
 
+  it('backfills usage summary by streaming response logs instead of whole-file readFile calls', async () => {
+    const manifest = makeManifest();
+    const workerLoopDir = path.join(manifest.runDir, 'requests', 'req-0002', 'loop-0001');
+    fs.mkdirSync(workerLoopDir, { recursive: true });
+    fs.writeFileSync(path.join(workerLoopDir, 'worker.api.iter-0001.response.jsonl'), [
+      JSON.stringify({ type: 'ignored', usage: null }),
+      JSON.stringify({
+        ts: '2026-04-14T11:00:00.000Z',
+        type: 'done',
+        usage: {
+          promptTokens: 42,
+          completionTokens: 7,
+          cachedTokens: 5,
+          cacheWriteTokens: 1,
+          raw: {
+            cost: 0.0042,
+            cost_details: {
+              upstream_inference_prompt_cost: 0.0038,
+              upstream_inference_completions_cost: 0.0004,
+            },
+          },
+        },
+      }),
+      '',
+    ].join('\n'));
+
+    const fsPromises = require('node:fs/promises');
+    const originalReadFile = fsPromises.readFile;
+    fsPromises.readFile = async () => {
+      throw new Error('backfillUsageSummaryFromRun should not use readFile');
+    };
+    try {
+      const result = await backfillUsageSummaryFromRun(manifest);
+      assert.equal(result.changed, true);
+      assert.equal(manifest.usageSummary.totalCostUsd, 0.0042);
+      assert.equal(manifest.usageSummary.promptTokens, 42);
+      assert.equal(manifest.usageSummary.updatedAt, '2026-04-14T11:00:00.000Z');
+    } finally {
+      fsPromises.readFile = originalReadFile;
+    }
+  });
+
   it('infers the actor from response log paths', () => {
     assert.equal(responseLogActorForPath('C:\\run\\requests\\req-1\\loop-0001\\worker.api.iter-0001.response.jsonl'), 'worker');
     assert.equal(responseLogActorForPath('C:\\run\\requests\\req-1\\loop-0001\\controller.api.response.jsonl'), 'controller');

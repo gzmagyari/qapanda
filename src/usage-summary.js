@@ -1,6 +1,8 @@
-const fs = require('node:fs/promises');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { nowIso, readText } = require('./utils');
+const readline = require('node:readline');
+const { nowIso } = require('./utils');
 
 function createEmptyUsageActorSummary() {
   return {
@@ -240,18 +242,11 @@ async function backfillUsageSummaryFromRun(manifest) {
   for (const filePath of files) {
     const actor = responseLogActorForPath(filePath);
     if (!actor) continue;
-    const lines = String(await readText(filePath, '') || '').split(/\r?\n/).filter(Boolean);
-    for (const line of lines) {
-      let parsed = null;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (!parsed || parsed.type !== 'done' || !parsed.usage) continue;
+    await scanUsageResponseLog(filePath, async (parsed) => {
+      if (!parsed || parsed.type !== 'done' || !parsed.usage) return;
       summary = applyUsageDelta(summary, actor, usageDeltaFromUsage(parsed.usage), parsed.ts || null);
       found = true;
-    }
+    });
   }
 
   const normalizedCurrent = normalizeUsageSummary(manifest.usageSummary);
@@ -266,7 +261,7 @@ async function collectResponseLogFiles(rootDir) {
   async function walk(currentDir) {
     let entries = [];
     try {
-      entries = await fs.readdir(currentDir, { withFileTypes: true });
+      entries = await fsp.readdir(currentDir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -283,6 +278,26 @@ async function collectResponseLogFiles(rootDir) {
   }
   await walk(rootDir);
   return found.sort();
+}
+
+async function scanUsageResponseLog(filePath, onRecord) {
+  const input = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      if (!line) continue;
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      await onRecord(parsed);
+    }
+  } finally {
+    rl.close();
+    input.destroy();
+  }
 }
 
 function firstFinite(...values) {

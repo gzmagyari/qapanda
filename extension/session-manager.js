@@ -16,7 +16,7 @@ const {
   resolveRunDir,
   saveManifest,
 } = require('./src/state');
-const { readText, summarizeError } = require('./src/utils');
+const { readTextTail, summarizeError } = require('./src/utils');
 const { discoverExternalChatSessions } = require('./src/external-chat-discovery');
 const {
   getImportedCodexSessionId,
@@ -41,6 +41,8 @@ const {
 const { backfillUsageSummaryFromRun, usageSummaryMessage, usageSummaryNeedsBackfill } = require('./src/usage-summary');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
+const PROGRESS_TAIL_MAX_BYTES = 512 * 1024;
+const PROGRESS_TAIL_TRUNCATION_BANNER = 'Showing only the latest progress tail for this run.';
 
 function isAbortError(error) {
   const msg = error && (error.message || String(error));
@@ -1512,15 +1514,19 @@ class SessionManager {
     }
   }
 
-  /** Read the progress file for the attached run and send full contents to webview. */
+  /** Read the latest progress tail for the attached run and send it to webview. */
   async sendProgress() {
     if (!this._activeManifest || !this._activeManifest.files || !this._activeManifest.files.progress) {
       this._postMessage({ type: 'progressFull', text: '' });
       return;
     }
     try {
-      const text = await readText(this._activeManifest.files.progress, '');
-      this._postMessage({ type: 'progressFull', text });
+      const { text } = await readTextTail(this._activeManifest.files.progress, {
+        fallback: '',
+        bytes: PROGRESS_TAIL_MAX_BYTES,
+        truncationBannerText: PROGRESS_TAIL_TRUNCATION_BANNER,
+      });
+      this._postMessage({ type: 'progressFull', text: typeof text === 'string' ? text : '' });
     } catch {
       this._postMessage({ type: 'progressFull', text: '' });
     }
