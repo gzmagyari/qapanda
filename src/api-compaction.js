@@ -242,7 +242,7 @@ async function compactApiSessionHistory({
     return { performed: false, reason: 'missing-session' };
   }
 
-  const entries = await readTranscriptEntries(manifest.files.transcript);
+  const entries = await readTranscriptEntries(manifest.files.transcript, { sessionKey });
   const replayMessages = buildSessionReplay(entries, sessionKey, { inlineImageReplayMode: 'tail-only' });
   const replayMessageCount = replayMessages.length;
   if (!model) {
@@ -337,7 +337,7 @@ async function compactApiSessionHistory({
     });
   }
 
-  const updatedEntries = await readTranscriptEntries(manifest.files.transcript);
+  const updatedEntries = await readTranscriptEntries(manifest.files.transcript, { sessionKey });
   return {
     performed: true,
     summary,

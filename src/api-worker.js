@@ -422,7 +422,7 @@ async function runApiWorkerTurn({
   const recordedActualPrompt = prompt;
 
   const transcriptEntries = manifest.files && manifest.files.transcript
-    ? await readTranscriptEntries(manifest.files.transcript)
+    ? await readTranscriptEntries(manifest.files.transcript, { sessionKey: localSessionKey })
     : [];
   const sessionEntries = transcriptEntries.filter((entry) => entry && entry.v === 2 && entry.sessionKey === localSessionKey);
   const lastSessionEntry = sessionEntries[sessionEntries.length - 1] || null;
@@ -518,7 +518,7 @@ async function runApiWorkerTurn({
         renderer,
       });
     }
-    const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
+    const refreshedEntries = await readTranscriptEntries(manifest.files.transcript, { sessionKey: localSessionKey });
     const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey, {
       inlineImageReplayMode: 'tail-only',
     });
@@ -847,7 +847,7 @@ async function runApiWorkerTurn({
         emitEvent({ source: 'worker-api', type: 'assistant_message', text: finalText });
       }
       if (providerId === 'gemini' && canonicalHistoryAvailable) {
-        const refreshedEntries = await readTranscriptEntries(manifest.files.transcript);
+        const refreshedEntries = await readTranscriptEntries(manifest.files.transcript, { sessionKey: localSessionKey });
         const replayMessages = buildSessionReplay(refreshedEntries, localSessionKey, {
           inlineImageReplayMode: 'tail-only',
         });

@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const readline = require('node:readline');
 
 const { appendJsonl, nowIso, readText, safeJsonParse } = require('./utils');
 const { formatToolCall, summarizeClaudeEvent } = require('./events');
@@ -86,9 +87,64 @@ async function appendTranscriptRecord(manifest, record) {
   await appendJsonl(manifest.files.transcript, redactHostedWorkflowValue(manifest, record));
 }
 
-async function readTranscriptEntries(filePath) {
-  const raw = await readText(filePath, '');
-  return parseTranscriptRaw(raw);
+async function readTranscriptEntries(filePath, options = {}) {
+  const sessionKey = typeof options.sessionKey === 'string' && options.sessionKey.trim()
+    ? options.sessionKey.trim()
+    : null;
+  const streamSessionOnly = sessionKey && options.streamSessionOnly !== false;
+  const pruneCompacted = streamSessionOnly && options.pruneCompacted !== false;
+
+  if (!streamSessionOnly) {
+    const raw = await readText(filePath, '');
+    return parseTranscriptRaw(raw);
+  }
+
+  let input = null;
+  let rl = null;
+  try {
+    input = fs.createReadStream(filePath, { encoding: 'utf8' });
+    rl = readline.createInterface({ input, crlfDelay: Infinity });
+    const entries = [];
+    let lineNumber = 0;
+    let latestCompaction = null;
+
+    for await (const line of rl) {
+      lineNumber += 1;
+      if (!line) continue;
+      const parsed = safeJsonParse(line);
+      if (!parsed) continue;
+      parsed.__lineNumber = lineNumber;
+      if (parsed.v !== TRANSCRIPT_V2 || parsed.sessionKey !== sessionKey) continue;
+      entries.push(parsed);
+
+      if (parsed.kind === 'context_compaction') {
+        latestCompaction = {
+          entry: parsed,
+          compactedThroughLine: parsed.compaction && Number.isFinite(parsed.compaction.compactedThroughLine)
+            ? parsed.compaction.compactedThroughLine
+            : 0,
+          preservedLines: new Set(Array.isArray(parsed.compaction && parsed.compaction.preservedLines)
+            ? parsed.compaction.preservedLines
+            : []),
+        };
+        if (pruneCompacted) {
+          pruneTranscriptEntriesInPlace(entries, latestCompaction);
+        }
+      }
+    }
+
+    return pruneCompacted
+      ? pruneTranscriptEntries(entries, latestCompaction)
+      : entries;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  } finally {
+    if (rl) rl.close();
+    if (input) input.destroy();
+  }
 }
 
 function readTranscriptEntriesSync(filePath) {
@@ -248,6 +304,28 @@ function entryIsCompactedAway(entry, compactionState) {
 function transcriptLineSlice(entries, sinceLine) {
   if (!sinceLine || sinceLine <= 0) return entries;
   return entries.filter((entry) => (entry.__lineNumber || 0) > sinceLine);
+}
+
+function pruneTranscriptEntries(entries, compactionState) {
+  if (!Array.isArray(entries) || !compactionState || !compactionState.entry) {
+    return Array.isArray(entries) ? entries : [];
+  }
+  return entries.filter((entry) => !entryIsCompactedAway(entry, compactionState));
+}
+
+function pruneTranscriptEntriesInPlace(entries, compactionState) {
+  if (!Array.isArray(entries) || !compactionState || !compactionState.entry) {
+    return Array.isArray(entries) ? entries : [];
+  }
+  let writeIndex = 0;
+  for (let readIndex = 0; readIndex < entries.length; readIndex += 1) {
+    const entry = entries[readIndex];
+    if (entryIsCompactedAway(entry, compactionState)) continue;
+    entries[writeIndex] = entry;
+    writeIndex += 1;
+  }
+  entries.length = writeIndex;
+  return entries;
 }
 
 function buildTranscriptTail(lines, options = {}) {
