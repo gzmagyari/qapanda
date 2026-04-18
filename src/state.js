@@ -176,6 +176,9 @@ function normalizeRunOptions(options = {}) {
     controllerMcpServers: options.controllerMcpServers || null,
     workerMcpServers: options.workerMcpServers || null,
     agents: options.agents || {},
+    agentRuntimeOverrides: options.agentRuntimeOverrides && typeof options.agentRuntimeOverrides === 'object'
+      ? JSON.parse(JSON.stringify(options.agentRuntimeOverrides))
+      : {},
     panelId: options.panelId || null,
     rootKind: options.rootKind || 'repo',
     rootIdentity: options.rootIdentity || null,
@@ -194,6 +197,22 @@ function normalizeRunOptions(options = {}) {
     learnedApiToolsEnabled: !!options.learnedApiToolsEnabled,
     selfTestPrompts: options.selfTestPrompts || null,
   };
+}
+
+function normalizeManifestAgentRuntimeOverrides(manifest) {
+  if (!manifest || typeof manifest !== 'object') return manifest;
+  if (!manifest.agentRuntimeOverrides || typeof manifest.agentRuntimeOverrides !== 'object') {
+    manifest.agentRuntimeOverrides = {};
+    return manifest;
+  }
+  const normalized = {};
+  for (const [agentId, override] of Object.entries(manifest.agentRuntimeOverrides)) {
+    if (!override || typeof override !== 'object') continue;
+    if (typeof override.enableChromeDevtools !== 'boolean') continue;
+    normalized[String(agentId)] = { enableChromeDevtools: override.enableChromeDevtools };
+  }
+  manifest.agentRuntimeOverrides = normalized;
+  return manifest;
 }
 
 function ensureWorkerSessionState(session) {
@@ -318,6 +337,7 @@ async function prepareNewRun(initialMessage, options = {}) {
     controllerMcpServers: normalized.controllerMcpServers || null,
     workerMcpServers: normalized.workerMcpServers || null,
     agents: normalized.agents || {},
+    agentRuntimeOverrides: normalized.agentRuntimeOverrides || {},
     panelId: normalized.panelId || null,
     rootKind: normalized.rootKind || 'repo',
     rootIdentity: normalized.rootIdentity || null,
@@ -382,6 +402,7 @@ async function loadManifestFromDir(runDir) {
   }
   normalizeManifestControllerState(manifest);
   normalizeManifestWorkerState(manifest);
+  normalizeManifestAgentRuntimeOverrides(manifest);
   return manifest;
 }
 
@@ -536,4 +557,5 @@ module.exports = {
   saveManifest,
   normalizeManifestWorkerState,
   normalizeManifestControllerState,
+  normalizeManifestAgentRuntimeOverrides,
 };

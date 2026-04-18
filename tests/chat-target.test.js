@@ -177,6 +177,30 @@ test('applyConfig with empty chatTarget resets to controller', () => {
   }
 });
 
+test('agent browser config defaults from the selected agent browser MCP capability', () => {
+  const { session, cleanup } = buildSession({ chatTarget: 'agent-QA-Browser' });
+  try {
+    session.setAgents({
+      system: {
+        dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} },
+        'QA-Browser': {
+          name: 'QA Browser',
+          cli: 'codex',
+          enabled: true,
+          mcps: { 'chrome-devtools': { command: 'npx', args: ['mcp'] } },
+        },
+      },
+      global: {},
+      project: {},
+    });
+    assert.equal(session._getConfig().agentBrowserEnabled, true);
+    session.applyConfig({ chatTarget: 'agent-dev' });
+    assert.equal(session._getConfig().agentBrowserEnabled, false);
+  } finally {
+    cleanup();
+  }
+});
+
 test('new runs persist chatTarget into prepareNewRun options', async () => {
   const { session, captured, cleanup } = buildSession({ chatTarget: 'agent-dev' });
   try {
@@ -184,6 +208,58 @@ test('new runs persist chatTarget into prepareNewRun options', async () => {
     await session.handleMessage({ type: 'userInput', text: 'implement fix' });
     assert.equal(captured.prepareNewRunCalls.length, 1);
     assert.equal(captured.prepareNewRunCalls[0].opts.chatTarget, 'agent-dev');
+  } finally {
+    cleanup();
+  }
+});
+
+test('new runs persist run-scoped browser overrides into prepareNewRun options', async () => {
+  const { session, captured, cleanup } = buildSession({ chatTarget: 'agent-dev' });
+  try {
+    session.setAgents({
+      system: {
+        dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} },
+      },
+      global: {},
+      project: {},
+    });
+    session.applyConfig({ agentBrowserEnabled: true });
+    const opts = session._buildNewRunOpts();
+    assert.deepEqual(opts.agentRuntimeOverrides, {
+      dev: { enableChromeDevtools: true },
+    });
+    assert.ok(opts.agents.dev.mcps['chrome-devtools']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('attached runs persist browser overrides and effective agent MCPs', () => {
+  const { session, captured, cleanup } = buildSession({
+    chatTarget: 'agent-dev',
+  });
+  try {
+    session.setAgents({
+      system: {
+        dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} },
+      },
+      global: {},
+      project: {},
+    });
+    session._activeManifest = {
+      runId: 'test-run',
+      controller: { model: null, config: [] },
+      worker: { model: null, hasStarted: false, sessionId: 'sess-1', agentSessions: {} },
+      agents: { dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} } },
+      status: 'idle',
+    };
+
+    session.applyConfig({ agentBrowserEnabled: true });
+
+    const saved = captured.saveManifestCalls.at(-1);
+    assert.ok(saved, 'should persist the updated manifest');
+    assert.deepEqual(saved.agentRuntimeOverrides, { dev: { enableChromeDevtools: true } });
+    assert.ok(saved.agents.dev.mcps['chrome-devtools']);
   } finally {
     cleanup();
   }

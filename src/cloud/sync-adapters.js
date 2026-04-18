@@ -934,6 +934,9 @@ function normalizeRunManifest(local) {
       ? cloneJson(local.workerMcpServers)
       : null,
     agents: local.agents && typeof local.agents === 'object' ? cloneJson(local.agents) : {},
+    agentRuntimeOverrides: local.agentRuntimeOverrides && typeof local.agentRuntimeOverrides === 'object'
+      ? cloneJson(local.agentRuntimeOverrides)
+      : {},
     selfTesting: Boolean(local.selfTesting),
     selfTestPrompts: local.selfTestPrompts && typeof local.selfTestPrompts === 'object'
       ? cloneJson(local.selfTestPrompts)
@@ -1025,6 +1028,7 @@ function buildLocalManifestFromPayload(repoRoot, payload, fallbackId) {
     controllerMcpServers: normalized.controllerMcpServers,
     workerMcpServers: normalized.workerMcpServers,
     agents: normalized.agents,
+    agentRuntimeOverrides: normalized.agentRuntimeOverrides,
     panelId: null,
     chatTarget: normalized.chatTarget,
     controllerSystemPrompt: null,

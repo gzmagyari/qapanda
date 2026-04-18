@@ -142,6 +142,7 @@ class SessionManager {
     this._mcpData = { global: {}, project: {} }; // Set via setMcpServers() from extension.js
     this._agentsData = { system: {}, global: {}, project: {} }; // Set via setAgents() from extension.js
     this._modesData = { system: {}, global: {}, project: {} }; // Set via setModes() from extension.js
+    this._agentRuntimeOverrides = {};
     try {
       const settingsStore = require('./settings-store');
       this._selfTesting = !!settingsStore.getSetting('selfTesting');
@@ -282,6 +283,133 @@ class SessionManager {
     const agentId = value.slice('agent-'.length);
     const agents = agentsOverride || this._enabledAgents();
     return agents && agents[agentId] ? value : null;
+  }
+
+  _cloneJson(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  _isRemoteAgent(agent) {
+    return !!(agent && typeof agent.cli === 'string' && agent.cli.startsWith('qa-remote'));
+  }
+
+  _isChromeDevtoolsMcpName(name) {
+    return String(name || '').includes('chrome-devtools') || String(name || '').includes('chrome_devtools');
+  }
+
+  _normalizeAgentRuntimeOverrides(overrides) {
+    const result = {};
+    if (!overrides || typeof overrides !== 'object') return result;
+    for (const [agentId, override] of Object.entries(overrides)) {
+      if (!override || typeof override !== 'object') continue;
+      if (typeof override.enableChromeDevtools !== 'boolean') continue;
+      result[String(agentId)] = { enableChromeDevtools: override.enableChromeDevtools };
+    }
+    return result;
+  }
+
+  _currentAgentTargetId(target = this._chatTarget) {
+    return typeof target === 'string' && target.startsWith('agent-')
+      ? target.slice('agent-'.length)
+      : null;
+  }
+
+  _agentHasChromeDevtools(agent) {
+    const mcps = agent && agent.mcps && typeof agent.mcps === 'object' ? agent.mcps : {};
+    return Object.keys(mcps).some((name) => this._isChromeDevtoolsMcpName(name));
+  }
+
+  _agentDefaultBrowserEnabled(agentId, agents = null) {
+    const source = agents || this._enabledAgents();
+    return !!this._agentHasChromeDevtools(source && source[agentId]);
+  }
+
+  _agentSupportsSharedBrowser(agentId, agents = null) {
+    const source = agents || this._enabledAgents();
+    const agent = source && source[agentId];
+    return !!agent && !this._isRemoteAgent(agent);
+  }
+
+  _agentBrowserOverride(agentId) {
+    const override = this._agentRuntimeOverrides && this._agentRuntimeOverrides[agentId];
+    return override && typeof override.enableChromeDevtools === 'boolean'
+      ? override.enableChromeDevtools
+      : null;
+  }
+
+  _effectiveAgentBrowserEnabled(agentId, agents = null) {
+    const override = this._agentBrowserOverride(agentId);
+    if (typeof override === 'boolean') return override;
+    return this._agentDefaultBrowserEnabled(agentId, agents);
+  }
+
+  _setAgentBrowserOverride(agentId, enabled, agents = null) {
+    if (!agentId) return false;
+    const defaultEnabled = this._agentDefaultBrowserEnabled(agentId, agents);
+    const normalized = !!enabled;
+    const previous = this._agentBrowserOverride(agentId);
+    if (normalized === defaultEnabled) {
+      if (this._agentRuntimeOverrides && this._agentRuntimeOverrides[agentId]) {
+        delete this._agentRuntimeOverrides[agentId];
+        return previous !== null;
+      }
+      return false;
+    }
+    if (!this._agentRuntimeOverrides) this._agentRuntimeOverrides = {};
+    this._agentRuntimeOverrides[agentId] = { enableChromeDevtools: normalized };
+    return previous !== normalized;
+  }
+
+  _canonicalChromeDevtoolsMcp() {
+    const agents = this._enabledAgents();
+    const preferred = agents['QA-Browser'];
+    const candidates = preferred
+      ? [['QA-Browser', preferred], ...Object.entries(agents).filter(([id]) => id !== 'QA-Browser')]
+      : Object.entries(agents);
+    for (const [, agent] of candidates) {
+      const mcps = agent && agent.mcps && typeof agent.mcps === 'object' ? agent.mcps : {};
+      for (const [name, server] of Object.entries(mcps)) {
+        if (!this._isChromeDevtoolsMcpName(name) || !server) continue;
+        return { name, server: this._cloneJson(server) };
+      }
+    }
+    return {
+      name: 'chrome-devtools',
+      server: {
+        type: 'stdio',
+        command: 'npx',
+        args: [
+          '-y',
+          'chrome-devtools-mcp@latest',
+          '--browser-url=http://127.0.0.1:{CHROME_DEBUG_PORT}',
+          '--viewport=1280x720',
+        ],
+      },
+    };
+  }
+
+  _effectiveAgents() {
+    const baseAgents = this._enabledAgents();
+    const result = {};
+    const canonicalBrowserMcp = this._canonicalChromeDevtoolsMcp();
+    for (const [agentId, agent] of Object.entries(baseAgents)) {
+      const cloned = this._cloneJson(agent) || {};
+      const mcps = cloned.mcps && typeof cloned.mcps === 'object' ? { ...cloned.mcps } : {};
+      const browserEnabled = this._effectiveAgentBrowserEnabled(agentId, baseAgents);
+      const hasBrowser = Object.keys(mcps).some((name) => this._isChromeDevtoolsMcpName(name));
+      if (browserEnabled) {
+        if (!hasBrowser && this._agentSupportsSharedBrowser(agentId, baseAgents) && canonicalBrowserMcp && canonicalBrowserMcp.server) {
+          mcps[canonicalBrowserMcp.name] = this._cloneJson(canonicalBrowserMcp.server);
+        }
+      } else if (hasBrowser) {
+        for (const name of Object.keys(mcps)) {
+          if (this._isChromeDevtoolsMcpName(name)) delete mcps[name];
+        }
+      }
+      cloned.mcps = mcps;
+      result[agentId] = cloned;
+    }
+    return result;
   }
 
   _labelForChatTarget(target) {
@@ -825,6 +953,7 @@ class SessionManager {
 
   applyConfig(config) {
     if (!config) return;
+    let shouldSyncConfig = false;
     if (config.controllerModel !== undefined) this._controllerModel = config.controllerModel || null;
     if (config.workerModel !== undefined) this._workerModel = config.workerModel || null;
     if (config.controllerThinking !== undefined) this._controllerThinking = config.controllerThinking || null;
@@ -847,6 +976,27 @@ class SessionManager {
           this._backfillResumeAliasForCurrentTarget().catch(() => {});
         }
       }
+      shouldSyncConfig = true;
+    }
+    if (config.agentBrowserEnabled !== undefined) {
+      const agentId = this._currentAgentTargetId(this._chatTarget);
+      const agents = this._enabledAgents();
+      if (agentId && this._agentSupportsSharedBrowser(agentId, agents)) {
+        const changed = this._setAgentBrowserOverride(agentId, !!config.agentBrowserEnabled, agents);
+        if (changed && this._activeManifest) {
+          this._activeManifest.agentRuntimeOverrides = this._cloneJson(this._agentRuntimeOverrides);
+          this._syncMcpToManifest(agentId);
+          saveManifest(this._activeManifest).catch(() => {});
+          const label = this._labelForChatTarget(`agent-${agentId}`);
+          const cli = this._effectiveCliForChatTarget(`agent-${agentId}`, this._effectiveAgents());
+          if (cli === 'codex') {
+            this._renderer.banner(`Browser access changed for ${label}. The next message will reconnect its worker session if needed.`);
+          } else {
+            this._renderer.banner(`Browser access changed for ${label}. The next message will use the updated browser tools.`);
+          }
+        }
+      }
+      shouldSyncConfig = true;
     }
     if (config.controllerCli !== undefined) {
       const newCli = config.controllerCli || 'codex';
@@ -945,6 +1095,9 @@ class SessionManager {
       this._syncLoopConfigToManifest();
       saveManifest(this._activeManifest).catch(() => {});
     }
+    if (shouldSyncConfig) {
+      this._syncConfig();
+    }
   }
 
   get running() {
@@ -1041,10 +1194,26 @@ class SessionManager {
   }
 
   async _resolveResumeSpecifier(token, options = {}) {
-    return await resolveResumeToken(token, this._repoRoot, this._stateRoot, {
+    const resolved = await resolveResumeToken(token, this._repoRoot, this._stateRoot, {
       chatTarget: options.chatTarget || this._chatTarget || null,
       ...options,
     });
+    if (!resolved || resolved.kind === 'alias' || resolved.kind === 'run' || resolved.kind === 'none') {
+      return resolved;
+    }
+    const rawToken = String(token || '').trim();
+    if (!rawToken) return resolved;
+    try {
+      const runDir = await resolveRunDir(rawToken, this._stateRoot);
+      const manifest = await loadManifestFromDir(runDir);
+      return {
+        kind: 'run',
+        token: rawToken,
+        runId: manifest && manifest.runId ? String(manifest.runId) : rawToken,
+      };
+    } catch {
+      return resolved;
+    }
   }
 
   async _bindConfiguredResumeAliases() {
@@ -1130,6 +1299,7 @@ class SessionManager {
     this._clearWaitTimer();
     await this._closePanelScopedAppServerConnections();
     this._prestartDone = false;
+    this._agentRuntimeOverrides = {};
     this._activeManifest = null;
   }
 
@@ -1263,6 +1433,15 @@ class SessionManager {
         this._resumeToken = this._activeManifest.runId;
         this._activeManifest.resumeToken = this._resumeToken;
         manifestChanged = true;
+      }
+      this._agentRuntimeOverrides = this._normalizeAgentRuntimeOverrides(this._activeManifest.agentRuntimeOverrides);
+      const localAgents = this._enabledAgents();
+      if (Object.keys(localAgents).length > 0) {
+        const effectiveAgents = this._effectiveAgents();
+        if (JSON.stringify(this._activeManifest.agents || {}) !== JSON.stringify(effectiveAgents)) {
+          this._activeManifest.agents = effectiveAgents;
+          manifestChanged = true;
+        }
       }
       const restoredTarget = this._normalizeChatTarget(
         this._activeManifest.chatTarget,
@@ -1827,6 +2006,7 @@ class SessionManager {
       }
       await this._closePanelScopedAppServerConnections();
       this._prestartDone = false;
+      this._agentRuntimeOverrides = {};
       this._activeManifest = null;
       if (preservedAlias) {
         this._pendingResumeAlias = preservedAlias;
@@ -1847,6 +2027,7 @@ class SessionManager {
       this._postMessage({ type: 'clearRunId' });
       this._postMessage({ type: 'usageStats', summary: null });
       this._postMessage({ type: 'progressFull', text: '' });
+      this._syncConfig();
       if (preservedAlias) {
         this._syncPanelContext();
         this._renderer.banner(`Session cleared. The next message will start a fresh ${preservedTargetLabel} session and rebind alias "${preservedAlias}".`);
@@ -1869,10 +2050,12 @@ class SessionManager {
       this._clearWaitTimer();
       await this._closePanelScopedAppServerConnections();
       this._prestartDone = false;
+      this._agentRuntimeOverrides = {};
       this._activeManifest = null;
       this._postMessage({ type: 'clearRunId' });
       this._postMessage({ type: 'usageStats', summary: null });
       this._postMessage({ type: 'progressFull', text: '' });
+      this._syncConfig();
       this._renderer.banner('Detached from the current run.');
       this.prestart();
       await this.sendReviewState(true);
@@ -2286,8 +2469,11 @@ class SessionManager {
     const workerMcp = this._mcpServersForRole('worker', workerIsRemote);
     if (Object.keys(controllerMcp).length > 0) opts.controllerMcpServers = controllerMcp;
     if (Object.keys(workerMcp).length > 0) opts.workerMcpServers = workerMcp;
-    const agents = this._enabledAgents();
+    const agents = this._effectiveAgents();
     if (Object.keys(agents).length > 0) opts.agents = agents;
+    if (Object.keys(this._agentRuntimeOverrides || {}).length > 0) {
+      opts.agentRuntimeOverrides = this._cloneJson(this._agentRuntimeOverrides);
+    }
     // API config (for BYOK mode) — always include if any agent or config uses API
     const anyAgentUsesApi = Object.values(agents).some(a => a && a.cli === 'api');
     if (this._controllerCli === 'api' || this._workerCli === 'api' || anyAgentUsesApi) {
@@ -2345,6 +2531,11 @@ class SessionManager {
       loopMode: !!this._loopMode,
       loopObjective: this._loopObjective || '',
       chatTarget: this._chatTarget || 'controller',
+      agentBrowserEnabled: (() => {
+        const agentId = this._currentAgentTargetId(this._chatTarget);
+        if (!agentId || !this._agentSupportsSharedBrowser(agentId)) return null;
+        return this._effectiveAgentBrowserEnabled(agentId);
+      })(),
       controllerCli: this._controllerCli || 'codex',
       codexMode: this._codexMode || 'app-server',
       workerCli: this._workerCli || 'codex',
@@ -2354,8 +2545,7 @@ class SessionManager {
   }
 
   _runNeedsChromeDevtools() {
-    if (this._activeManifest && this._activeManifest.chromeDebugPort) return true;
-    const agents = this._enabledAgents();
+    const agents = (this._activeManifest && this._activeManifest.agents) || this._effectiveAgents();
     return Object.values(agents).some((agent) =>
       agent && agent.mcps && Object.keys(agent.mcps).some((name) =>
         name.includes('chrome-devtools') || name.includes('chrome_devtools')
@@ -2482,12 +2672,17 @@ class SessionManager {
     const controllerMcps = this._mcpServersForRole('controller', false);
     const workerMcps = this._mcpServersForRole('worker', false);
     const mcpNeedsChrome = (servers) => Object.keys(servers || {}).some((name) => name.includes('chrome-devtools') || name.includes('chrome_devtools'));
-    // Merge default agent MCPs (pick first enabled agent with MCPs)
+    // Prefer the currently selected agent's MCPs, then fall back to the first enabled agent with MCPs.
     let defaultAgentMcps = {};
-    for (const a of Object.values(agents)) {
-      if (a && a.mcps && Object.keys(a.mcps).length > 0) {
-        defaultAgentMcps = a.mcps;
-        break;
+    const currentAgentId = this._currentAgentTargetId(this._chatTarget);
+    if (currentAgentId && agents[currentAgentId] && agents[currentAgentId].mcps) {
+      defaultAgentMcps = agents[currentAgentId].mcps;
+    } else {
+      for (const a of Object.values(agents)) {
+        if (a && a.mcps && Object.keys(a.mcps).length > 0) {
+          defaultAgentMcps = a.mcps;
+          break;
+        }
       }
     }
     const fullWorkerMcps = { ...workerMcps, ...defaultAgentMcps };
@@ -2570,7 +2765,8 @@ class SessionManager {
     this._activeManifest.controllerMcpServers = Object.keys(controllerMcp).length > 0 ? controllerMcp : null;
     this._activeManifest.workerMcpServers = Object.keys(workerMcp).length > 0 ? workerMcp : null;
     // Sync enabled agents
-    this._activeManifest.agents = this._enabledAgents();
+    this._activeManifest.agents = this._effectiveAgents();
+    this._activeManifest.agentRuntimeOverrides = this._cloneJson(this._agentRuntimeOverrides);
     if (!this._activeManifest.worker.agentSessions) this._activeManifest.worker.agentSessions = {};
     this._activeManifest.controllerPrestartKey = this._controllerPrestartKey();
     this._activeManifest.workerPrestartKey = this._workerPrestartKey();
@@ -2590,7 +2786,7 @@ class SessionManager {
     // Determine which CLI will run
     let cli = this._workerCli || 'codex';
     if (agentId) {
-      const agents = this._enabledAgents();
+      const agents = (this._activeManifest && this._activeManifest.agents) || this._effectiveAgents();
       const agent = agents[agentId];
       if (agent && agent.cli) cli = agent.cli;
     }
@@ -2601,7 +2797,8 @@ class SessionManager {
     const mcpServers = this._activeManifest
       ? (this._activeManifest.workerMcpServers || {})
       : {};
-    const agentMcps = agentId ? ((this._enabledAgents()[agentId] || {}).mcps || {}) : {};
+    const agents = (this._activeManifest && this._activeManifest.agents) || this._effectiveAgents();
+    const agentMcps = agentId ? ((agents[agentId] || {}).mcps || {}) : {};
     const allMcps = { ...mcpServers, ...agentMcps };
     const hasChromeDevtools = Object.keys(allMcps).some(n =>
       n.includes('chrome-devtools') || n.includes('chrome_devtools')

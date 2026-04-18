@@ -240,6 +240,36 @@ test('/clear posts clearRunId to webview', async () => {
   }
 });
 
+test('reattachRun restores run-scoped agent browser overrides into syncConfig', async () => {
+  const { session, posted, cleanup } = buildSession({
+    runExists: true,
+    manifest: {
+      runId: 'existing-run-42',
+      chatTarget: 'agent-dev',
+      controller: { model: null, config: [], cli: 'codex' },
+      worker: { model: null, cli: 'codex', agentSessions: {} },
+      agents: { dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} } },
+      agentRuntimeOverrides: { dev: { enableChromeDevtools: true } },
+    },
+  });
+  try {
+    session.setAgents({
+      system: { dev: { name: 'Developer', cli: 'codex', enabled: true, mcps: {} } },
+      global: {},
+      project: {},
+    });
+    const ok = await session.reattachRun('existing-run-42');
+    assert.equal(ok, true);
+    assert.equal(session.getConfig().agentBrowserEnabled, true);
+    const syncMsg = posted.find((msg) => msg.type === 'syncConfig');
+    assert.ok(syncMsg, 'should post syncConfig after reattach');
+    assert.equal(syncMsg.config.chatTarget, 'agent-dev');
+    assert.equal(syncMsg.config.agentBrowserEnabled, true);
+  } finally {
+    cleanup();
+  }
+});
+
 test('/clear preserves a resume alias for the next fresh run', async () => {
   const { session, posted, renderer, cleanup } = buildSession({
     sessionOptions: { preserveResumeAliasOnClear: true },

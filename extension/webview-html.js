@@ -138,9 +138,16 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </select>
           </div>
           <div id="input-toolbar-center">
-            <span id="browser-status" class="status-indicator" style="display:none;" title="Headless Chrome status">
+            <span id="browser-status" class="status-indicator status-indicator-dot-only" style="display:none;" title="Headless Chrome status">
               <span class="status-dot"></span>
               <span class="status-label">Browser</span>
+            </span>
+            <span id="agent-browser-toggle-wrap" class="toolbar-toggle" style="display:none;" title="Allow the selected agent to use the shared browser MCP">
+              <span class="toolbar-toggle-label">Browser</span>
+              <span class="toggle-switch">
+                <input type="checkbox" id="agent-browser-toggle" />
+                <label for="agent-browser-toggle"><span class="toggle-slider"></span></label>
+              </span>
             </span>
           </div>
           <div id="input-toolbar-right">

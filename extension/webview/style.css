@@ -1265,7 +1265,7 @@ html, body {
   align-items: flex-end;
   justify-content: center;
   width: 90%;
-  max-width: 820px;
+  max-width: 900px;
   margin: 0 auto 12px;
   gap: 8px;
 }
@@ -1428,7 +1428,26 @@ html, body {
 #input-toolbar-center {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #888;
+  flex: 0 0 auto;
+  margin-right: 10px;
+}
+
+.toolbar-toggle-label {
+  font-size: 10px;
+  color: #888;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .status-indicator {
@@ -1438,6 +1457,10 @@ html, body {
   font-size: 10px;
   color: #888;
   cursor: default;
+}
+
+.status-indicator-dot-only .status-label {
+  display: none;
 }
 
 .status-dot {

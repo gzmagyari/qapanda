@@ -1517,7 +1517,62 @@
   let agentsSystemMeta = {}; // { [id]: { hasUserOverride, removed, bundled } }
   let agentsGlobal = {};
   let agentsProject = {};
+  let agentBrowserOverrides = {};
   let agentEditingForm = null; // { scope, id } or null
+
+  function allAgentsMap() {
+    return { ...agentsSystem, ...agentsGlobal, ...agentsProject };
+  }
+
+  function agentIdForTarget(target) {
+    return target && typeof target === 'string' && target.startsWith('agent-')
+      ? target.slice('agent-'.length)
+      : null;
+  }
+
+  function agentForTarget(target) {
+    const agentId = agentIdForTarget(target);
+    return agentId ? (allAgentsMap()[agentId] || null) : null;
+  }
+
+  function agentHasBrowserMcp(agent) {
+    const mcps = agent && agent.mcps && typeof agent.mcps === 'object' ? agent.mcps : {};
+    return Object.keys(mcps).some(function(name) {
+      return name.includes('chrome-devtools') || name.includes('chrome_devtools');
+    });
+  }
+
+  function agentSupportsBrowserToggle(agent) {
+    return !!agent && !(typeof agent.cli === 'string' && agent.cli.startsWith('qa-remote'));
+  }
+
+  function defaultAgentBrowserEnabled(agentId) {
+    return !!agentHasBrowserMcp(agentId ? allAgentsMap()[agentId] : null);
+  }
+
+  function rememberAgentBrowserOverride(agentId, enabled) {
+    if (!agentId) return;
+    agentBrowserOverrides[agentId] = !!enabled;
+  }
+
+  function clearUnknownAgentBrowserOverrides() {
+    const agents = allAgentsMap();
+    for (const agentId of Object.keys(agentBrowserOverrides)) {
+      if (!agents[agentId]) delete agentBrowserOverrides[agentId];
+    }
+  }
+
+  function resetAgentBrowserOverrides() {
+    agentBrowserOverrides = {};
+  }
+
+  function effectiveAgentBrowserEnabled(agentId) {
+    if (!agentId) return false;
+    if (Object.prototype.hasOwnProperty.call(agentBrowserOverrides, agentId)) {
+      return !!agentBrowserOverrides[agentId];
+    }
+    return defaultAgentBrowserEnabled(agentId);
+  }
 
   function apiProviderOptionsHtml(selectedValue) {
     var selected = String(selectedValue || 'openrouter');
@@ -3310,6 +3365,20 @@
 
   // ── Chrome screencast (Browser tab + split widget) ───────────────────
 
+  function updateAgentBrowserToggle(target) {
+    if (!agentBrowserToggleWrap || !agentBrowserToggle) return;
+    const resolvedTarget = target || (cfgChatTarget ? cfgChatTarget.value : '');
+    const agentId = agentIdForTarget(resolvedTarget);
+    const agent = agentForTarget(resolvedTarget);
+    if (!agentId || !agentSupportsBrowserToggle(agent)) {
+      agentBrowserToggleWrap.style.display = 'none';
+      agentBrowserToggle.checked = false;
+      return;
+    }
+    agentBrowserToggleWrap.style.display = 'inline-flex';
+    agentBrowserToggle.checked = effectiveAgentBrowserEnabled(agentId);
+  }
+
   function updateBrowserStatus() {
     const el = document.getElementById('browser-status');
     if (!el) return;
@@ -3318,16 +3387,11 @@
     } else {
       el.classList.remove('online');
     }
-    // Show only when selected agent needs Chrome
     const target = cfgChatTarget ? cfgChatTarget.value : '';
     if (target.startsWith('agent-')) {
-      const agentId = target.slice('agent-'.length);
-      const allAgents = { ...agentsSystem, ...agentsGlobal, ...agentsProject };
-      const agent = allAgents[agentId];
-      const mcps = (agent && agent.mcps) || {};
-      const needsChrome = Object.keys(mcps).some(n =>
-        n.includes('chrome-devtools') || n.includes('chrome_devtools')
-      );
+      const agentId = agentIdForTarget(target);
+      const agent = agentForTarget(target);
+      const needsChrome = !!agentId && agentSupportsBrowserToggle(agent) && effectiveAgentBrowserEnabled(agentId);
       el.style.display = needsChrome ? 'inline-flex' : 'none';
     } else {
       el.style.display = 'none';
@@ -3860,6 +3924,8 @@
   const cfgCodexMode = document.getElementById('cfg-codex-mode');
   const cfgWorkerCli = document.getElementById('cfg-worker-cli');
   const cfgWaitDelay = document.getElementById('cfg-wait-delay');
+  const agentBrowserToggleWrap = document.getElementById('agent-browser-toggle-wrap');
+  const agentBrowserToggle = document.getElementById('agent-browser-toggle');
   const usageSummaryEl = document.getElementById('usage-summary');
   const usageSummaryCostEl = document.getElementById('usage-summary-cost');
   const usageSummaryTokensEl = document.getElementById('usage-summary-tokens');
@@ -4438,6 +4504,13 @@
     if (config.loopMode !== undefined && loopToggle) loopToggle.checked = !!config.loopMode;
     if (config.loopObjective !== undefined && loopObjectiveInput) loopObjectiveInput.value = config.loopObjective || '';
     if (config.waitDelay !== undefined && cfgWaitDelay) cfgWaitDelay.value = config.waitDelay;
+    const configTarget = config.chatTarget !== undefined
+      ? (config.chatTarget || 'controller')
+      : (cfgChatTarget ? cfgChatTarget.value : 'controller');
+    if (config.agentBrowserEnabled !== undefined) {
+      const agentId = agentIdForTarget(configTarget);
+      if (agentId) rememberAgentBrowserOverride(agentId, !!config.agentBrowserEnabled);
+    }
     syncClaudeUiVisibility(config);
     suppressTargetConfirm = true;
     if (config.chatTarget !== undefined && cfgChatTarget) {
@@ -4453,7 +4526,9 @@
     }
     suppressTargetConfirm = false;
     updateConfigBarForTarget(cfgChatTarget ? cfgChatTarget.value : 'controller');
+    updateAgentBrowserToggle(cfgChatTarget ? cfgChatTarget.value : configTarget);
     updateLoopObjectiveVisibility();
+    updateBrowserStatus();
   }
 
   const CODEX_MODELS = [
@@ -4738,6 +4813,7 @@
     document.querySelectorAll('.cfg-controller-only').forEach(el => el.classList.toggle('tab-hidden', !isController));
     // Worker dropdowns visible for controller + default worker, hidden for agents
     document.querySelectorAll('.cfg-worker-only').forEach(el => el.classList.toggle('tab-hidden', isAgent));
+    updateAgentBrowserToggle(target);
   }
 
   // Saved chatTarget from vscode.getState — used to restore after dropdown is populated
@@ -4793,6 +4869,7 @@
   function refreshTargetDropdown() {
     if (!cfgChatTarget) return;
     syncClaudeUiVisibility();
+    clearUnknownAgentBrowserOverrides();
     const currentValue = cfgChatTarget.value;
     // Remove existing agent options
     Array.from(cfgChatTarget.options).forEach(opt => {
@@ -4867,6 +4944,23 @@
       }
       prevTarget = newTarget;
       onConfigChange();
+    });
+  }
+  if (agentBrowserToggle) {
+    agentBrowserToggle.addEventListener('change', () => {
+      const target = cfgChatTarget ? cfgChatTarget.value : 'controller';
+      const agentId = agentIdForTarget(target);
+      if (!agentId) return;
+      rememberAgentBrowserOverride(agentId, !!agentBrowserToggle.checked);
+      updateBrowserStatus();
+      vscode.postMessage({
+        type: 'configChanged',
+        config: {
+          chatTarget: target,
+          agentBrowserEnabled: !!agentBrowserToggle.checked,
+        },
+      });
+      saveState();
     });
   }
   if (cfgControllerCli) cfgControllerCli.addEventListener('change', onConfigChange);
@@ -6784,6 +6878,9 @@
       messageLog = [];
       pendingVisibleHistoryTrim = false;
       currentRunId = null;
+      resetAgentBrowserOverrides();
+      updateAgentBrowserToggle();
+      updateBrowserStatus();
       renderUsageSummary(null);
       hideProgressBubble();
       saveState();
@@ -7107,6 +7204,9 @@
     clearRunId() {
       _dbg('clearRunId: before runId=' + (currentRunId || 'null') + ' resume=' + (currentResumeToken || 'null'));
       currentRunId = null;
+      resetAgentBrowserOverrides();
+      updateAgentBrowserToggle();
+      updateBrowserStatus();
       renderUsageSummary(null);
       removeLiveQaReportCardSlot();
       hideProgressBubble();

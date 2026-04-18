@@ -229,7 +229,7 @@ function createPanelReadyHandler({
 
     const initConfigMessage = {
       type: 'initConfig',
-      config: reattached ? session.getConfig() : panelConfig,
+      config: session.getConfig(),
       mcpServers: mcpData,
       agents: agentsData,
       modes: modesData,

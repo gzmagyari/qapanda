@@ -24,6 +24,73 @@ describe('Config bar', () => {
     assert.ok(target, 'chat target dropdown should exist');
   });
 
+  it('shows browser toggle for browser-capable local agent targets and hides it for controller', async () => {
+    const target = wv.document.getElementById('cfg-chat-target');
+    const toggleWrap = wv.document.getElementById('agent-browser-toggle-wrap');
+    const toggle = wv.document.getElementById('agent-browser-toggle');
+
+    target.value = 'controller';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggleWrap.style.display, 'none');
+
+    target.value = 'agent-QA-Browser';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggleWrap.style.display, 'inline-flex');
+    assert.equal(toggle.checked, true);
+
+    target.value = 'agent-dev';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggleWrap.style.display, 'inline-flex');
+    assert.equal(toggle.checked, false);
+  });
+
+  it('changing the browser toggle posts configChanged for the selected agent', async () => {
+    const target = wv.document.getElementById('cfg-chat-target');
+    const toggle = wv.document.getElementById('agent-browser-toggle');
+
+    target.value = 'agent-dev';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+
+    const initial = wv.messages.length;
+    toggle.checked = true;
+    toggle.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+
+    const configMsg = wv.messages.slice(initial).find((msg) => msg.type === 'configChanged' && msg.config && msg.config.agentBrowserEnabled === true);
+    assert.ok(configMsg, 'should post the browser toggle override');
+    assert.equal(configMsg.config.chatTarget, 'agent-dev');
+  });
+
+  it('clearing the run resets cached browser toggle overrides for other agents', async () => {
+    const target = wv.document.getElementById('cfg-chat-target');
+    const toggle = wv.document.getElementById('agent-browser-toggle');
+
+    target.value = 'agent-dev';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    toggle.checked = true;
+    toggle.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggle.checked, true);
+
+    wv.postMessage({ type: 'clearRunId' });
+    await wv.flush();
+
+    target.value = 'agent-QA-Browser';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggle.checked, true);
+
+    target.value = 'agent-dev';
+    target.dispatchEvent(new wv.window.Event('change'));
+    await wv.flush();
+    assert.equal(toggle.checked, false);
+  });
+
   it('controller CLI dropdown exists', () => {
     const cli = wv.document.getElementById('cfg-controller-cli');
     assert.ok(cli, 'controller CLI dropdown should exist');
