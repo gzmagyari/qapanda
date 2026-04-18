@@ -4445,7 +4445,7 @@
       controllerThinking: cfgControllerThinking.value,
       workerThinking: cfgWorkerThinking.value,
       loopMode: loopToggle ? loopToggle.checked : false,
-      loopObjective: loopObjectiveInput ? loopObjectiveInput.value.trim() : '',
+      loopObjective: loopObjectiveInput ? loopObjectiveInput.value : '',
       waitDelay: cfgWaitDelay ? cfgWaitDelay.value : '',
       chatTarget: cfgChatTarget ? cfgChatTarget.value : 'controller',
       controllerCli: cfgControllerCli ? cfgControllerCli.value : 'codex',

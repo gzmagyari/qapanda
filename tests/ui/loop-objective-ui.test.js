@@ -49,4 +49,24 @@ describe('Loop objective UI', () => {
     const wrap = wv.document.getElementById('loop-objective-wrap');
     assert.ok(wrap.classList.contains('visible'));
   });
+
+  it('preserves spaces while typing in the loop objective field', async () => {
+    const toggle = wv.document.getElementById('loop-toggle');
+    const input = wv.document.getElementById('loop-objective');
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new wv.window.Event('change', { bubbles: true }));
+    input.value = 'this ';
+    input.dispatchEvent(new wv.window.Event('input', { bubbles: true }));
+    await wv.flush();
+
+    const configMsgs = wv.messages.filter((msg) => msg.type === 'configChanged');
+    const last = configMsgs.at(-1);
+    assert.ok(last, 'expected configChanged message');
+    assert.equal(last.config.loopObjective, 'this ');
+
+    wv.postMessage({ type: 'syncConfig', config: last.config });
+    await wv.flush();
+    assert.equal(input.value, 'this ');
+  });
 });
