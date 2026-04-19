@@ -272,6 +272,41 @@ function buildLaunchText(prompt, sameSession, agentId, agentCli, agentName) {
   return `${prefix}"${prompt}"`;
 }
 
+function normalizeDecisionAgentId(agentId) {
+  if (agentId == null || agentId === 'default') return null;
+  return String(agentId);
+}
+
+function describeContinueLockAgentId(agentId) {
+  return agentId == null ? 'default worker' : `agent "${agentId}"`;
+}
+
+function continueLockMismatch(decision, continueLock) {
+  if (!continueLock || !decision || decision.action !== 'delegate') return null;
+  const expectedAgentId = normalizeDecisionAgentId(continueLock.agentId);
+  const actualAgentId = normalizeDecisionAgentId(decision.agent_id);
+  if (actualAgentId === expectedAgentId) return null;
+  return {
+    expectedAgentId,
+    actualAgentId,
+  };
+}
+
+function buildContinueValidationCorrection(continueLock, mismatch) {
+  const expectedAgentId = normalizeDecisionAgentId(continueLock && continueLock.agentId);
+  const expectedText = expectedAgentId == null
+    ? 'Set agent_id to null or "default". Do not choose any named agent.'
+    : `Set agent_id to "${expectedAgentId}". Do not choose any other agent_id.`;
+  const actualText = mismatch.actualAgentId == null ? 'null/"default"' : `"${mismatch.actualAgentId}"`;
+  return [
+    'CONTINUE VALIDATION CORRECTION — Your previous JSON selected the wrong agent for this Continue turn.',
+    `The active Continue target is locked to ${describeContinueLockAgentId(expectedAgentId)}.`,
+    `Your previous decision used agent_id ${actualText}.`,
+    'You MUST return action: "delegate" with the locked target if you are delegating.',
+    expectedText,
+  ].join('\n');
+}
+
 function markInterrupted(manifest, request, reason) {
   manifest.status = 'interrupted';
   manifest.phase = 'idle';
@@ -402,37 +437,89 @@ async function runManagerLoop(manifest, renderer, options = {}) {
 
       const runControllerTurn = getControllerRunner(manifest);
       const controllerBackend = transcriptBackend('controller', manifest.controller.cli || 'codex');
-      appendManifestDebug('orchestrator', manifest, 'runManagerLoop:controller-turn:start', {
-        requestId: request && request.id || null,
-        loopIndex: loop && loop.index != null ? loop.index : null,
-        controllerCli: manifest.controller.cli || 'codex',
-        codexMode: manifest.controller.codexMode || null,
-        controllerSessionId: manifest.controller.sessionId || null,
-        controllerAppServerThreadId: manifest.controller.appServerThreadId || null,
-      });
-      const controllerResult = await runControllerTurn({
-        manifest,
-        request,
-        loop,
-        renderer,
-        abortSignal: signalController.signal,
-        emitEvent: async (event) => {
-          if (event.rawLine && loop.controller.stdoutFile) {
-            await appendJsonlRedacted(manifest, loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
-          }
-          if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
-            await appendJsonlRedacted(manifest, loop.controller.stderrFile, { text: event.text });
-          }
-          await emitEvent(manifest, event, renderer, options.onEvent);
-          await appendBackendTranscriptEvent(manifest, event, {
-            sessionKey: controllerSessionKey(),
-            backend: controllerBackend,
+      const continueLock = options.continueLock || null;
+      const baseControllerPromptOverride = options.controllerPromptOverride || null;
+      let controllerPromptOverride = baseControllerPromptOverride;
+      let controllerResult = null;
+      let controllerValidationRetryCount = 0;
+      loop.controller.continueLockedAgentId = continueLock
+        ? normalizeDecisionAgentId(continueLock.agentId)
+        : undefined;
+
+      while (true) {
+        appendManifestDebug('orchestrator', manifest, 'runManagerLoop:controller-turn:start', {
+          requestId: request && request.id || null,
+          loopIndex: loop && loop.index != null ? loop.index : null,
+          controllerCli: manifest.controller.cli || 'codex',
+          codexMode: manifest.controller.codexMode || null,
+          controllerSessionId: manifest.controller.sessionId || null,
+          controllerAppServerThreadId: manifest.controller.appServerThreadId || null,
+          continueLockedAgentId: continueLock ? normalizeDecisionAgentId(continueLock.agentId) : undefined,
+          controllerValidationRetryCount,
+        });
+        controllerResult = await runControllerTurn({
+          manifest,
+          request,
+          loop,
+          renderer,
+          abortSignal: signalController.signal,
+          controllerPromptOverride,
+          emitEvent: async (event) => {
+            if (event.rawLine && loop.controller.stdoutFile) {
+              await appendJsonlRedacted(manifest, loop.controller.stdoutFile, { line: event.rawLine, parsed: event.parsed || null });
+            }
+            if (event.source === 'controller-stderr' && loop.controller.stderrFile) {
+              await appendJsonlRedacted(manifest, loop.controller.stderrFile, { text: event.text });
+            }
+            await emitEvent(manifest, event, renderer, options.onEvent);
+            await appendBackendTranscriptEvent(manifest, event, {
+              sessionKey: controllerSessionKey(),
+              backend: controllerBackend,
+              requestId: request.id,
+              loopIndex: loop.index,
+              controllerCli: manifest.controller.cli || 'codex',
+            });
+          },
+        });
+
+        const mismatch = continueLock ? continueLockMismatch(controllerResult.decision, continueLock) : null;
+        if (!mismatch) break;
+
+        appendManifestDebug('orchestrator', manifest, 'runManagerLoop:continue-lock-mismatch', {
+          requestId: request && request.id || null,
+          loopIndex: loop && loop.index != null ? loop.index : null,
+          expectedAgentId: mismatch.expectedAgentId,
+          actualAgentId: mismatch.actualAgentId,
+          controllerValidationRetryCount,
+        });
+        await emitEvent(
+          manifest,
+          {
+            ts: nowIso(),
+            source: 'controller-continue-lock-mismatch',
             requestId: request.id,
             loopIndex: loop.index,
-            controllerCli: manifest.controller.cli || 'codex',
-          });
-        },
-      });
+            expectedAgentId: mismatch.expectedAgentId,
+            actualAgentId: mismatch.actualAgentId,
+            retrying: controllerValidationRetryCount === 0,
+          },
+          renderer,
+          options.onEvent,
+        );
+
+        if (controllerValidationRetryCount >= 1) {
+          throw new Error(
+            `Continue controller selected ${describeContinueLockAgentId(mismatch.actualAgentId)} but the active Continue target is locked to ${describeContinueLockAgentId(mismatch.expectedAgentId)}.`
+          );
+        }
+
+        controllerValidationRetryCount += 1;
+        loop.controller.validationRetryCount = controllerValidationRetryCount;
+        controllerPromptOverride = [
+          baseControllerPromptOverride || '',
+          buildContinueValidationCorrection(continueLock, mismatch),
+        ].filter(Boolean).join('\n\n');
+      }
 
       loop.controller.decision = controllerResult.decision;
       request.latestControllerDecision = controllerResult.decision;
@@ -443,6 +530,8 @@ async function runManagerLoop(manifest, renderer, options = {}) {
         agentId: controllerResult && controllerResult.decision && controllerResult.decision.agent_id || null,
         stopReason: controllerResult && controllerResult.decision && controllerResult.decision.stop_reason || null,
         controllerSessionId: controllerResult && controllerResult.sessionId || manifest.controller.sessionId || null,
+        continueLockedAgentId: continueLock ? normalizeDecisionAgentId(continueLock.agentId) : undefined,
+        controllerValidationRetryCount,
       });
 
       for (const message of controllerResult.decision.controller_messages) {

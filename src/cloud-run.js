@@ -760,6 +760,56 @@ function extractMeasuredUsageFromTranscriptEntries(entries) {
   };
 }
 
+function normalizeCloudRunArtifactStatus(status) {
+  return status === 'idle' ? 'succeeded' : status;
+}
+
+function publicRuntimeSummary(runtimeApiConfig) {
+  if (!runtimeApiConfig || typeof runtimeApiConfig !== 'object' || Array.isArray(runtimeApiConfig)) {
+    return null;
+  }
+  return {
+    source: runtimeApiConfig.source || null,
+    provider: runtimeApiConfig.provider || null,
+    model: runtimeApiConfig.model || null,
+  };
+}
+
+function publicRunFilesIndex(manifest) {
+  return {
+    events: manifest.files && manifest.files.events ? 'run-files/events.jsonl' : null,
+    transcript: manifest.files && manifest.files.transcript ? 'run-files/transcript.jsonl' : null,
+    chatLog: manifest.files && manifest.files.chatLog ? 'run-files/chat.jsonl' : null,
+    progress: manifest.files && manifest.files.progress ? 'run-files/progress.md' : null,
+  };
+}
+
+function buildPublicArtifactManifest(manifest, spec) {
+  const sanitizedSpec = sanitizeHostedWorkflowCloudRunSpec(spec);
+  return {
+    version: 1,
+    runId: manifest.runId,
+    attemptId: spec.attemptId || null,
+    repositoryId: spec.repositoryId || null,
+    repositoryContextId: spec.repositoryContextId || null,
+    title: spec.title || null,
+    targetUrl: spec.targetUrl || null,
+    targetType: spec.targetType || null,
+    browserPreset: spec.browserPreset || null,
+    aiProfile: spec.aiProfile || null,
+    runtime: publicRuntimeSummary(sanitizedSpec.runtimeApiConfig),
+    workflowDefinition: sanitizedSpec.workflowDefinition || null,
+    workflowProfile: sanitizedSpec.workflowProfile || null,
+    workflowInputs: sanitizedSpec.workflowInputs || null,
+    createdAt: manifest.createdAt || null,
+    updatedAt: manifest.updatedAt || null,
+    status: normalizeCloudRunArtifactStatus(manifest.status),
+    stopReason: manifest.stopReason || null,
+    summary: manifest.transcriptSummary || null,
+    files: publicRunFilesIndex(manifest),
+  };
+}
+
 async function writeCloudRunArtifacts(manifest, spec) {
   const outputDir = path.resolve(spec.outputDir);
   const runFilesDir = path.join(outputDir, 'run-files');
@@ -778,11 +828,16 @@ async function writeCloudRunArtifacts(manifest, spec) {
 
   for (const [filename, sourcePath] of copyTargets) {
     if (!sourcePath || !(await pathExists(sourcePath))) continue;
-    const sourceText = await readText(sourcePath, null);
-    if (sourceText == null) {
-      await fsp.copyFile(sourcePath, path.join(runFilesDir, filename));
+    const destinationPath = path.join(runFilesDir, filename);
+    if (filename === 'manifest.json') {
+      await writeJson(destinationPath, redactHostedWorkflowValue(manifest, buildPublicArtifactManifest(manifest, spec)));
     } else {
-      await writeText(path.join(runFilesDir, filename), redactHostedWorkflowValue(manifest, sourceText));
+      const sourceText = await readText(sourcePath, null);
+      if (sourceText == null) {
+        await fsp.copyFile(sourcePath, destinationPath);
+      } else {
+        await writeText(destinationPath, redactHostedWorkflowValue(manifest, sourceText));
+      }
     }
     copiedArtifacts.push({ artifactType: filename.endsWith('.md') || filename.endsWith('.jsonl') ? 'log' : 'evidence_bundle', filename: `run-files/${filename}` });
   }
@@ -815,6 +870,7 @@ async function writeCloudRunArtifacts(manifest, spec) {
     copiedArtifacts.push({ artifactType: 'screenshot', filename: `screenshots/${screenshot.filename}` });
   }
 
+  const sanitizedSpec = sanitizeHostedWorkflowCloudRunSpec(spec);
   const summary = {
     runId: manifest.runId,
     attemptId: spec.attemptId,
@@ -825,17 +881,15 @@ async function writeCloudRunArtifacts(manifest, spec) {
     targetType: spec.targetType,
     browserPreset: spec.browserPreset,
     aiProfile: spec.aiProfile,
-    runtimeApiConfig: spec.runtimeApiConfig,
-    workflowDefinition: spec.workflowDefinition,
-    workflowProfile: spec.workflowProfile,
-    workflowInputs: spec.workflowInputs,
-    workflowSecretRefs: spec.workflowSecretRefs,
-    status: manifest.status,
+    runtime: publicRuntimeSummary(sanitizedSpec.runtimeApiConfig),
+    workflowDefinition: sanitizedSpec.workflowDefinition,
+    workflowProfile: sanitizedSpec.workflowProfile,
+    workflowInputs: sanitizedSpec.workflowInputs,
+    status: normalizeCloudRunArtifactStatus(manifest.status),
     stopReason: manifest.stopReason || null,
     summary: manifest.transcriptSummary || null,
     measuredUsage,
     generatedAt: nowIso(),
-    runDir: manifest.runDir,
   };
   await writeJson(path.join(outputDir, 'run-report.json'), redactHostedWorkflowValue(manifest, summary));
   copiedArtifacts.push({ artifactType: 'report_json', filename: 'run-report.json' });

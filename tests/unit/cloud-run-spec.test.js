@@ -197,7 +197,15 @@ test('loadCloudRunSpec rejects missing outputDir clearly', () => {
 });
 
 test('writeCloudRunArtifacts writes deterministic report, logs, run files, and screenshots', async () => {
-  const { tempDir, spec } = createSpecFile();
+  const { tempDir, spec } = createSpecFile({
+    runtimeApiConfig: {
+      source: 'ai_profile',
+      provider: 'openrouter',
+      model: 'anthropic/claude-haiku-4.5',
+      apiKey: 'sk-or-v1-secret-test',
+      baseURL: 'https://openrouter.ai/api/v1',
+    },
+  });
   const runDir = path.join(tempDir, 'run');
   fs.mkdirSync(runDir, { recursive: true });
 
@@ -207,7 +215,33 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
   const chatPath = path.join(runDir, 'chat.jsonl');
   const progressPath = path.join(runDir, 'progress.md');
 
-  fs.writeFileSync(manifestPath, JSON.stringify({ runId: 'run_123' }, null, 2));
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      version: 1,
+      runId: 'run_123',
+      runDir,
+      status: 'idle',
+      createdAt: '2026-04-18T21:18:06.248Z',
+      updatedAt: '2026-04-18T21:20:18.416Z',
+      controller: {
+        cli: 'api',
+        apiConfig: {
+          provider: 'openrouter',
+          model: 'anthropic/claude-haiku-4.5',
+          apiKey: 'controller-secret',
+        },
+      },
+      worker: {
+        cli: 'api',
+        apiConfig: {
+          provider: 'openrouter',
+          model: 'anthropic/claude-haiku-4.5',
+          apiKey: 'worker-secret',
+        },
+      },
+    }, null, 2),
+  );
   fs.writeFileSync(eventsPath, '{"source":"launch-claude"}\n');
   fs.writeFileSync(chatPath, '{"type":"user","text":"hello"}\n');
   fs.writeFileSync(progressPath, '[00:00:01] Started\n');
@@ -274,8 +308,18 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
     const outputDir = spec.outputDir;
     assert.ok(fs.existsSync(path.join(outputDir, 'run-report.json')));
     const report = JSON.parse(fs.readFileSync(path.join(outputDir, 'run-report.json'), 'utf8'));
+    const publicManifest = JSON.parse(fs.readFileSync(path.join(outputDir, 'run-files', 'manifest.json'), 'utf8'));
     assert.equal(report.measuredUsage.totals.totalTokens, 1500);
     assert.equal(report.measuredUsage.sessions[0].provider, 'openai');
+    assert.equal(report.status, 'succeeded');
+    assert.deepEqual(report.runtime, {
+      source: 'ai_profile',
+      provider: 'openrouter',
+      model: 'anthropic/claude-haiku-4.5',
+    });
+    assert.equal(report.runtimeApiConfig, undefined);
+    assert.equal(report.runDir, undefined);
+    assert.doesNotMatch(JSON.stringify(report), /sk-or-v1-secret-test|controller-secret|worker-secret/);
     assert.ok(fs.existsSync(path.join(outputDir, 'session.log')));
     assert.ok(fs.existsSync(path.join(outputDir, 'evidence-bundle.json')));
     assert.ok(fs.existsSync(path.join(outputDir, 'run-files', 'manifest.json')));
@@ -284,6 +328,22 @@ test('writeCloudRunArtifacts writes deterministic report, logs, run files, and s
     assert.ok(fs.existsSync(path.join(outputDir, 'run-files', 'chat.jsonl')));
     assert.ok(fs.existsSync(path.join(outputDir, 'run-files', 'progress.md')));
     assert.ok(fs.existsSync(path.join(outputDir, 'screenshots', 'screenshot-001.png')));
+    assert.equal(publicManifest.status, 'succeeded');
+    assert.deepEqual(publicManifest.runtime, {
+      source: 'ai_profile',
+      provider: 'openrouter',
+      model: 'anthropic/claude-haiku-4.5',
+    });
+    assert.deepEqual(publicManifest.files, {
+      events: 'run-files/events.jsonl',
+      transcript: 'run-files/transcript.jsonl',
+      chatLog: 'run-files/chat.jsonl',
+      progress: 'run-files/progress.md',
+    });
+    assert.equal(publicManifest.controller, undefined);
+    assert.equal(publicManifest.worker, undefined);
+    assert.equal(publicManifest.runDir, undefined);
+    assert.doesNotMatch(JSON.stringify(publicManifest), /sk-or-v1-secret-test|controller-secret|worker-secret/);
     assert.ok(artifacts.some((artifact) => artifact.artifactType === 'report_json'));
     assert.ok(artifacts.some((artifact) => artifact.artifactType === 'screenshot'));
   } finally {

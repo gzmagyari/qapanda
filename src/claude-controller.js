@@ -67,8 +67,8 @@ function buildClaudeControllerArgs(manifest, loop) {
   return args;
 }
 
-async function runClaudeControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
-  const prompt = buildControllerPrompt(manifest, request);
+async function runClaudeControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal, controllerPromptOverride = null }) {
+  const prompt = buildControllerPrompt(manifest, request, { systemPromptOverride: controllerPromptOverride });
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const args = buildClaudeControllerArgs(manifest, loop);

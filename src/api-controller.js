@@ -34,8 +34,8 @@ const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
  * @param {function} opts.emitEvent - Event logger
  * @param {AbortSignal} [opts.abortSignal] - Abort signal
  */
-async function runApiControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
-  const prompt = buildControllerPrompt(manifest, request);
+async function runApiControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal, controllerPromptOverride = null }) {
+  const prompt = buildControllerPrompt(manifest, request, { systemPromptOverride: controllerPromptOverride });
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const apiConfig = manifest.controller.apiConfig || manifest.apiConfig || {};
@@ -57,10 +57,12 @@ async function runApiControllerTurn({ manifest, request, loop, renderer, emitEve
   }
 
   const client = new LLMClient({ provider, apiKey, baseURL, model });
-  if (!manifest.controller.apiSystemPromptSnapshot) {
+  if (controllerPromptOverride == null && !manifest.controller.apiSystemPromptSnapshot) {
     manifest.controller.apiSystemPromptSnapshot = buildApiControllerSystemPrompt(manifest);
   }
-  const systemPrompt = manifest.controller.apiSystemPromptSnapshot;
+  const systemPrompt = controllerPromptOverride != null
+    ? buildApiControllerSystemPrompt(manifest, { systemPromptOverride: controllerPromptOverride })
+    : manifest.controller.apiSystemPromptSnapshot;
   const userPrompt = buildApiControllerUserPrompt(manifest, request);
   const cacheContext = buildPromptCacheContext({
     providerId,

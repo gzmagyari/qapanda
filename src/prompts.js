@@ -22,6 +22,7 @@ const {
 } = require('./transcript');
 
 const CONTINUE_TRANSCRIPT_TAIL_MAX_CHARS = 50_000;
+const CONTINUE_DIRECTIVE_MARKER = 'CONTINUE DIRECTIVE —';
 
 /**
  * Build transcript excerpt from chat.jsonl — the unified chat history.
@@ -381,7 +382,17 @@ function isContinueStyleRequest(userMessage) {
   );
 }
 
-function buildOverriddenControllerPrompt(manifest, request) {
+function sanitizePersistedControllerSystemPrompt(prompt) {
+  if (typeof prompt !== 'string') return null;
+  const markerIndex = prompt.indexOf(CONTINUE_DIRECTIVE_MARKER);
+  const cleaned = (markerIndex === -1 ? prompt : prompt.slice(0, markerIndex)).trimEnd();
+  return cleaned || null;
+}
+
+function buildOverriddenControllerPrompt(manifest, request, options = {}) {
+  const controllerSystemPrompt = options.systemPromptOverride != null
+    ? String(options.systemPromptOverride)
+    : manifest.controllerSystemPrompt;
   const lastLoop = request.loops[request.loops.length - 1] || null;
   let lastWorker = lastLoop && lastLoop.worker ? lastLoop.worker : request.latestWorkerResult || null;
 
@@ -444,7 +455,7 @@ function buildOverriddenControllerPrompt(manifest, request) {
   };
 
   return [
-    manifest.controllerSystemPrompt,
+    controllerSystemPrompt,
     '',
     'REMINDER: Return JSON ONLY. Fields: action, agent_id, claude_message, controller_messages, stop_reason, progress_updates.',
     '',
@@ -465,10 +476,13 @@ function buildOverriddenControllerPrompt(manifest, request) {
   ].filter(Boolean).join('\n');
 }
 
-function buildControllerPrompt(manifest, request) {
+function buildControllerPrompt(manifest, request, options = {}) {
+  const controllerSystemPrompt = options.systemPromptOverride != null
+    ? String(options.systemPromptOverride)
+    : manifest.controllerSystemPrompt;
   // If a mode-level controller prompt override exists, use it instead of the default
-  if (manifest.controllerSystemPrompt) {
-    return buildOverriddenControllerPrompt(manifest, request);
+  if (controllerSystemPrompt) {
+    return buildOverriddenControllerPrompt(manifest, request, { systemPromptOverride: controllerSystemPrompt });
   }
 
   const lastLoop = request.loops[request.loops.length - 1] || null;
@@ -654,7 +668,10 @@ function buildControllerStatePayload(manifest, request) {
   };
 }
 
-function buildApiControllerSystemPrompt(manifest) {
+function buildApiControllerSystemPrompt(manifest, options = {}) {
+  if (options.systemPromptOverride != null) {
+    manifest = { ...manifest, controllerSystemPrompt: String(options.systemPromptOverride) };
+  }
   const projectSections = buildProjectContextSections(manifest.repoRoot, { includeMemoryGuidance: true });
   const staticSections = [
     manifest.controllerSystemPrompt || null,
@@ -861,9 +878,11 @@ Your response (turn 3 — testing complete):
  * @param {{ loopMode?: boolean, loopObjective?: string }} [options]
  */
 function buildContinueDirective(guidance, currentAgentId, options = {}) {
-  const agentLine = currentAgentId
-    ? `Use agent_id: "${currentAgentId}" when delegating (you may also use other agent_ids if a different agent is more appropriate).`
-    : 'Delegate to the most appropriate available agent.';
+  const agentLine = currentAgentId === 'default'
+    ? 'You MUST delegate to the default worker for this Continue turn. Set agent_id to null or "default". Do NOT choose any named agent.'
+    : (currentAgentId
+      ? `You MUST use agent_id: "${currentAgentId}" when delegating. No other agent_id is allowed for this Continue turn.`
+      : 'Delegate to the most appropriate available agent.');
   const loopMode = !!options.loopMode;
   const loopObjective = typeof options.loopObjective === 'string'
     ? options.loopObjective.trim()
@@ -1088,4 +1107,5 @@ module.exports = {
   buildDefaultWorkerAppendSystemPrompt,
   buildSelfTestingPrompt,
   loadWorkflows,
+  sanitizePersistedControllerSystemPrompt,
 };

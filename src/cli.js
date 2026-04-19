@@ -1290,4 +1290,32 @@ async function main(argv) {
   throw new Error(`Unknown command: ${command}\n\n${usage()}`);
 }
 
-module.exports = { main, parseArgs, normalizeOptions, loadConfig, applyConfigToOptions, runCloudCommand, runCloudRunCommand };
+function forceTerminateCloudRunProcess(exitCode = process.exitCode || 0) {
+  const code = Number.isInteger(exitCode) ? exitCode : 0;
+  const exitNow = () => {
+    process.exit(code);
+  };
+  const flushStderr = () => {
+    try {
+      process.stderr.write('', exitNow);
+    } catch {
+      exitNow();
+    }
+  };
+  try {
+    process.stdout.write('', flushStderr);
+  } catch {
+    flushStderr();
+  }
+}
+
+module.exports = {
+  main,
+  parseArgs,
+  normalizeOptions,
+  loadConfig,
+  applyConfigToOptions,
+  runCloudCommand,
+  runCloudRunCommand,
+  forceTerminateCloudRunProcess,
+};

@@ -6,7 +6,12 @@ const { loadFeatureFlags } = require('./feature-flags');
 const _flags = loadFeatureFlags(null, process.cwd());
 const { Renderer } = require('./render');
 const { printEventTail, printRunSummary, runManagerLoop, runDirectWorkerTurn } = require('./orchestrator');
-const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./prompts');
+const {
+  loadWorkflows,
+  buildCopilotBasePrompt,
+  buildContinueDirective,
+  sanitizePersistedControllerSystemPrompt,
+} = require('./prompts');
 const {
   WAIT_OPTIONS,
   defaultStateRoot,
@@ -532,11 +537,18 @@ async function runInteractiveShell(options = {}) {
               await bindCurrentRunAliases();
               renderer.requestStarted(activeManifest.runId);
             }
-            // Set copilot prompt + continue directive so controller knows what to do
-            const originalPrompt = activeManifest.controllerSystemPrompt;
-            const basePrompt = originalPrompt || buildCopilotBasePrompt({ selfTesting: activeManifest.selfTesting, repoRoot: activeManifest.repoRoot });
-            const directive = buildContinueDirective(guidance, directAgent);
-            activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + directive;
+            const sanitizedPrompt = sanitizePersistedControllerSystemPrompt(activeManifest.controllerSystemPrompt);
+            if (sanitizedPrompt !== activeManifest.controllerSystemPrompt) {
+              activeManifest.controllerSystemPrompt = sanitizedPrompt;
+              if (activeManifest.controller) {
+                activeManifest.controller.apiSystemPromptSnapshot = null;
+              }
+              await saveManifest(activeManifest);
+            }
+            const continueTarget = directAgent === 'default' ? 'default' : directAgent;
+            const basePrompt = sanitizedPrompt || buildCopilotBasePrompt({ selfTesting: activeManifest.selfTesting, repoRoot: activeManifest.repoRoot });
+            const directive = buildContinueDirective(guidance, continueTarget);
+            const controllerPromptOverride = basePrompt + '\n\n' + directive;
             // Copilot mode: fresh one-shot controller — don't resume any existing session/thread
             const savedControllerSessionId = activeManifest.controller.sessionId;
             const savedControllerAppServerThreadId = activeManifest.controller.appServerThreadId || null;
@@ -549,9 +561,14 @@ async function runInteractiveShell(options = {}) {
             const userMessage = guidance
               ? `[CONTROLLER GUIDANCE] ${guidance}`
               : '[AUTO-CONTINUE] Decide the next step based on the conversation transcript.';
-            activeManifest = await runWithScheduling(activeManifest, renderer, { userMessage });
-            // Restore original prompt and direct-mode controller session/thread
-            activeManifest.controllerSystemPrompt = originalPrompt;
+            activeManifest = await runWithScheduling(activeManifest, renderer, {
+              userMessage,
+              controllerPromptOverride,
+              continueLock: continueTarget != null
+                ? { agentId: continueTarget === 'default' ? null : continueTarget }
+                : null,
+            });
+            // Restore direct-mode controller session/thread
             activeManifest.controller.sessionId = savedControllerSessionId;
             activeManifest.controller.appServerThreadId = savedControllerAppServerThreadId;
             activeManifest.controller.threadSandbox = savedControllerThreadSandbox;

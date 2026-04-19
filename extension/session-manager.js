@@ -2,7 +2,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runManagerLoop, runDirectWorkerTurn, printRunSummary, printEventTail } = require('./src/orchestrator');
 const { closeInteractiveSessions } = require('./src/claude');
-const { loadWorkflows, buildCopilotBasePrompt, buildContinueDirective } = require('./src/prompts');
+const {
+  loadWorkflows,
+  buildCopilotBasePrompt,
+  buildContinueDirective,
+  sanitizePersistedControllerSystemPrompt,
+} = require('./src/prompts');
 const { appendWizardDebug, summarizeForDebug } = require('./src/debug-log');
 const { searchExternalChatSessions } = require('./src/external-chat-search');
 const {
@@ -2979,21 +2984,35 @@ class SessionManager {
       lastSeenChatLine: this._activeManifest.controller && this._activeManifest.controller.lastSeenChatLine || null,
     });
 
-    // Determine the current target agent for the directive
-    let currentAgentId = null;
-    if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
-      currentAgentId = this._chatTarget.slice('agent-'.length);
+    let lockedAgentId = null;
+    let directiveAgentId = null;
+    if (this._chatTarget === 'claude') {
+      lockedAgentId = null;
+      directiveAgentId = 'default';
+    } else if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
+      lockedAgentId = this._chatTarget.slice('agent-'.length);
+      directiveAgentId = lockedAgentId;
     }
 
-    // Save original prompt, temporarily append continue directive
-    const originalPrompt = this._activeManifest.controllerSystemPrompt;
-    const basePrompt = originalPrompt || this._buildCopilotBasePrompt();
-    const continueDirective = this._buildContinueDirective(guidance, currentAgentId);
-    this._activeManifest.controllerSystemPrompt = basePrompt + '\n\n' + continueDirective;
+    const sanitizedPrompt = sanitizePersistedControllerSystemPrompt(this._activeManifest.controllerSystemPrompt);
+    const promptWasSanitized = sanitizedPrompt !== this._activeManifest.controllerSystemPrompt;
+    if (promptWasSanitized) {
+      this._activeManifest.controllerSystemPrompt = sanitizedPrompt;
+      if (this._activeManifest.controller) {
+        this._activeManifest.controller.apiSystemPromptSnapshot = null;
+      }
+      await saveManifest(this._activeManifest);
+    }
+
+    const basePrompt = sanitizedPrompt || this._buildCopilotBasePrompt();
+    const continueDirective = this._buildContinueDirective(guidance, directiveAgentId);
+    const controllerPromptOverride = basePrompt + '\n\n' + continueDirective;
     this._continueDbg('_runControllerContinue:directive-applied', {
       runId: this._activeManifest.runId,
-      currentAgentId,
-      promptChars: (this._activeManifest.controllerSystemPrompt || '').length,
+      lockedAgentId,
+      directiveAgentId,
+      promptChars: controllerPromptOverride.length,
+      promptWasSanitized,
     });
 
     // Copilot mode: fresh one-shot controller — don't resume any existing session.
@@ -3035,12 +3054,17 @@ class SessionManager {
         runId: this._activeManifest.runId,
         userMessage,
         singlePass: true,
+        lockedAgentId,
       });
       this._activeManifest = await runManagerLoop(this._activeManifest, this._renderer, {
         userMessage,
         abortSignal: this._abortController.signal,
         singlePass: true,
         controllerLabel: 'Continue',
+        controllerPromptOverride,
+        continueLock: directiveAgentId != null
+          ? { agentId: lockedAgentId, chatTarget: this._chatTarget || null }
+          : null,
         ...this._workerRunHooks(),
       });
       this._continueDbg('_runControllerContinue:runManagerLoop:after', {
@@ -3057,9 +3081,8 @@ class SessionManager {
         this._activeManifest.status === 'running'
       );
     } finally {
-      // Restore original prompt and controller session/thread state
+      // Restore controller session/thread state after the temporary Continue turn
       if (this._activeManifest && this._activeManifest.controller) {
-        this._activeManifest.controllerSystemPrompt = originalPrompt;
         this._activeManifest.controller.sessionId = savedControllerSessionId;
         this._activeManifest.controller.appServerThreadId = savedControllerAppServerThreadId;
         this._activeManifest.controller.threadSandbox = savedControllerThreadSandbox;

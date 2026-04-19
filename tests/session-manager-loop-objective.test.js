@@ -187,9 +187,39 @@ test('_runControllerContinue uses the loop objective in auto-continue mode', asy
 
     const call = captured.runManagerLoopCalls[0];
     assert.ok(call, 'expected runManagerLoop to be called');
-    assert.match(call.manifest.controllerSystemPrompt, /Finish A-01 through A-03/);
-    assert.match(call.manifest.controllerSystemPrompt, /Stop only when this objective is achieved/i);
+    assert.match(call.options.controllerPromptOverride, /Finish A-01 through A-03/);
+    assert.match(call.options.controllerPromptOverride, /Stop only when this objective is achieved/i);
+    assert.deepEqual(call.options.continueLock, { agentId: 'dev', chatTarget: 'agent-dev' });
     assert.equal(session._activeManifest.controllerSystemPrompt, 'BASE PROMPT');
+  } finally {
+    cleanup();
+  }
+});
+
+test('_runControllerContinue locks the default worker for direct claude target', async () => {
+  const { session, captured, cleanup } = buildSession({
+    config: {
+      chatTarget: 'claude',
+      loopMode: false,
+    },
+  });
+  try {
+    session._activeManifest = {
+      runId: 'run-2',
+      controller: { cli: 'codex', sessionId: 'controller-2', config: [] },
+      worker: { cli: 'codex' },
+      status: 'running',
+      files: {},
+      requests: [],
+      controllerSystemPrompt: 'BASE PROMPT',
+    };
+
+    await session._runControllerContinue('keep going');
+
+    const call = captured.runManagerLoopCalls[0];
+    assert.ok(call, 'expected runManagerLoop to be called');
+    assert.match(call.options.controllerPromptOverride, /default worker/i);
+    assert.deepEqual(call.options.continueLock, { agentId: null, chatTarget: 'claude' });
   } finally {
     cleanup();
   }

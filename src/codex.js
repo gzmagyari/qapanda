@@ -172,8 +172,8 @@ function buildCodexArgs(manifest, loop) {
   return args;
 }
 
-async function runControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
-  const prompt = buildControllerPrompt(manifest, request);
+async function runControllerTurn({ manifest, request, loop, renderer, emitEvent, abortSignal, controllerPromptOverride = null }) {
+  const prompt = buildControllerPrompt(manifest, request, { systemPromptOverride: controllerPromptOverride });
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   const args = buildCodexArgs(manifest, loop);
@@ -263,13 +263,13 @@ async function runControllerTurn({ manifest, request, loop, renderer, emitEvent,
  * Instead of spawning a new CLI process per turn, this uses a persistent
  * app-server connection with thread/turn APIs.
  */
-async function runControllerTurnAppServer({ manifest, request, loop, renderer, emitEvent, abortSignal }) {
+async function runControllerTurnAppServer({ manifest, request, loop, renderer, emitEvent, abortSignal, controllerPromptOverride = null }) {
   const promptStart = Date.now();
   appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:build-prompt:start', {
     requestId: request && request.id || null,
     loopIndex: loop && loop.index != null ? loop.index : null,
   });
-  const prompt = buildControllerPrompt(manifest, request);
+  const prompt = buildControllerPrompt(manifest, request, { systemPromptOverride: controllerPromptOverride });
   appendManifestDebug('controller-appserver', manifest, 'runControllerTurnAppServer:build-prompt:done', {
     requestId: request && request.id || null,
     loopIndex: loop && loop.index != null ? loop.index : null,

@@ -149,6 +149,41 @@ test('_runControllerContinue saves the restored controller state, not the tempor
   }
 });
 
+test('_runControllerContinue strips stale continue directives from persisted controller prompts before running', async () => {
+  const pollutedPrompt = [
+    'persistent prompt',
+    '',
+    'CONTINUE DIRECTIVE — stale old lock',
+    'Use agent_id: "QA-Browser" when delegating.',
+  ].join('\n');
+  const { session, captured, cleanup } = buildSession({
+    manifest: {
+      runId: 'continue-run-sanitized',
+      status: 'running',
+      controllerSystemPrompt: pollutedPrompt,
+      controller: { model: null, config: [], sessionId: 'controller-session-77' },
+      worker: { model: null },
+      files: { progress: '/tmp/fake-progress.md' },
+    },
+  });
+
+  try {
+    session._chatTarget = 'agent-dev';
+    await session._runControllerContinue('');
+
+    assert.equal(captured.saveManifestCalls.length, 2);
+    assert.equal(captured.saveManifestCalls[0].controllerSystemPrompt, 'persistent prompt');
+    assert.equal(captured.saveManifestCalls[1].controllerSystemPrompt, 'persistent prompt');
+
+    const loopCall = captured.runManagerLoopCalls[0];
+    assert.ok(loopCall, 'expected runManagerLoop to be called');
+    assert.doesNotMatch(loopCall.options.controllerPromptOverride, /QA-Browser/);
+    assert.match(loopCall.options.controllerPromptOverride, /continue directive/i);
+  } finally {
+    cleanup();
+  }
+});
+
 test('_runControllerContinue restores app-server controller thread state after the temporary continue turn', async () => {
   const { session, captured, cleanup } = buildSession({
     manifest: {
