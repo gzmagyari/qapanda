@@ -40,10 +40,12 @@ const {
   appendTranscriptRecord,
   buildTranscriptDisplayTail,
   createTranscriptRecord,
+  screenshotMessagesFromResult,
   transcriptBackend,
   workerSessionKey,
 } = require('./src/transcript');
 const { backfillUsageSummaryFromRun, usageSummaryMessage, usageSummaryNeedsBackfill } = require('./src/usage-summary');
+const { parseChromePagesToolResult } = require('./chrome-page-binding');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 const PROGRESS_TAIL_MAX_BYTES = 512 * 1024;
@@ -160,8 +162,14 @@ class SessionManager {
       this._lazyMcpToolsEnabled = false;
       this._learnedApiToolsEnabled = false;
     }
+    if (this._renderer && typeof this._renderer === 'object') {
+      this._renderer.handleMcpToolCompletion = async (payload) => {
+        await this._handleMcpToolCompletion(payload);
+      };
+    }
     this._agentDelegateMcpServer = null;
     this._delegationDepth = 0;
+    this._pendingTurnBrowserScreenshotTokens = new Set();
   }
 
   /** Debug logger for screencast/session lifecycle — writes to same file as chrome-manager. */
@@ -302,6 +310,70 @@ class SessionManager {
 
   _isChromeDevtoolsMcpName(name) {
     return String(name || '').includes('chrome-devtools') || String(name || '').includes('chrome_devtools');
+  }
+
+  _normalizeCompletedToolName(name) {
+    const value = String(name || '').trim();
+    if (!value) return '';
+    const parts = value.split('__');
+    return parts.length >= 2 ? parts[parts.length - 1] : value;
+  }
+
+  _isChromePageManagementTool(serverName, toolName) {
+    const normalizedTool = this._normalizeCompletedToolName(toolName);
+    const normalizedServer = String(serverName || '');
+    if (!(this._isChromeDevtoolsMcpName(normalizedServer) || this._isChromeDevtoolsMcpName(toolName))) {
+      return false;
+    }
+    return normalizedTool === 'list_pages'
+      || normalizedTool === 'select_page'
+      || normalizedTool === 'new_page'
+      || normalizedTool === 'close_page';
+  }
+
+  async _handleMcpToolCompletion(payload = {}) {
+    if (!this._activeManifest) return;
+    const screenshots = screenshotMessagesFromResult(payload.output);
+    if (screenshots.length > 0) {
+      const seenScreenshotData = new Set();
+      const normalizedTool = this._normalizeCompletedToolName(payload.toolName || payload.tool || payload.serverName || payload.server || '');
+      for (const screenshot of screenshots) {
+        const data = screenshot && screenshot.data ? String(screenshot.data) : '';
+        if (data && seenScreenshotData.has(data)) continue;
+        if (data) seenScreenshotData.add(data);
+        await this._persistChatScreenshotEntry(screenshot, {
+          text: normalizedTool ? `Tool screenshot returned by ${normalizedTool}` : null,
+        });
+        this._postMessage({ ...screenshot });
+      }
+    }
+    const serverName = payload.serverName || payload.server || '';
+    const toolName = payload.toolName || payload.tool || '';
+    if (!this._isChromePageManagementTool(serverName, toolName)) return;
+    const normalizedTool = this._normalizeCompletedToolName(toolName);
+    const parsed = parseChromePagesToolResult(payload.output);
+    if (!parsed || !parsed.selectedPageUrl) {
+      this._traceBrowser('_handleMcpToolCompletion:ignored', {
+        toolName: normalizedTool,
+        reason: 'no-selected-page',
+      });
+      return;
+    }
+    const { syncPanelPageTarget } = require('./chrome-manager');
+    const syncResult = await syncPanelPageTarget(this._panelId, {
+      pageNumber: parsed.selectedPageNumber,
+      expectedUrl: parsed.selectedPageUrl,
+      reason: `mcp:${normalizedTool}`,
+    }).catch((error) => ({ status: 'error', error: error && error.message ? error.message : String(error) }));
+    this._traceBrowser('_handleMcpToolCompletion:sync', {
+      toolName: normalizedTool,
+      selectedPageNumber: parsed.selectedPageNumber,
+      selectedPageUrl: parsed.selectedPageUrl,
+      syncResult,
+    });
+    if (syncResult && syncResult.status && syncResult.status !== 'no-instance' && syncResult.status !== 'unreachable') {
+      await this._syncBrowserBindingToManifest(true);
+    }
   }
 
   _normalizeAgentRuntimeOverrides(overrides) {
@@ -526,19 +598,32 @@ class SessionManager {
 
   _syncBrowserBindingToManifest(save = false) {
     if (!this._activeManifest) return Promise.resolve();
+    const { getChromeDebugState } = require('./chrome-manager');
     const reservedPort = this._currentReservedChromePort();
+    const chromeDebugState = getChromeDebugState(this._panelId);
+    const chromeBinding = chromeDebugState && chromeDebugState.instance && (
+      chromeDebugState.instance.boundTargetId || chromeDebugState.instance.boundTargetUrl
+    ) ? {
+      targetId: chromeDebugState.instance.boundTargetId || null,
+      url: chromeDebugState.instance.boundTargetUrl || null,
+      pageNumber: Number.isFinite(Number(chromeDebugState.instance.boundPageNumber))
+        ? Number(chromeDebugState.instance.boundPageNumber)
+        : null,
+      boundBy: chromeDebugState.instance.boundBy || null,
+    } : null;
     this._activeManifest.panelId = this._panelId || this._activeManifest.panelId || null;
     this._activeManifest.chromeDebugPort = reservedPort || null;
+    this._activeManifest.chromePageBinding = chromeBinding;
     this._activeManifest.controllerPrestartKey = this._controllerPrestartKey(reservedPort);
     this._activeManifest.workerPrestartKey = this._workerPrestartKey(reservedPort);
     if (this._activeManifest.worker) {
       this._activeManifest.worker.boundBrowserPort = reservedPort || null;
     }
     if (save) {
-      this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort });
+      this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort, chromeBinding });
       return saveManifest(this._activeManifest).catch(() => {});
     }
-    this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort });
+    this._traceBrowser('_syncBrowserBindingToManifest', { save, reservedPort, chromeBinding });
     return Promise.resolve();
   }
 
@@ -572,7 +657,7 @@ class SessionManager {
   }
 
   async _ensurePanelChrome(source, options = {}) {
-    const { ensureChrome } = require('./chrome-manager');
+    const { ensureChrome, setPanelPageBinding } = require('./chrome-manager');
     const preferredPort = options.port != null ? options.port : this._currentReservedChromePort();
     this._traceBrowser('_ensurePanelChrome:entry', { source, preferredPort, options });
     const reservedPort = await this._reserveChromePort(preferredPort);
@@ -589,6 +674,12 @@ class SessionManager {
       }
       this._chromePort = chrome.port;
       this._chromePortReservation = chrome.port;
+      setPanelPageBinding(
+        this._panelId,
+        this._activeManifest && this._activeManifest.chromePageBinding
+          ? this._activeManifest.chromePageBinding
+          : null
+      );
       this._traceBrowser('_ensurePanelChrome:ensured', { source, reservedPort, result: chrome });
       if (options.emitLifecycleBanner !== false) {
         if (chrome.status === 'started') {
@@ -1776,6 +1867,11 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'captureTurnBrowserScreenshot') {
+      await this._handleCaptureTurnBrowserScreenshot(msg);
+      return;
+    }
+
     if (msg.type === 'logChatEntry') {
       // Append an arbitrary entry to chat.jsonl (used for client-side events like screenshots)
       if (this._activeManifest && this._activeManifest.files && this._activeManifest.files.chatLog && msg.entry) {
@@ -1841,6 +1937,84 @@ class SessionManager {
       requestId: request && request.id ? request.id : null,
       loopIndex: loop && loop.index != null ? loop.index : null,
     };
+  }
+
+  _browserScreenshotAgentContext() {
+    const agents = this._enabledAgents();
+    let agentId = this._currentExecutingAgentId();
+    if (!agentId && this._chatTarget && this._chatTarget.startsWith('agent-')) {
+      agentId = this._chatTarget.slice('agent-'.length);
+    }
+    const agentConfig = agentId ? agents[agentId] : null;
+    const workerCli = (agentConfig && agentConfig.cli)
+      || this._workerCli
+      || (this._activeManifest && this._activeManifest.worker && this._activeManifest.worker.cli)
+      || 'codex';
+    return {
+      agentId: agentId || null,
+      workerCli,
+    };
+  }
+
+  async _persistChatScreenshotEntry(entry, options = {}) {
+    if (!this._activeManifest || !entry || entry.type !== 'chatScreenshot') return;
+    const safeEntry = {
+      ts: new Date().toISOString(),
+      type: 'chatScreenshot',
+      data: entry.data,
+      alt: entry.alt || 'Screenshot',
+      closeAfter: !!entry.closeAfter,
+    };
+    if (this._activeManifest.files && this._activeManifest.files.chatLog) {
+      try {
+        fs.appendFileSync(this._activeManifest.files.chatLog, JSON.stringify(safeEntry) + '\n');
+      } catch {}
+    }
+    const { requestId, loopIndex } = this._latestRequestMeta();
+    const context = this._browserScreenshotAgentContext();
+    await appendTranscriptRecord(this._activeManifest, createTranscriptRecord({
+      kind: 'ui_message',
+      sessionKey: workerSessionKey(context.agentId),
+      backend: transcriptBackend('worker', context.workerCli),
+      requestId,
+      loopIndex,
+      agentId: context.agentId,
+      workerCli: context.workerCli,
+      payload: safeEntry,
+      display: true,
+      text: options.text || null,
+    })).catch(() => {});
+  }
+
+  async _handleCaptureTurnBrowserScreenshot(msg) {
+    const token = String(msg && msg.token || '').trim();
+    if (!token || this._pendingTurnBrowserScreenshotTokens.has(token)) {
+      return;
+    }
+    this._pendingTurnBrowserScreenshotTokens.add(token);
+    try {
+      if (!this._activeManifest || !this._chromePort) {
+        this._postMessage({ type: 'chatScreenshotCaptureSkipped', _anchorToken: token });
+        return;
+      }
+      const { capturePanelScreenshot } = require('./chrome-manager');
+      const capture = await capturePanelScreenshot(this._panelId, { format: 'jpeg', quality: 70 });
+      const message = {
+        type: 'chatScreenshot',
+        data: capture.dataUrl,
+        alt: 'Browser screenshot',
+        closeAfter: true,
+      };
+      await this._persistChatScreenshotEntry(message, {
+        text: capture && capture.targetUrl ? `Browser screenshot captured from ${capture.targetUrl}` : null,
+      });
+      this._postMessage({ ...message, _anchorToken: token });
+    } catch (error) {
+      this._sDbg(`captureTurnBrowserScreenshot failed: ${error && error.message ? error.message : error}`);
+      this._postMessage({ type: 'chatScreenshotCaptureSkipped', _anchorToken: token });
+    } finally {
+      this._pendingTurnBrowserScreenshotTokens.delete(token);
+    }
   }
 
   async _compactCurrentSession() {

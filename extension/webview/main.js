@@ -3208,6 +3208,8 @@
   let splitChromeLeft = null;
   let splitChromeCollapsed = false;
   let chromeImgEl = null; // <img> element receiving screencast frames
+  let turnBrowserScreenshotSeq = 0;
+  const pendingTurnBrowserScreenshotAnchors = new Map();
 
   function vncUrl() {
     return `http://localhost:${novncPort}/vnc.html?autoconnect=true&resize=scale&password=secret`;
@@ -3231,7 +3233,7 @@
   }
 
   function showSplitVnc() {
-    if (splitVncWrapper || !novncPort || !currentSection) return;
+    if (suppressUiLog || splitVncWrapper || !novncPort || !currentSection) return;
     hideThinking();
 
     const insertionParent = resolveSectionParent(currentSection);
@@ -3344,12 +3346,10 @@
         try {
           const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
           if (dataUrl && dataUrl.startsWith('data:')) {
-            const thumb = document.createElement('img');
-            thumb.src = dataUrl;
-            thumb.className = 'chat-screenshot';
-            thumb.alt = 'Desktop screenshot';
-            bar.insertAdjacentElement('afterend', thumb);
-            vscode.postMessage({ type: 'logChatEntry', entry: { type: 'chatScreenshot', data: dataUrl, alt: 'Desktop screenshot' } });
+            appendLocalChatScreenshot(
+              { data: dataUrl, alt: 'Desktop screenshot' },
+              { closeAfter: true }
+            );
           }
         } catch {}
       }
@@ -3413,7 +3413,7 @@
   }
 
   function showSplitChrome() {
-    if (splitChromeWrapper || !chromePort || !currentSection) return;
+    if (suppressUiLog || splitChromeWrapper || !chromePort || !currentSection) return;
     hideThinking();
 
     const insertionParent = resolveSectionParent(currentSection);
@@ -3519,17 +3519,15 @@
         bar.insertAdjacentElement('afterend', frame);
       });
       lastMoved.insertAdjacentElement('afterend', bar);
-      // Insert a thumbnail screenshot of the browser at this point in the chat
-      const tabFrame = document.getElementById('browser-chrome-frame');
-      const frameSrc = (chromeImgEl && chromeImgEl.src) || (tabFrame && tabFrame.src);
-      if (frameSrc && frameSrc.startsWith('data:')) {
-        const thumb = document.createElement('img');
-        thumb.src = frameSrc;
-        thumb.className = 'chat-screenshot';
-        thumb.alt = 'Browser screenshot';
-        bar.insertAdjacentElement('afterend', thumb);
-        // Log to chat.jsonl for restore
-        vscode.postMessage({ type: 'logChatEntry', entry: { type: 'chatScreenshot', data: frameSrc, alt: 'Browser screenshot' } });
+      if (!suppressUiLog && currentSection && currentSection.parentNode) {
+        const screenshotAnchorToken = `browser-shot-${++turnBrowserScreenshotSeq}`;
+        const anchor = document.createElement('div');
+        anchor.className = 'chat-screenshot-anchor';
+        anchor.style.display = 'none';
+        anchor.dataset.anchorToken = screenshotAnchorToken;
+        currentSection.appendChild(anchor);
+        pendingTurnBrowserScreenshotAnchors.set(screenshotAnchorToken, anchor);
+        vscode.postMessage({ type: 'captureTurnBrowserScreenshot', token: screenshotAnchorToken });
       }
       splitChromeWrapper.remove();
     } else {
@@ -4235,8 +4233,17 @@
     // Only log messages that produce visible UI (skip transient/meta types).
     // messageLog is kept in memory for the current session but NOT persisted —
     // chat history survives reloads via transcript.jsonl on disk.
-    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'runHistory', 'importChatHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState', 'usageStats'];
+    const skipped = ['running', 'initConfig', 'syncConfig', 'rawEvent', 'setRunId', 'clearRunId', 'progressLine', 'progressFull', 'waitStatus', 'transcriptHistory', 'runHistory', 'importChatHistory', 'liveEntityCard', 'clearLiveEntityCard', 'liveQaReportCard', 'clearLiveQaReportCard', 'reviewState', 'usageStats', 'chatScreenshotCaptureSkipped'];
     if (skipped.includes(msg.type)) return;
+    if (msg.type === 'chatScreenshot') {
+      messageLog.push({
+        type: 'chatScreenshot',
+        data: msg.data,
+        alt: msg.alt || 'Screenshot',
+        closeAfter: !!msg.closeAfter,
+      });
+      return;
+    }
     messageLog.push(msg);
   }
 
@@ -4350,6 +4357,7 @@
   }
 
   function resetChatView() {
+    clearAllPendingTurnBrowserScreenshotAnchors();
     teardownSplitVnc(false);
     teardownSplitChrome(false);
     streamingEntry = null;
@@ -6477,6 +6485,68 @@
     return entry;
   }
 
+  function renderChatScreenshot(msg) {
+    if (!msg || !msg.data || !msg.data.startsWith('data:')) return;
+    clearWelcome();
+    hideThinking();
+    const thumb = document.createElement('img');
+    thumb.src = msg.data;
+    thumb.className = 'chat-screenshot';
+    thumb.alt = msg.alt || 'Screenshot';
+    const anchorToken = msg._anchorToken || null;
+    let anchored = false;
+    if (anchorToken) {
+      if (!pendingTurnBrowserScreenshotAnchors.has(anchorToken)) return;
+      const anchor = pendingTurnBrowserScreenshotAnchors.get(anchorToken);
+      pendingTurnBrowserScreenshotAnchors.delete(anchorToken);
+      if (!anchor || !anchor.parentNode) return;
+      const parent = anchor.parentNode;
+      parent.insertBefore(thumb, anchor);
+      anchor.remove();
+      anchored = true;
+    }
+    if (!anchored) {
+      const target = currentSection || messagesEl;
+      target.appendChild(thumb);
+      if (currentSection) {
+        hasContent = true;
+      }
+    }
+    autoScroll();
+    maybeShowThinking();
+    if (msg.closeAfter && !anchored) {
+      closeSection();
+    }
+  }
+
+  function clearPendingTurnBrowserScreenshotAnchor(token) {
+    if (!token || !pendingTurnBrowserScreenshotAnchors.has(token)) return;
+    const anchor = pendingTurnBrowserScreenshotAnchors.get(token);
+    pendingTurnBrowserScreenshotAnchors.delete(token);
+    if (anchor && anchor.parentNode) {
+      anchor.remove();
+    }
+  }
+
+  function clearAllPendingTurnBrowserScreenshotAnchors() {
+    Array.from(pendingTurnBrowserScreenshotAnchors.keys()).forEach(clearPendingTurnBrowserScreenshotAnchor);
+  }
+
+  function appendLocalChatScreenshot(entry, options) {
+    if (suppressUiLog || !entry || !entry.data || !entry.data.startsWith('data:')) return;
+    const message = {
+      type: 'chatScreenshot',
+      data: entry.data,
+      alt: entry.alt || 'Screenshot',
+      closeAfter: !!(options && options.closeAfter),
+    };
+    handlers.chatScreenshot(message);
+    messageLog.push(message);
+    if (!(options && options.skipPersist)) {
+      vscode.postMessage({ type: 'logChatEntry', entry: message });
+    }
+  }
+
   function renderUserEntryContent(entry, msg) {
     if (!entry || !msg) return;
     const content = entry.querySelector('.entry-content');
@@ -6841,20 +6911,11 @@
 
     chatScreenshot(msg) {
       // Inline screenshot thumbnail (from Chrome/VNC teardown or restored from chat.jsonl)
-      if (msg.data && msg.data.startsWith('data:')) {
-        clearWelcome();
-        hideThinking();
-        const thumb = document.createElement('img');
-        thumb.src = msg.data;
-        thumb.className = 'chat-screenshot';
-        thumb.alt = msg.alt || 'Screenshot';
-        const target = currentSection || messagesEl;
-        target.appendChild(thumb);
-        if (currentSection) {
-          hasContent = true;
-        }
-        autoScroll();
-      }
+      renderChatScreenshot(msg);
+    },
+
+    chatScreenshotCaptureSkipped(msg) {
+      clearPendingTurnBrowserScreenshotAnchor(msg && msg._anchorToken);
     },
 
     requestStarted(msg) {
@@ -6887,6 +6948,7 @@
     },
 
     close() {
+      clearAllPendingTurnBrowserScreenshotAnchors();
       teardownSplitVnc(false);
       teardownSplitChrome(false);
       streamingEntry = null;

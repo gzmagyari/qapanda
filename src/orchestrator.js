@@ -226,6 +226,75 @@ function workerTranscriptMeta(manifest, agentId) {
   };
 }
 
+function transcriptBackendEventPreview(value, maxLength = 4000) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? truncate(trimmed, maxLength) : null;
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return '';
+      if (typeof item.text === 'string') return item.text;
+      if (typeof item.content === 'string') return item.content;
+      return '';
+    }).filter(Boolean);
+    const joined = parts.join('\n').trim();
+    return joined ? truncate(joined, maxLength) : null;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') {
+      return transcriptBackendEventPreview(value.text, maxLength);
+    }
+    if (Array.isArray(value.content)) {
+      return transcriptBackendEventPreview(value.content, maxLength);
+    }
+  }
+  return null;
+}
+
+function compactBackendTranscriptPayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const item = payload.item && typeof payload.item === 'object' ? payload.item : null;
+  if (!item || item.type === 'mcp_tool_call') {
+    return payload;
+  }
+
+  const summary = {
+    type: payload.type || null,
+    item: {
+      type: item.type || null,
+      id: item.id || null,
+    },
+  };
+
+  const preview = transcriptBackendEventPreview(item.content || item.text || item.message || null);
+  if (preview) {
+    summary.item.textPreview = preview;
+  }
+  if (typeof item.role === 'string') {
+    summary.item.role = item.role;
+  }
+  if (typeof item.status === 'string') {
+    summary.item.status = item.status;
+  }
+  if (typeof item.tool === 'string') {
+    summary.item.tool = item.tool;
+  }
+  if (typeof item.server === 'string') {
+    summary.item.server = item.server;
+  }
+  if (typeof payload.turnId === 'string') {
+    summary.turnId = payload.turnId;
+  }
+  if (typeof payload.threadId === 'string') {
+    summary.threadId = payload.threadId;
+  }
+
+  return summary;
+}
+
 async function appendTranscript(manifest, data) {
   await appendTranscriptRecord(manifest, createTranscriptRecord(data));
 }
@@ -251,7 +320,7 @@ async function appendBackendTranscriptEvent(manifest, event, options = {}) {
     agentId: options.agentId || null,
     controllerCli: options.controllerCli || null,
     workerCli: options.workerCli || null,
-    payload,
+    payload: compactBackendTranscriptPayload(payload),
     text: event && event.text != null ? String(event.text) : null,
     labelHint: options.labelHint || null,
   });
@@ -1283,6 +1352,7 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
 }
 
 module.exports = {
+  compactBackendTranscriptPayload,
   printEventTail,
   printRunSummary,
   runCopilotLoop,

@@ -122,6 +122,11 @@ function buildCodexWorkerStdin(prompt, agentConfig, opts, repoRoot) {
   return `${systemPrompt}\n\n---\n\n${prompt}`;
 }
 
+async function notifyRendererToolCompletion(renderer, payload) {
+  if (!renderer || typeof renderer.handleMcpToolCompletion !== 'function') return;
+  await renderer.handleMcpToolCompletion(payload);
+}
+
 const DESIRED_APP_SERVER_APPROVAL_POLICY = 'never';
 const DESIRED_APP_SERVER_SANDBOX = 'danger-full-access';
 
@@ -427,6 +432,15 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
           if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
           let out = raw.item.output || raw.item.result || '';
           if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
+          await notifyRendererToolCompletion(renderer, {
+            serverName: server,
+            toolName: tool,
+            input: inp,
+            output: out,
+            workerLabel,
+            agentId: agentId || null,
+            source: 'codex-cli',
+          });
           const { renderCompleteCard } = require('./mcp-cards');
           const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
           if (turnTracker) {
@@ -652,6 +666,15 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
         if (typeof inp === 'string') { try { inp = JSON.parse(inp); } catch { inp = {}; } }
         let out = mapped.item.output || mapped.item.result || '';
         if (typeof out === 'string') { try { out = JSON.parse(out); } catch { out = {}; } }
+        await notifyRendererToolCompletion(renderer, {
+          serverName: server,
+          toolName: tool,
+          input: inp,
+          output: out,
+          workerLabel,
+          agentId: agentId || null,
+          source: 'codex-app-server',
+        });
         const { renderCompleteCard } = require('./mcp-cards');
         const suppress = renderCompleteCard(tool, inp, out, renderer, workerLabel, cardId);
         if (turnTracker) {

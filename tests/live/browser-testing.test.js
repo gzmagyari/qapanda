@@ -165,4 +165,19 @@ describe('Chrome screencast', { timeout: 30000 }, () => {
     assert.ok(typeof lastFrameData === 'string', 'frame data should be string (base64)');
     assert.ok(lastFrameData.length > 100, 'frame data should have substantial content');
   });
+
+  it('capturePanelScreenshot returns a fresh data URL from the bound target', async (t) => {
+    if (!chromeManager) { t.skip('chrome-manager not available'); return; }
+    const result = await chromeManager.ensureChrome(scPanelId);
+    if (!result) { t.skip('Chrome binary not found'); return; }
+    scStarted = true;
+
+    await chromeManager.startScreencast(scPanelId, () => {}, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const capture = await chromeManager.capturePanelScreenshot(scPanelId);
+    assert.ok(capture, 'should return capture metadata');
+    assert.ok(typeof capture.dataUrl === 'string' && capture.dataUrl.startsWith('data:image/'), 'should return a screenshot data URL');
+    assert.ok(capture.dataUrl.length > 100, 'screenshot payload should have substantial content');
+  });
 });

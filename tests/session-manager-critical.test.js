@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const extDir = path.resolve(__dirname, '..', 'extension');
@@ -22,6 +23,7 @@ const chromePath = path.join(extDir, 'chrome-manager.js');
 
 const origState = require(statePath);
 const origPrompts = require(promptsPath);
+const origChrome = require(chromePath);
 
 function stubRenderer() {
   const calls = [];
@@ -37,11 +39,12 @@ function stubRenderer() {
   });
 }
 
-function buildSession({ manifest = null, runManagerLoopImpl = null } = {}) {
+function buildSession({ manifest = null, runManagerLoopImpl = null, chrome = {} } = {}) {
   const posted = [];
   const captured = {
     saveManifestCalls: [],
     runManagerLoopCalls: [],
+    capturePanelScreenshotCalls: [],
   };
 
   const fakeManifest = manifest || {
@@ -95,6 +98,25 @@ function buildSession({ manifest = null, runManagerLoopImpl = null } = {}) {
     },
   };
 
+  require.cache[chromePath] = {
+    id: chromePath,
+    filename: chromePath,
+    loaded: true,
+    exports: {
+      ...origChrome,
+      capturePanelScreenshot: async (panelId, options) => {
+        captured.capturePanelScreenshotCalls.push({ panelId, options: options || null });
+        if (chrome.capturePanelScreenshot) return chrome.capturePanelScreenshot(panelId, options);
+        return {
+          dataUrl: 'data:image/jpeg;base64,ZmFrZQ==',
+          targetId: 'target-1',
+          targetUrl: 'https://app.qapanda.localhost/app',
+          format: 'jpeg',
+        };
+      },
+    },
+  };
+
   const { SessionManager } = require(smPath);
   const renderer = stubRenderer();
   const session = new SessionManager(renderer, {
@@ -118,14 +140,14 @@ function buildSession({ manifest = null, runManagerLoopImpl = null } = {}) {
     delete require.cache[orchPath];
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
     delete require.cache[compactionPath];
-    delete require.cache[chromePath];
+    require.cache[chromePath] = { id: chromePath, filename: chromePath, loaded: true, exports: origChrome };
   };
 
-  return { session, captured, cleanup };
+  return { session, captured, posted, cleanup };
 }
 
 test('_runControllerContinue saves the restored controller state, not the temporary continue state', async () => {
-  const { session, captured, cleanup } = buildSession({
+  const { session, captured, posted, cleanup } = buildSession({
     manifest: {
       runId: 'continue-run',
       status: 'running',
@@ -156,7 +178,7 @@ test('_runControllerContinue strips stale continue directives from persisted con
     'CONTINUE DIRECTIVE — stale old lock',
     'Use agent_id: "QA-Browser" when delegating.',
   ].join('\n');
-  const { session, captured, cleanup } = buildSession({
+  const { session, captured, posted, cleanup } = buildSession({
     manifest: {
       runId: 'continue-run-sanitized',
       status: 'running',
@@ -185,7 +207,7 @@ test('_runControllerContinue strips stale continue directives from persisted con
 });
 
 test('_runControllerContinue restores app-server controller thread state after the temporary continue turn', async () => {
-  const { session, captured, cleanup } = buildSession({
+  const { session, captured, posted, cleanup } = buildSession({
     manifest: {
       runId: 'continue-appserver-run',
       status: 'running',
@@ -251,6 +273,130 @@ test('_handleOrchestrate keeps multi-pass mode even when wait delay is enabled',
 
     assert.equal(captured.runManagerLoopCalls.length, 1);
     assert.equal(captured.runManagerLoopCalls[0].options.singlePass, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test('captureTurnBrowserScreenshot captures from Chrome manager and posts one anchored chat screenshot', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-browser-shot-'));
+  const transcriptFile = path.join(tempDir, 'transcript.jsonl');
+  const chatLogFile = path.join(tempDir, 'chat.jsonl');
+  const { session, captured, posted, cleanup } = buildSession({
+    manifest: {
+      runId: 'browser-shot-run',
+      status: 'running',
+      controllerSystemPrompt: 'prompt',
+      controller: { model: null, config: [], sessionId: 'controller-session-1' },
+      worker: { model: null, cli: 'codex' },
+      files: {
+        progress: path.join(tempDir, 'progress.md'),
+        transcript: transcriptFile,
+        chatLog: chatLogFile,
+      },
+      requests: [{ id: 'req-1', loops: [{ index: 1 }] }],
+    },
+    chrome: {
+      capturePanelScreenshot: async () => ({
+        dataUrl: 'data:image/jpeg;base64,ZmFrZQ==',
+        targetId: 'target-1',
+        targetUrl: 'https://app.qapanda.localhost/app/settings',
+        format: 'jpeg',
+      }),
+    },
+  });
+
+  try {
+    session._chromePort = 9222;
+    session._chatTarget = 'agent-dev';
+    await session.handleMessage({ type: 'captureTurnBrowserScreenshot', token: 'anchor-1' });
+
+    assert.equal(captured.capturePanelScreenshotCalls.length, 1);
+    assert.equal(captured.capturePanelScreenshotCalls[0].panelId, session.panelId);
+    const postedMessage = posted.find((msg) => msg.type === 'chatScreenshot');
+    assert.ok(postedMessage, 'expected chatScreenshot to be posted to the webview');
+    assert.equal(postedMessage._anchorToken, 'anchor-1');
+    assert.equal(postedMessage.data, 'data:image/jpeg;base64,ZmFrZQ==');
+
+    const chatLogText = fs.readFileSync(chatLogFile, 'utf8');
+    assert.match(chatLogText, /"type":"chatScreenshot"/);
+    assert.doesNotMatch(chatLogText, /_anchorToken/);
+
+    const transcriptText = fs.readFileSync(transcriptFile, 'utf8');
+    assert.match(transcriptText, /chatScreenshot/);
+    assert.match(transcriptText, /app\/settings/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('_handleMcpToolCompletion posts and persists live tool screenshots for image-bearing output', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-tool-shot-'));
+  const transcriptFile = path.join(tempDir, 'transcript.jsonl');
+  const chatLogFile = path.join(tempDir, 'chat.jsonl');
+  const { session, posted, cleanup } = buildSession({
+    manifest: {
+      runId: 'tool-shot-run',
+      status: 'running',
+      controllerSystemPrompt: 'prompt',
+      controller: { model: null, config: [], sessionId: 'controller-session-1' },
+      worker: { model: null, cli: 'api' },
+      files: {
+        progress: path.join(tempDir, 'progress.md'),
+        transcript: transcriptFile,
+        chatLog: chatLogFile,
+      },
+      requests: [{ id: 'req-1', loops: [{ index: 1 }] }],
+    },
+  });
+
+  try {
+    session._chatTarget = 'agent-dev';
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome-devtools',
+      toolName: 'take_screenshot',
+      output: {
+        content: [
+          { type: 'text', text: 'Captured the page.' },
+          { type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' },
+        ],
+      },
+    });
+
+    const postedMessage = posted.find((msg) => msg.type === 'chatScreenshot');
+    assert.ok(postedMessage, 'expected tool screenshot to be posted to the webview');
+    assert.equal(postedMessage.alt, 'Tool screenshot');
+    assert.equal(postedMessage.data, 'data:image/png;base64,ZmFrZQ==');
+    assert.equal(postedMessage.closeAfter, undefined);
+
+    const chatLogText = fs.readFileSync(chatLogFile, 'utf8');
+    assert.match(chatLogText, /"alt":"Tool screenshot"/);
+    assert.match(chatLogText, /"closeAfter":false/);
+
+    const transcriptText = fs.readFileSync(transcriptFile, 'utf8');
+    assert.match(transcriptText, /Tool screenshot/);
+    assert.match(transcriptText, /take_screenshot/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('_handleMcpToolCompletion does not emit screenshots for non-image tool output', async () => {
+  const { session, posted, cleanup } = buildSession();
+
+  try {
+    session._chatTarget = 'agent-dev';
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome-devtools',
+      toolName: 'evaluate_script',
+      output: {
+        content: [{ type: 'text', text: '42' }],
+      },
+    });
+
+    assert.equal(posted.some((msg) => msg.type === 'chatScreenshot'), false);
   } finally {
     cleanup();
   }

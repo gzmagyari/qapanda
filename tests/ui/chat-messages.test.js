@@ -189,6 +189,67 @@ describe('Chat messages', () => {
     assert.ok(secondEntryIndex > imageIndex, 'second message should remain after the screenshot');
   });
 
+  it('transcriptHistory does not recreate the live browser widget from replayed Chrome tool calls', () => {
+    wv.postMessage({ type: 'chromeReady', chromePort: 9222 });
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [
+        { type: 'claude', text: 'Inspecting the page', label: 'Developer' },
+        { type: 'toolCall', text: 'Using Chrome DevTools', label: 'Developer', isChromeDevtools: true },
+        { type: 'chatScreenshot', data: 'data:image/png;base64,ZmFrZQ==', alt: 'Browser screenshot', closeAfter: true },
+      ],
+    });
+
+    assert.equal(wv.document.querySelector('.split-vnc-wrapper'), null);
+    assert.equal(wv.document.querySelectorAll('.chat-screenshot').length, 1);
+  });
+
+  it('live browser screenshot responses stay attached to the originating turn', async () => {
+    wv.postMessage({ type: 'chromeReady', chromePort: 9222 });
+    wv.postMessage({ type: 'running', value: true, showStop: true });
+    wv.postMessage({ type: 'claude', text: 'Inspecting the page', label: 'Developer' });
+    wv.postMessage({ type: 'toolCall', text: 'Using Chrome DevTools', label: 'Developer', isChromeDevtools: true });
+    assert.ok(wv.document.querySelector('.split-vnc-wrapper'), 'browser split should open during the live turn');
+
+    wv.postMessage({ type: 'running', value: false });
+    await wv.flush();
+
+    const captureRequest = wv.messagesOfType('captureTurnBrowserScreenshot')[0];
+    assert.ok(captureRequest, 'should request a host-side browser screenshot when the live turn closes');
+
+    wv.postMessage({ type: 'user', text: 'next turn' });
+    wv.postMessage({
+      type: 'chatScreenshot',
+      data: 'data:image/png;base64,ZmFrZQ==',
+      alt: 'Browser screenshot',
+      closeAfter: true,
+      _anchorToken: captureRequest.token,
+    });
+    await wv.flush();
+
+    const sections = Array.from(wv.document.querySelectorAll('.section'));
+    assert.equal(sections.length, 2);
+    assert.ok(sections[0].textContent.includes('Inspecting the page'));
+    assert.ok(sections[1].textContent.includes('next turn'));
+    assert.equal(sections[0].querySelectorAll('.chat-screenshot').length, 1, 'screenshot should stay with the browser turn');
+    assert.equal(sections[1].querySelectorAll('.chat-screenshot').length, 0, 'screenshot should not move under the next user turn');
+  });
+
+  it('live tool screenshots keep the thinking indicator visible while the run is still active', async () => {
+    wv.postMessage({ type: 'running', value: true, showStop: true });
+    assert.ok(wv.document.querySelector('.thinking-standalone'), 'thinking indicator should appear when the run starts');
+
+    wv.postMessage({
+      type: 'chatScreenshot',
+      data: 'data:image/png;base64,ZmFrZQ==',
+      alt: 'Tool screenshot',
+    });
+    await wv.flush();
+
+    assert.ok(wv.document.querySelector('.chat-screenshot'), 'tool screenshot should render');
+    assert.ok(wv.document.querySelector('.thinking-standalone'), 'thinking indicator should remain visible after the screenshot');
+  });
+
   it('banner message renders', () => {
     wv.postMessage({ type: 'banner', text: 'Reattached to run abc' });
     const msgs = wv.document.getElementById('messages');
@@ -241,6 +302,31 @@ describe('Chat messages', () => {
     assert.ok(msgs.textContent.includes('Showing only the latest chat tail for this run.'));
     assert.ok(msgs.textContent.includes('Trim replay pass'));
     assert.equal(wv.confettiCount(), 1);
+  });
+
+  it('live visible-history trim keeps browser screenshots attached to their turns', async () => {
+    wv.postMessage({ type: 'user', text: 'prefill ' + 'x'.repeat(2500) });
+    wv.postMessage({ type: 'claude', label: 'Developer', text: 'turn-1 ' + 'a'.repeat(26000) });
+    wv.postMessage({ type: 'chatScreenshot', data: 'data:image/png;base64,Zmlyc3Q=', alt: 'Browser screenshot 1', closeAfter: true });
+    wv.postMessage({ type: 'claude', label: 'Developer', text: 'turn-2 ' + 'b'.repeat(26000) });
+    wv.postMessage({ type: 'chatScreenshot', data: 'data:image/png;base64,c2Vjb25k', alt: 'Browser screenshot 2', closeAfter: true });
+
+    await wv.flush();
+
+    const screenshots = Array.from(wv.document.querySelectorAll('.chat-screenshot'));
+    assert.equal(screenshots.length, 2);
+    assert.deepEqual(
+      screenshots.map((img) => img.getAttribute('src')),
+      ['data:image/png;base64,Zmlyc3Q=', 'data:image/png;base64,c2Vjb25k']
+    );
+
+    const sections = Array.from(wv.document.querySelectorAll('.section'));
+    assert.equal(sections.length, 2);
+    assert.ok(sections[0].textContent.includes('turn-1'));
+    assert.ok(sections[1].textContent.includes('turn-2'));
+    assert.ok(sections[0].querySelector('.chat-screenshot'));
+    assert.ok(sections[1].querySelector('.chat-screenshot'));
+    assert.ok(wv.document.getElementById('messages').textContent.includes('Showing only the latest chat tail for this run.'));
   });
 
   it('identical live passing test cards inside the dedupe window trigger confetti only once', () => {

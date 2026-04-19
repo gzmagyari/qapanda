@@ -48,6 +48,8 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     attachExistingChromeCalls: [],
     ensureChromeCalls: [],
     startScreencastCalls: [],
+    setPanelPageBindingCalls: [],
+    syncPanelPageTargetCalls: [],
     prestartConnectionCalls: [],
   };
 
@@ -142,6 +144,26 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
       startScreencast: async (panelId, _onFrame, _onNav) => {
         captured.startScreencastCalls.push({ panelId });
         if (chrome.startScreencast) return chrome.startScreencast(panelId, _onFrame, _onNav);
+      },
+      setPanelPageBinding: (panelId, binding) => {
+        captured.setPanelPageBindingCalls.push({
+          panelId,
+          binding: binding == null ? null : JSON.parse(JSON.stringify(binding)),
+        });
+        if (chrome.setPanelPageBinding) return chrome.setPanelPageBinding(panelId, binding);
+        return true;
+      },
+      syncPanelPageTarget: async (panelId, selection) => {
+        captured.syncPanelPageTargetCalls.push({
+          panelId,
+          selection: selection == null ? null : JSON.parse(JSON.stringify(selection)),
+        });
+        if (chrome.syncPanelPageTarget) return chrome.syncPanelPageTarget(panelId, selection);
+        return { status: 'already-bound' };
+      },
+      getChromeDebugState: (panelId) => {
+        if (chrome.getChromeDebugState) return chrome.getChromeDebugState(panelId);
+        return origChrome.getChromeDebugState(panelId);
       },
     },
   };
@@ -478,6 +500,49 @@ test('_restoreBrowserForAttachedRun is single-flight and only starts one replace
   }
 });
 
+test('_restoreBrowserForAttachedRun reapplies the saved chrome page binding before screencast start', async () => {
+  const manifest = {
+    runId: 'existing-run-bound-page',
+    panelId: 'run-panel-bound-page',
+    chromeDebugPort: 45555,
+    chromePageBinding: {
+      targetId: 'target-settings',
+      url: 'https://app.qapanda.localhost/app/settings',
+      pageNumber: 8,
+      boundBy: 'mcp:select_page',
+    },
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: { 'QA-Browser': { hasStarted: true } } },
+    agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      ensureChrome: async (_panelId, options) => ({ port: options.port, status: 'existing' }),
+    },
+  });
+  try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } }, global: {}, project: {} });
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = manifest.panelId;
+
+    await session._restoreBrowserForAttachedRun();
+
+    assert.deepEqual(captured.setPanelPageBindingCalls, [{
+      panelId: 'run-panel-bound-page',
+      binding: {
+        targetId: 'target-settings',
+        url: 'https://app.qapanda.localhost/app/settings',
+        pageNumber: 8,
+        boundBy: 'mcp:select_page',
+      },
+    }]);
+  } finally {
+    cleanup();
+  }
+});
+
 test('_startChromeDirect refreshes the screencast target when Chrome is already running', async () => {
   const { session, cleanup, captured } = buildSession({
     chrome: {
@@ -491,6 +556,68 @@ test('_startChromeDirect refreshes the screencast target when Chrome is already 
     await session._startChromeDirect();
     assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'panel-refresh-1', options: { port: 53333 } }]);
     assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'panel-refresh-1' }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_handleMcpToolCompletion syncs the browser binding from chrome page-management results', async () => {
+  const manifest = {
+    runId: 'browser-binding-sync',
+    panelId: 'panel-sync-1',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: {} },
+    agents: {},
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      syncPanelPageTarget: async () => ({
+        status: 'switched',
+        targetId: 'target-settings',
+        targetUrl: 'https://app.qapanda.localhost/app/settings',
+      }),
+      getChromeDebugState: () => ({
+        panelId: 'panel-sync-1',
+        reservedPort: 45555,
+        pendingEnsure: false,
+        instance: {
+          boundTargetId: 'target-settings',
+          boundTargetUrl: 'https://app.qapanda.localhost/app/settings',
+          boundBy: 'mcp:select_page',
+          boundPageNumber: 8,
+        },
+      }),
+    },
+  });
+  try {
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = 'panel-sync-1';
+    session._chromePortReservation = 45555;
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome_devtools',
+      toolName: 'select_page',
+      output: {
+        content: [{
+          type: 'text',
+          text: '## Pages\n1: https://app.qapanda.localhost/app\n2: https://app.qapanda.localhost/app/projects\n8: https://app.qapanda.localhost/app/settings [selected]',
+        }],
+      },
+    });
+
+    assert.deepEqual(captured.syncPanelPageTargetCalls, [{
+      panelId: 'panel-sync-1',
+      selection: {
+        pageNumber: 8,
+        expectedUrl: 'https://app.qapanda.localhost/app/settings',
+        reason: 'mcp:select_page',
+      },
+    }]);
+    assert.equal(session._activeManifest.chromePageBinding.targetId, 'target-settings');
+    assert.equal(session._activeManifest.chromePageBinding.url, 'https://app.qapanda.localhost/app/settings');
+    assert.equal(captured.saveManifestCalls.length, 1);
   } finally {
     cleanup();
   }

@@ -403,6 +403,108 @@ async function readTranscriptTailEntries(filePath, options = {}) {
   }
 }
 
+function hasVisibleTranscriptDisplayMessages(messages) {
+  return Array.isArray(messages) && messages.some((message) => message && message.type !== 'banner');
+}
+
+async function buildTranscriptDisplayTailFromReverseScan(filePath, manifest, options = {}) {
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(1, Number(options.maxChars))
+    : DEFAULT_TRANSCRIPT_TAIL_MAX_CHARS;
+  const chunkBytes = Number.isFinite(options.initialBytes)
+    ? Math.max(1, Number(options.initialBytes))
+    : DEFAULT_TRANSCRIPT_TAIL_INITIAL_BYTES;
+
+  let handle;
+  try {
+    handle = await fsp.open(filePath, 'r');
+    const stat = await handle.stat();
+    const fileSize = Number(stat && stat.size) || 0;
+    if (fileSize <= 0) {
+      return { messages: [], truncated: false, fileSize: 0, bytesRead: 0, startOffset: 0 };
+    }
+
+    let position = fileSize;
+    let bytesRead = 0;
+    let carry = Buffer.alloc(0);
+    const collectedReversed = [];
+    let messages = [];
+
+    while (position > 0) {
+      const readSize = Math.min(chunkBytes, position);
+      position -= readSize;
+      const buffer = Buffer.alloc(readSize);
+      await handle.read(buffer, 0, readSize, position);
+      bytesRead += readSize;
+
+      const combined = carry.length ? Buffer.concat([buffer, carry]) : buffer;
+      const segments = [];
+      let start = 0;
+      for (let index = 0; index < combined.length; index += 1) {
+        if (combined[index] !== 0x0A) continue;
+        segments.push(combined.subarray(start, index));
+        start = index + 1;
+      }
+      segments.push(combined.subarray(start));
+
+      let processSegments = segments;
+      if (position > 0) {
+        carry = segments.length > 0 ? segments[0] : combined;
+        processSegments = segments.slice(1);
+      } else {
+        carry = Buffer.alloc(0);
+      }
+
+      for (let index = processSegments.length - 1; index >= 0; index -= 1) {
+        const segment = processSegments[index];
+        if (!segment || segment.length === 0) continue;
+        const parsed = safeJsonParse(segment.toString('utf8'));
+        if (!parsed) continue;
+        parsed.__lineNumber = null;
+        collectedReversed.push(parsed);
+      }
+
+      const orderedEntries = collectedReversed.length
+        ? collectedReversed.slice().reverse()
+        : [];
+      messages = buildTranscriptDisplayMessages(orderedEntries, manifest, options.displayOptions || {});
+      if (hasVisibleTranscriptDisplayMessages(messages) && countDisplayMessageChars(messages) >= maxChars) {
+        break;
+      }
+    }
+
+    if (position === 0 && carry.length > 0) {
+      const parsed = safeJsonParse(carry.toString('utf8'));
+      if (parsed) {
+        parsed.__lineNumber = null;
+        const orderedEntries = [parsed, ...collectedReversed.slice().reverse()];
+        messages = buildTranscriptDisplayMessages(orderedEntries, manifest, options.displayOptions || {});
+      }
+    }
+
+    const tail = buildDisplayMessageTail(messages, {
+      maxChars,
+      truncationBannerText: TRANSCRIPT_TAIL_TRUNCATION_BANNER,
+    });
+    const omittedEarlierContent = position > 0;
+    if (omittedEarlierContent && !tail.truncated) {
+      tail.messages = [{ type: 'banner', text: TRANSCRIPT_TAIL_TRUNCATION_BANNER }, ...tail.messages];
+    }
+
+    return {
+      messages: tail.messages,
+      truncated: tail.truncated || omittedEarlierContent,
+      fileSize,
+      bytesRead,
+      startOffset: position,
+    };
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
 function readTranscriptTailEntriesSync(filePath, options = {}) {
   const requestedBytes = Number.isFinite(options.bytes)
     ? Math.max(1, Number(options.bytes))
@@ -588,6 +690,10 @@ async function buildTranscriptDisplayTail(filePath, manifest, options = {}) {
     truncationBannerText: TRANSCRIPT_TAIL_TRUNCATION_BANNER,
   });
   const omittedEarlierContent = latest.startOffset > 0;
+
+  if (!hasVisibleTranscriptDisplayMessages(messages) && omittedEarlierContent) {
+    return buildTranscriptDisplayTailFromReverseScan(filePath, manifest, options);
+  }
 
   if (omittedEarlierContent && !tail.truncated) {
     tail.messages = [{ type: 'banner', text: TRANSCRIPT_TAIL_TRUNCATION_BANNER }, ...tail.messages];
@@ -1092,10 +1198,13 @@ function toolCallSummary(toolName, input) {
   return formatToolCall(toolName, input || {});
 }
 
-function buildCardMessages(toolName, input, output, label, cardId) {
+function buildCardMessages(toolName, input, output, label, cardId, fullToolNameOverride) {
   const cfg = CARD_MAP[toolName];
   if (!cfg) return [];
   const normalizedOutput = normalizeToolResultOutput(output);
+  const fullToolName = String(fullToolNameOverride || toolName || '');
+  const isChromeDevtools = fullToolName.includes('chrome_devtools') || fullToolName.includes('chrome-devtools');
+  const isComputerUse = isChromeDevtools || fullToolName.includes('computer_control') || fullToolName.includes('computer-control');
 
   if (cfg.template === 'displayTestSummary') {
     return [{ type: 'testCard', label, data: input }];
@@ -1145,14 +1254,19 @@ function buildCardMessages(toolName, input, output, label, cardId) {
     icon: cfg.icon || '',
     text: cfg.text || toolName,
     detail,
+    isComputerUse,
+    isChromeDevtools,
   };
   if (cfg.template === 'command') msg.template = 'command';
   return [msg];
 }
 
-function buildStartCardMessages(toolName, input, label, cardId) {
+function buildStartCardMessages(toolName, input, label, cardId, fullToolNameOverride) {
   const cfg = CARD_MAP[toolName];
   if (!cfg || cfg.suppress) return [];
+  const fullToolName = String(fullToolNameOverride || toolName || '');
+  const isChromeDevtools = fullToolName.includes('chrome_devtools') || fullToolName.includes('chrome-devtools');
+  const isComputerUse = isChromeDevtools || fullToolName.includes('computer_control') || fullToolName.includes('computer-control');
 
   const fieldValue = cfg.field && input ? input[cfg.field] : null;
   const detail = fieldValue ? String(fieldValue) : '';
@@ -1163,15 +1277,19 @@ function buildStartCardMessages(toolName, input, label, cardId) {
     icon: cfg.icon || '',
     text: cfg.startText || cfg.text || toolName,
     detail,
+    isComputerUse,
+    isChromeDevtools,
   };
   if (cfg.template === 'command') msg.template = 'command';
   return [msg];
 }
 
 function screenshotMessagesFromResult(result) {
-  if (!result || !Array.isArray(result.content)) return [];
+  let normalized = result;
+  if (typeof normalized === 'string') normalized = safeJsonParse(normalized) || {};
+  if (!normalized || !Array.isArray(normalized.content)) return [];
   const messages = [];
-  for (const block of result.content) {
+  for (const block of normalized.content) {
     if (block && block.type === 'image' && block.data) {
       messages.push({
         type: 'chatScreenshot',
@@ -1183,49 +1301,130 @@ function screenshotMessagesFromResult(result) {
   return messages;
 }
 
+function isLocalBrowserScreenshotMessage(msg) {
+  return !!(
+    msg &&
+    msg.type === 'chatScreenshot' &&
+    (msg.alt === 'Browser screenshot' || msg.alt === 'Desktop screenshot')
+  );
+}
+
+function isBrowserToolDisplayMessage(msg) {
+  return !!(
+    msg &&
+    (msg.type === 'toolCall' || msg.type === 'mcpCardStart' || msg.type === 'mcpCardComplete') &&
+    (msg.isChromeDevtools || msg.isComputerUse)
+  );
+}
+
+function isTurnBoundaryDisplayMessage(msg) {
+  return !!(
+    msg &&
+    (msg.type === 'user' || msg.type === 'controller' || msg.type === 'stop' || msg.type === 'error')
+  );
+}
+
+function compactLocalBrowserScreenshotMessages(messages) {
+  const compacted = [];
+  let browserTurnEligible = false;
+  let pendingScreenshot = null;
+  let pendingBanners = [];
+
+  function flushPending() {
+    if (pendingScreenshot) {
+      compacted.push(pendingScreenshot);
+      pendingScreenshot = null;
+    }
+    if (pendingBanners.length > 0) {
+      compacted.push(...pendingBanners);
+      pendingBanners = [];
+    }
+  }
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const msg = messages[index];
+    if (isLocalBrowserScreenshotMessage(msg)) {
+      let lastScreenshot = { ...msg, closeAfter: true };
+      const banners = [];
+      let cursor = index + 1;
+      while (cursor < messages.length) {
+        const next = messages[cursor];
+        if (isLocalBrowserScreenshotMessage(next)) {
+          lastScreenshot = { ...next, closeAfter: true };
+          cursor += 1;
+          continue;
+        }
+        if (next && next.type === 'banner') {
+          banners.push(next);
+          cursor += 1;
+          continue;
+        }
+        break;
+      }
+
+      if (browserTurnEligible) {
+        pendingScreenshot = lastScreenshot;
+        pendingBanners.push(...banners);
+      } else if (banners.length > 0) {
+        compacted.push(...banners);
+      }
+      index = cursor - 1;
+      continue;
+    }
+
+    if (isTurnBoundaryDisplayMessage(msg)) {
+      flushPending();
+      compacted.push(msg);
+      browserTurnEligible = false;
+      continue;
+    }
+
+    compacted.push(msg);
+    if (isBrowserToolDisplayMessage(msg)) {
+      browserTurnEligible = true;
+    }
+  }
+  flushPending();
+  return compacted;
+}
+
 function collectDisplayReplayHints(entries) {
   const completedToolCallIds = new Set();
-  const canonicalScreenshotData = new Set();
-  const canonicalScreenshotSessions = new Set();
+  const persistedToolScreenshotScopes = new Set();
 
   for (const entry of entries || []) {
     if (!entry || entry.v !== TRANSCRIPT_V2) continue;
 
-    if (entry.kind === 'tool_result') {
-      if (entry.toolCallId) completedToolCallIds.add(entry.toolCallId);
-      const screenshotMessages = screenshotMessagesFromResult(entry.result);
-      if (screenshotMessages.length > 0 && entry.sessionKey) {
-        canonicalScreenshotSessions.add(entry.sessionKey);
-      }
-      for (const msg of screenshotMessages) {
-        if (msg && msg.data) canonicalScreenshotData.add(msg.data);
-      }
+    if (
+      entry.kind === 'ui_message' &&
+      entry.payload &&
+      entry.payload.type === 'chatScreenshot' &&
+      entry.payload.alt === 'Tool screenshot'
+    ) {
+      persistedToolScreenshotScopes.add(toolScreenshotReplayScope(entry));
       continue;
     }
 
-    if (entry.kind === 'backend_event' && entry.payload && typeof entry.payload === 'object') {
-      const raw = entry.payload;
-      if (raw.item && raw.item.type === 'mcp_tool_call' && raw.type === 'item.completed') {
-        let output = raw.item.output || raw.item.result || {};
-        if (typeof output === 'string') output = safeJsonParse(output) || {};
-        const screenshotMessages = screenshotMessagesFromResult(output);
-        if (screenshotMessages.length > 0 && entry.sessionKey) {
-          canonicalScreenshotSessions.add(entry.sessionKey);
-        }
-        for (const msg of screenshotMessages) {
-          if (msg && msg.data) canonicalScreenshotData.add(msg.data);
-        }
-      }
+    if (entry.kind === 'tool_result') {
+      if (entry.toolCallId) completedToolCallIds.add(entry.toolCallId);
+      continue;
     }
   }
 
-  return { completedToolCallIds, canonicalScreenshotData, canonicalScreenshotSessions };
+  return { completedToolCallIds, persistedToolScreenshotScopes };
+}
+
+function toolScreenshotReplayScope(entry) {
+  const sessionKey = entry && entry.sessionKey ? String(entry.sessionKey) : '';
+  const requestId = entry && entry.requestId ? String(entry.requestId) : '';
+  const loopIndex = entry && Number.isFinite(entry.loopIndex) ? String(entry.loopIndex) : '';
+  return `${sessionKey}::${requestId}::${loopIndex}`;
 }
 
 function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
   const messages = [];
   const pendingClaudeTools = new Map();
-  const { completedToolCallIds, canonicalScreenshotData, canonicalScreenshotSessions } = collectDisplayReplayHints(entries);
+  const { completedToolCallIds, persistedToolScreenshotScopes } = collectDisplayReplayHints(entries);
   const compactionStates = new Map();
 
   for (const entry of entries || []) {
@@ -1242,7 +1441,8 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
     });
   }
 
-  for (const entry of entries || []) {
+  for (let entryIndex = 0; entryIndex < (entries || []).length; entryIndex += 1) {
+    const entry = entries[entryIndex];
     if (!entry) continue;
     const compactionState = entry.v === TRANSCRIPT_V2 && entry.sessionKey
       ? compactionStates.get(entry.sessionKey) || null
@@ -1275,16 +1475,8 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
     const label = labelForTranscriptEntry(entry, manifest, options);
 
     if (entry.kind === 'ui_message' && entry.payload && entry.payload.type) {
-      if (
-        entry.payload.type === 'chatScreenshot' &&
-        (
-          (entry.payload.data && canonicalScreenshotData.has(entry.payload.data)) ||
-          (entry.sessionKey && canonicalScreenshotSessions.has(entry.sessionKey))
-        )
-      ) {
-        continue;
-      }
-      messages.push(clone(entry.payload));
+      const payload = clone(entry.payload);
+      messages.push(payload);
       continue;
     }
 
@@ -1322,7 +1514,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
       const input = entry.input || parseToolInput(entry.payload && entry.payload.function && entry.payload.function.arguments);
       const toolName = baseToolName(fullToolName);
       const cardId = entry.toolCallId ? `tx-${entry.toolCallId}` : `tx-${entry.__lineNumber || messages.length}`;
-      const cardMessages = buildStartCardMessages(toolName, input, label, cardId);
+      const cardMessages = buildStartCardMessages(toolName, input, label, cardId, fullToolName);
       if (cardMessages.length > 0) {
         messages.push(...cardMessages);
       } else if (!entry.toolCallId || !completedToolCallIds.has(entry.toolCallId)) {
@@ -1337,13 +1529,16 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
       continue;
     }
     if (entry.kind === 'tool_result') {
-      const toolName = baseToolName(entry.toolName);
+      const fullToolName = entry.toolName || '';
+      const toolName = baseToolName(fullToolName);
       const cardId = entry.toolCallId ? `tx-${entry.toolCallId}` : `tx-${entry.__lineNumber || messages.length}`;
-      const cardMessages = buildCardMessages(toolName, entry.input || {}, entry.result || {}, label, cardId);
+      const cardMessages = buildCardMessages(toolName, entry.input || {}, entry.result || {}, label, cardId, fullToolName);
       if (cardMessages.length > 0) {
         messages.push(...cardMessages);
       }
-      messages.push(...screenshotMessagesFromResult(entry.result));
+      if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
+        messages.push(...screenshotMessagesFromResult(entry.result));
+      }
       continue;
     }
     if (entry.kind === 'backend_event' && entry.payload && typeof entry.payload === 'object') {
@@ -1369,7 +1564,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
           const fullToolName = pending.name;
           const toolName = baseToolName(fullToolName);
           const cardId = `tx-claude-${stateKey}-${summary.index}`;
-          const cardMessages = buildCardMessages(toolName, input, {}, label, cardId);
+          const cardMessages = buildCardMessages(toolName, input, {}, label, cardId, fullToolName);
           if (cardMessages.length > 0) {
             messages.push(...cardMessages);
           } else {
@@ -1393,6 +1588,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
         let output = raw.item.output || raw.item.result || {};
         if (typeof output === 'string') output = safeJsonParse(output) || {};
         const toolName = raw.item.tool || '';
+        const fullToolName = `${raw.item.server || ''}__${toolName}`;
         const cardId = raw.item.id ? `tx-mcp-${raw.item.id}` : `tx-mcp-${entry.__lineNumber || messages.length}`;
         if (raw.type === 'item.started') {
           const cfg = CARD_MAP[toolName];
@@ -1406,6 +1602,8 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
               icon: cfg.icon || '',
               text: cfg.startText || cfg.text || toolName,
               detail,
+              isComputerUse: fullToolName.includes('computer-control') || fullToolName.includes('computer_control') || fullToolName.includes('chrome-devtools') || fullToolName.includes('chrome_devtools'),
+              isChromeDevtools: fullToolName.includes('chrome-devtools') || fullToolName.includes('chrome_devtools'),
             };
             if (cfg.template === 'command') msg.template = 'command';
             messages.push(msg);
@@ -1421,7 +1619,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
           continue;
         }
         if (raw.type === 'item.completed') {
-          const cardMessages = buildCardMessages(toolName, input, output, label, cardId);
+          const cardMessages = buildCardMessages(toolName, input, output, label, cardId, fullToolName);
           if (cardMessages.length > 0) {
             messages.push(...cardMessages);
           } else {
@@ -1433,7 +1631,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
               isChromeDevtools: String(raw.item.server || '').includes('chrome-devtools') || String(raw.item.server || '').includes('chrome_devtools'),
             });
           }
-          if (output && output.content) {
+          if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
             messages.push(...screenshotMessagesFromResult(output));
           }
           continue;
@@ -1442,7 +1640,7 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
     }
   }
 
-  return messages;
+  return compactLocalBrowserScreenshotMessages(messages);
 }
 
 function buildMergedRunView(entries, manifest, options = {}) {
@@ -1507,6 +1705,7 @@ module.exports = {
   readTranscriptTailEntries,
   readTranscriptEntriesSync,
   readTranscriptTailEntriesSync,
+  screenshotMessagesFromResult,
   summarizeToolResult,
   latestSessionCompaction,
   entryIsCompactedAway,

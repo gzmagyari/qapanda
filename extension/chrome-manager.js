@@ -8,6 +8,11 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs');
+const {
+  filterChromePageTargets,
+  resolveChromeTargetByBinding,
+  resolveChromeTargetFromSelection,
+} = require('./chrome-page-binding');
 
 const _debugLogPath = path.join(require('node:os').tmpdir(), 'cc-chrome-debug.log');
 function _dbg(msg) {
@@ -95,6 +100,10 @@ function _instanceSummary(instance) {
     hasWs: !!instance.ws,
     currentTargetId: instance.currentTargetId || null,
     currentTargetUrl: instance.currentTargetUrl || null,
+    boundTargetId: instance.boundTargetId || null,
+    boundTargetUrl: instance.boundTargetUrl || null,
+    boundBy: instance.boundBy || null,
+    boundPageNumber: Number.isFinite(Number(instance.boundPageNumber)) ? Number(instance.boundPageNumber) : null,
     lastSelectedUrl: instance.lastSelectedUrl || null,
     lastKnownUrl: instance.lastKnownUrl || null,
     lastNavAt: instance.lastNavAt || null,
@@ -119,6 +128,52 @@ function _dbgState(prefix, panelId) {
   } catch (err) {
     _dbg(`${prefix} state=<failed:${err && err.message ? err.message : err}>`);
   }
+}
+
+function _rejectPendingCdpRequests(instance, error) {
+  if (!instance || !(instance.pendingCdpRequests instanceof Map) || instance.pendingCdpRequests.size === 0) {
+    return;
+  }
+  for (const pending of instance.pendingCdpRequests.values()) {
+    if (pending && pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
+    try {
+      pending.reject(error);
+    } catch {}
+  }
+  instance.pendingCdpRequests.clear();
+}
+
+function _sendCdpRequest(instance, method, params = {}, options = {}) {
+  if (!instance || !instance.ws) {
+    return Promise.reject(new Error(`Cannot call ${method}: Chrome target is not connected.`));
+  }
+  const ws = instance.ws;
+  if (Number(ws.readyState) !== 1) {
+    return Promise.reject(new Error(`Cannot call ${method}: Chrome target websocket is not open.`));
+  }
+  const timeoutMs = Math.max(1, Number(options.timeoutMs) || 10_000);
+  const id = instance.nextId++;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      if (instance.pendingCdpRequests instanceof Map) {
+        instance.pendingCdpRequests.delete(id);
+      }
+      reject(new Error(`${method} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    if (!(instance.pendingCdpRequests instanceof Map)) {
+      instance.pendingCdpRequests = new Map();
+    }
+    instance.pendingCdpRequests.set(id, { resolve, reject, timeout, method });
+    try {
+      ws.send(JSON.stringify({ id, method, params }));
+    } catch (error) {
+      clearTimeout(timeout);
+      instance.pendingCdpRequests.delete(id);
+      reject(error);
+    }
+  });
 }
 
 function _buildChromeLaunchArgs(port, userDataDir) {
@@ -269,7 +324,24 @@ async function ensureChrome(panelId, options = {}) {
       return null;
     }
 
-    _instances.set(panelId, { panelId, port, process: proc, ws: null, frameCallback: null, navCallback: null, nextId: 1, currentTargetId: null, knownTargetIds: new Set(), tabPoller: null });
+    _instances.set(panelId, {
+      panelId,
+      port,
+      process: proc,
+      ws: null,
+      frameCallback: null,
+      navCallback: null,
+      nextId: 1,
+      currentTargetId: null,
+      currentTargetUrl: null,
+      boundTargetId: null,
+      boundTargetUrl: null,
+      boundBy: null,
+      boundPageNumber: null,
+      knownTargetIds: new Set(),
+      tabPoller: null,
+      pendingCdpRequests: new Map(),
+    });
     _dbg(`ensureChrome: Chrome started on port ${port}`);
     _dbgState('ensureChrome:started', panelId);
     return { port, status: 'started' };
@@ -387,6 +459,35 @@ function _selectBestPageTarget(pages, currentTargetId = null) {
   return best;
 }
 
+function _notifyTargetUrl(instance, url) {
+  if (!instance || !instance.navCallback || !url) return;
+  try { instance.navCallback(url); } catch {}
+}
+
+function _applyBoundTarget(instance, target, { reason = null, pageNumber = null } = {}) {
+  if (!instance || !target) return;
+  instance.boundTargetId = target.id || null;
+  instance.boundTargetUrl = target.url || instance.boundTargetUrl || null;
+  instance.boundBy = reason || instance.boundBy || null;
+  instance.boundPageNumber = Number.isFinite(Number(pageNumber)) ? Number(pageNumber) : null;
+}
+
+function _resolvePreferredPageTarget(instance, targets) {
+  const pages = filterChromePageTargets(targets);
+  if (!pages.length) return { target: null, reason: 'no-pages' };
+
+  const bound = resolveChromeTargetByBinding(pages, {
+    targetId: instance && instance.boundTargetId || null,
+    url: instance && instance.boundTargetUrl || null,
+  }, instance && instance.currentTargetId || null);
+  if (bound.target) return bound;
+
+  return {
+    target: _selectBestPageTarget(pages, instance && instance.currentTargetId || null),
+    reason: 'best-target',
+  };
+}
+
 /**
  * Adopt an already-running Chrome debug port for a panel.
  * This is used when a run is reattached after the webview/extension reloads.
@@ -441,9 +542,15 @@ async function attachExistingChrome(panelId, port, options = {}) {
     navCallback: null,
     nextId: 1,
     currentTargetId: null,
+    currentTargetUrl: null,
+    boundTargetId: null,
+    boundTargetUrl: null,
+    boundBy: null,
+    boundPageNumber: null,
     knownTargetIds: new Set(),
     tabPoller: null,
     adopted: true,
+    pendingCdpRequests: new Map(),
   });
   _dbg(`attachExistingChrome: adopted running Chrome on port ${normalizedPort}`);
   _dbgState('attachExistingChrome:adopted', panelId);
@@ -466,6 +573,7 @@ function _connectToTarget(instance, target) {
   // Close old WebSocket if any
   if (instance.ws) {
     _dbg('_connectToTarget: closing old WebSocket');
+    _rejectPendingCdpRequests(instance, new Error('Chrome target connection was replaced.'));
     try { instance.ws.onclose = null; instance.ws.close(); } catch {}
     instance.ws = null;
   }
@@ -505,7 +613,22 @@ function _connectToTarget(instance, target) {
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
-      if (msg.method === 'Page.screencastFrame') {
+      if (Number.isFinite(Number(msg.id)) && instance.pendingCdpRequests instanceof Map && instance.pendingCdpRequests.has(Number(msg.id))) {
+        const requestId = Number(msg.id);
+        const pending = instance.pendingCdpRequests.get(requestId);
+        instance.pendingCdpRequests.delete(requestId);
+        if (pending && pending.timeout) {
+          clearTimeout(pending.timeout);
+        }
+        if (msg.error) {
+          const message = msg.error && msg.error.message
+            ? msg.error.message
+            : `CDP ${pending && pending.method ? pending.method : 'request'} failed.`;
+          pending.reject(new Error(message));
+        } else {
+          pending.resolve(msg.result || {});
+        }
+      } else if (msg.method === 'Page.screencastFrame') {
         _frameCount++;
         if (_frameCount <= 3 || _frameCount % 50 === 0) {
           _dbg(`screencastFrame #${_frameCount}: sessionId=${msg.params.sessionId} hasCallback=${!!instance.frameCallback}`);
@@ -524,6 +647,9 @@ function _connectToTarget(instance, target) {
         if (frame && !frame.parentId && frame.url && instance.navCallback) {
           instance.lastKnownUrl = frame.url;
           instance.currentTargetUrl = frame.url;
+          if (!instance.boundTargetId || instance.boundTargetId === instance.currentTargetId) {
+            instance.boundTargetUrl = frame.url;
+          }
           instance.lastNavAt = new Date().toISOString();
           _dbgState('frameNavigated:root-frame', instance.panelId);
           instance.navCallback(frame.url);
@@ -541,6 +667,7 @@ function _connectToTarget(instance, target) {
   ws.onclose = (ev) => {
     _dbg(`_connectToTarget: WebSocket CLOSED code=${ev && ev.code} reason=${ev && ev.reason} wasClean=${ev && ev.wasClean} totalFrames=${_frameCount}`);
     if (instance.ws === ws) {
+      _rejectPendingCdpRequests(instance, new Error('Chrome target connection was closed.'));
       instance.ws = null;
       // Auto-reconnect after 1s if instance still alive
       if (instance.panelId && _instances.has(instance.panelId)) {
@@ -550,10 +677,13 @@ function _connectToTarget(instance, target) {
           try {
             const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
             if (!targets) { _dbg('auto-reconnect: /json failed'); return; }
-            const pg = _selectBestPageTarget(targets, instance.currentTargetId);
+            const resolved = _resolvePreferredPageTarget(instance, targets);
+            const pg = resolved.target;
             if (pg && pg.webSocketDebuggerUrl) {
-              _dbg(`auto-reconnect: found page target id=${pg.id} url=${pg.url}`);
+              _applyBoundTarget(instance, pg, { reason: `auto-reconnect:${resolved.reason}` });
+              _dbg(`auto-reconnect: found page target id=${pg.id} url=${pg.url} via=${resolved.reason}`);
               _connectToTarget(instance, pg);
+              _notifyTargetUrl(instance, pg.url || null);
             } else {
               _dbg(`auto-reconnect: no page target found (${targets.length} targets)`);
             }
@@ -566,6 +696,10 @@ function _connectToTarget(instance, target) {
   instance.ws = ws;
   instance.currentTargetId = target.id;
   instance.currentTargetUrl = target.url || instance.currentTargetUrl || null;
+  if (!instance.boundTargetId || instance.boundTargetId === target.id) {
+    instance.boundTargetId = target.id;
+    instance.boundTargetUrl = target.url || instance.boundTargetUrl || null;
+  }
   instance.lastSelectedUrl = target.url || null;
   instance.lastTargetSelectedAt = new Date().toISOString();
   if (instance.knownTargetIds) instance.knownTargetIds.add(target.id);
@@ -604,9 +738,11 @@ async function startScreencast(panelId, onFrame, onNav) {
       });
       if (targets) {
         _dbg(`startScreencast: got ${targets.length} targets: ${targets.map(t => t.type + ':' + t.id).join(', ')}`);
-        page = _selectBestPageTarget(targets, instance.currentTargetId);
+        const resolved = _resolvePreferredPageTarget(instance, targets);
+        page = resolved.target;
         if (page && page.webSocketDebuggerUrl) {
-          _dbg(`startScreencast: found page target id=${page.id} url=${page.url}`);
+          _applyBoundTarget(instance, page, { reason: `start:${resolved.reason}` });
+          _dbg(`startScreencast: found page target id=${page.id} url=${page.url} via=${resolved.reason}`);
           break;
         }
         _dbg('startScreencast: no page target with webSocketDebuggerUrl yet');
@@ -620,6 +756,7 @@ async function startScreencast(panelId, onFrame, onNav) {
     }
 
     _connectToTarget(instance, page);
+    _notifyTargetUrl(instance, page.url || null);
 
     // Poll for tab changes every 2 seconds — follow genuinely new tabs, recover from closed tabs
     instance.knownTargetIds.add(page.id);
@@ -627,32 +764,36 @@ async function startScreencast(panelId, onFrame, onNav) {
       try {
         const latest = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
         if (!latest) return;
-        const pages = latest.filter(t => t.type === 'page');
+        const pages = filterChromePageTargets(latest);
         if (pages.length === 0) return;
 
         const currentId = instance.currentTargetId;
         const currentPage = pages.find(p => p.id === currentId) || null;
         const currentExists = !!currentPage;
 
-        // Find a tab we've never seen before
-        const brandNewTarget = pages.find(p => !instance.knownTargetIds.has(p.id));
-        const betterTarget = _selectBestPageTarget(pages, currentId);
-        const shouldPreferBetterTarget =
-          betterTarget &&
-          betterTarget.id !== currentId &&
-          (!currentPage || (_isPlaceholderPageUrl(currentPage.url) && !_isPlaceholderPageUrl(betterTarget.url)));
-
         // Track all current tabs
         for (const p of pages) instance.knownTargetIds.add(p.id);
 
-        // Switch to brand-new tab, or fall back if current tab was closed
-        const switchTo = brandNewTarget || shouldPreferBetterTarget ? (brandNewTarget || betterTarget) : (!currentExists ? _selectBestPageTarget(pages, currentId) : null);
-        if (switchTo && switchTo.id !== currentId) {
-          _dbg(`tabPoller: switching from ${currentId} to ${switchTo.id} (url=${switchTo.url})`);
-          _connectToTarget(instance, switchTo);
-          if (instance.navCallback && switchTo.url) instance.navCallback(switchTo.url);
+        const resolved = _resolvePreferredPageTarget(instance, pages);
+        const boundTarget = resolved.target;
+        if (boundTarget && boundTarget.id !== currentId) {
+          _applyBoundTarget(instance, boundTarget, { reason: `tab-poller:${resolved.reason}` });
+          _dbg(`tabPoller: switching from ${currentId} to bound target ${boundTarget.id} (url=${boundTarget.url}) via=${resolved.reason}`);
+          _connectToTarget(instance, boundTarget);
+          _notifyTargetUrl(instance, boundTarget.url || null);
+        } else if (!boundTarget && !currentExists) {
+          const fallback = _selectBestPageTarget(pages, currentId);
+          if (fallback && fallback.id !== currentId) {
+            _applyBoundTarget(instance, fallback, { reason: 'tab-poller:fallback' });
+            _dbg(`tabPoller: recovering from ${currentId} to ${fallback.id} (url=${fallback.url})`);
+            _connectToTarget(instance, fallback);
+            _notifyTargetUrl(instance, fallback.url || null);
+          }
         } else if (currentPage) {
           instance.currentTargetUrl = currentPage.url || instance.currentTargetUrl || null;
+          if (instance.boundTargetId === currentPage.id) {
+            instance.boundTargetUrl = currentPage.url || instance.boundTargetUrl || null;
+          }
         }
       } catch {}
     }, 2000);
@@ -733,6 +874,88 @@ function sendInput(panelId, cdpMethod, cdpParams) {
   } catch {}
 }
 
+async function capturePanelScreenshot(panelId, options = {}) {
+  const instance = _instances.get(panelId);
+  if (!instance) {
+    throw new Error('No Chrome instance is linked to this panel.');
+  }
+  const format = String(options.format || 'jpeg').toLowerCase() === 'png' ? 'png' : 'jpeg';
+  const params = {
+    format,
+    fromSurface: true,
+    captureBeyondViewport: false,
+  };
+  if (format === 'jpeg') {
+    params.quality = Math.max(1, Math.min(100, Number(options.quality) || 70));
+  }
+  const result = await _sendCdpRequest(instance, 'Page.captureScreenshot', params, {
+    timeoutMs: Math.max(1, Number(options.timeoutMs) || 10_000),
+  });
+  if (!result || typeof result.data !== 'string' || !result.data.trim()) {
+    throw new Error('Chrome did not return screenshot data.');
+  }
+  const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+  return {
+    dataUrl: `data:${mime};base64,${result.data}`,
+    targetId: instance.boundTargetId || instance.currentTargetId || null,
+    targetUrl: instance.boundTargetUrl || instance.currentTargetUrl || null,
+    format,
+  };
+}
+
+function setPanelPageBinding(panelId, binding = null) {
+  const instance = _instances.get(panelId);
+  if (!instance) return false;
+  if (!binding || typeof binding !== 'object') {
+    instance.boundTargetId = null;
+    instance.boundTargetUrl = null;
+    instance.boundBy = null;
+    instance.boundPageNumber = null;
+    _dbgState('setPanelPageBinding:cleared', panelId);
+    return true;
+  }
+  instance.boundTargetId = typeof binding.targetId === 'string' ? binding.targetId : null;
+  instance.boundTargetUrl = typeof binding.url === 'string' ? binding.url : null;
+  instance.boundBy = typeof binding.reason === 'string'
+    ? binding.reason
+    : (typeof binding.boundBy === 'string' ? binding.boundBy : 'manifest');
+  instance.boundPageNumber = Number.isFinite(Number(binding.pageNumber)) ? Number(binding.pageNumber) : null;
+  _dbgState('setPanelPageBinding:set', panelId);
+  return true;
+}
+
+async function syncPanelPageTarget(panelId, { pageNumber = null, expectedUrl = null, reason = 'mcp' } = {}) {
+  const instance = _instances.get(panelId);
+  if (!instance || !instance.port) return { status: 'no-instance' };
+  const targets = await _httpGet(`http://127.0.0.1:${instance.port}/json`).catch(() => null);
+  if (!targets) return { status: 'unreachable' };
+  const resolved = resolveChromeTargetFromSelection(targets, { pageNumber, expectedUrl }, instance.currentTargetId || null);
+  const target = resolved.target;
+  if (!target) {
+    _dbg(`syncPanelPageTarget: unresolved panelId=${panelId} pageNumber=${pageNumber || 'null'} expectedUrl=${expectedUrl || ''} reason=${reason} resolution=${resolved.reason}`);
+    _dbgState('syncPanelPageTarget:unresolved', panelId);
+    return { status: resolved.reason || 'unresolved' };
+  }
+
+  _applyBoundTarget(instance, target, { reason, pageNumber });
+  const switched = instance.currentTargetId !== target.id;
+  if (switched) {
+    _dbg(`syncPanelPageTarget: switching panelId=${panelId} from=${instance.currentTargetId || 'null'} to=${target.id} url=${target.url || ''} via=${resolved.reason}`);
+    _connectToTarget(instance, target);
+  } else {
+    instance.currentTargetUrl = target.url || instance.currentTargetUrl || null;
+    if (target.url) instance.lastSelectedUrl = target.url;
+  }
+  _notifyTargetUrl(instance, target.url || null);
+  _dbgState('syncPanelPageTarget:done', panelId);
+  return {
+    status: switched ? 'switched' : 'already-bound',
+    targetId: target.id || null,
+    targetUrl: target.url || null,
+    resolution: resolved.reason || null,
+  };
+}
+
 /**
  * Kill all Chrome instances and clean up temp dirs.
  */
@@ -756,7 +979,10 @@ module.exports = {
   killAll,
   getChromePort,
   getChromeDebugState,
+  setPanelPageBinding,
   sendInput,
+  syncPanelPageTarget,
+  capturePanelScreenshot,
   _buildChromeLaunchArgs,
   _dbg,
   _selectBestPageTarget,

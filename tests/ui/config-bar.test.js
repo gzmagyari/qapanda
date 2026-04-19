@@ -24,6 +24,20 @@ describe('Config bar', () => {
     assert.ok(target, 'chat target dropdown should exist');
   });
 
+  it('review dropdown stack is not clipped by the input box', () => {
+    const inputRow = wv.document.getElementById('input-row');
+    const inputBox = wv.document.getElementById('input-box');
+    const inputToolbar = wv.document.getElementById('input-toolbar');
+    const reviewSplit = wv.document.getElementById('review-split');
+    const reviewMenu = wv.document.getElementById('review-menu');
+
+    assert.equal(wv.window.getComputedStyle(inputRow).position, 'relative');
+    assert.equal(wv.window.getComputedStyle(inputBox).overflow, 'visible');
+    assert.equal(wv.window.getComputedStyle(inputToolbar).overflow, 'visible');
+    assert.equal(wv.window.getComputedStyle(reviewSplit).position, 'relative');
+    assert.equal(wv.window.getComputedStyle(reviewMenu).position, 'absolute');
+  });
+
   it('shows browser toggle for browser-capable local agent targets and hides it for controller', async () => {
     const target = wv.document.getElementById('cfg-chat-target');
     const toggleWrap = wv.document.getElementById('agent-browser-toggle-wrap');

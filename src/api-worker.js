@@ -69,6 +69,11 @@ function parseToolInput(argumentsValue) {
   }
 }
 
+async function notifyRendererToolCompletion(renderer, payload) {
+  if (!renderer || typeof renderer.handleMcpToolCompletion !== 'function') return;
+  await renderer.handleMcpToolCompletion(payload);
+}
+
 const DEFAULT_LAZY_TOOL_LIMIT = 20;
 
 function uniqueToolNames(values) {
@@ -688,6 +693,15 @@ async function runApiWorkerTurn({
     }
 
     if (renderLifecycle && toolName !== MCP_BATCH_NAME) {
+      await notifyRendererToolCompletion(renderer, {
+        serverName: toolName,
+        toolName,
+        input: parsedInput,
+        output: result,
+        workerLabel: label,
+        agentId: agentId || null,
+        source: 'worker-api',
+      });
       const renderedCompleteCard = renderCompleteCard(baseName, parsedInput, result, renderer, label, cardId, cardMeta);
       if (!renderedCompleteCard) {
         renderer.claude(`Finished ${toolName}`);

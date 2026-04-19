@@ -150,7 +150,7 @@ describe('transcript helpers', () => {
     assert.ok(messages.some((msg) => msg.type === 'claude' && msg.label === 'Developer'));
   });
 
-  it('restores tool cards once and dedupes mirrored screenshot ui messages', () => {
+  it('restores browser screenshots alongside tool screenshots from the same session', () => {
     const entries = [
       createTranscriptRecord({
         kind: 'tool_call',
@@ -199,7 +199,143 @@ describe('transcript helpers', () => {
     const messages = buildTranscriptDisplayMessages(entries, manifestStub());
     assert.equal(messages.filter((msg) => msg.type === 'mcpCardStart').length, 1);
     assert.equal(messages.filter((msg) => msg.type === 'mcpCardComplete').length, 1);
-    assert.equal(messages.filter((msg) => msg.type === 'chatScreenshot').length, 1);
+    const screenshots = messages.filter((msg) => msg.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 2);
+    assert.deepEqual(
+      screenshots.map((msg) => msg.alt),
+      ['Tool screenshot', 'Browser screenshot']
+    );
+  });
+
+  it('dedupes persisted tool screenshots mirrored from tool results by exact payload', () => {
+    const entries = [
+      createTranscriptRecord({
+        kind: 'tool_call',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        toolCallId: 'shot-1',
+        toolName: 'chrome_devtools__take_screenshot',
+        input: {},
+        payload: {
+          id: 'shot-1',
+          type: 'function',
+          function: { name: 'chrome_devtools__take_screenshot', arguments: '{}' },
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_result',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        toolCallId: 'shot-1',
+        toolName: 'chrome_devtools__take_screenshot',
+        result: {
+          content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'chatScreenshot',
+          data: 'data:image/png;base64,ZmFrZQ==',
+          alt: 'Tool screenshot',
+        },
+      }),
+    ];
+
+    const messages = buildTranscriptDisplayMessages(entries, manifestStub());
+    const screenshots = messages.filter((msg) => msg.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 1);
+    assert.equal(screenshots[0].data, 'data:image/png;base64,ZmFrZQ==');
+    assert.equal(screenshots[0].alt, 'Tool screenshot');
+  });
+
+  it('replays repeated persisted tool screenshots even when their image payloads are identical', () => {
+    const screenshotPayload = {
+      content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],
+    };
+    const entries = [
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:codex',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'item.completed',
+          item: {
+            type: 'mcp_tool_call',
+            id: 'shot-1',
+            server: 'chrome-devtools',
+            tool: 'take_screenshot',
+            arguments: {},
+            output: screenshotPayload,
+          },
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:codex',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'chatScreenshot',
+          data: 'data:image/png;base64,ZmFrZQ==',
+          alt: 'Tool screenshot',
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:codex',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'item.completed',
+          item: {
+            type: 'mcp_tool_call',
+            id: 'shot-2',
+            server: 'chrome-devtools',
+            tool: 'take_screenshot',
+            arguments: {},
+            output: screenshotPayload,
+          },
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:codex',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'chatScreenshot',
+          data: 'data:image/png;base64,ZmFrZQ==',
+          alt: 'Tool screenshot',
+        },
+      }),
+    ];
+
+    const messages = buildTranscriptDisplayMessages(entries, manifestStub());
+    const screenshots = messages.filter((msg) => msg.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 2);
+    assert.equal(screenshots[0].data, 'data:image/png;base64,ZmFrZQ==');
+    assert.equal(screenshots[1].data, 'data:image/png;base64,ZmFrZQ==');
   });
 
   it('builds merged controller view while skipping replay-only entries', () => {
@@ -1042,6 +1178,109 @@ describe('transcript helpers', () => {
     assert.ok(!tail.messages.some((message) => message.type === 'controller' && message.text === messages[0].text));
   });
 
+  it('collapses replayed local browser screenshot clusters to the latest screenshot and closes the turn', () => {
+    const messages = buildTranscriptDisplayMessages([
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'first turn',
+        payload: { role: 'assistant', content: 'first turn' },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_call',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        toolCallId: 'call-cluster',
+        toolName: 'mcp__chrome-devtools__navigate_page',
+        input: { url: 'https://example.com' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        payload: { type: 'chatScreenshot', data: 'data:image/png;base64,first', alt: 'Browser screenshot' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        payload: { type: 'banner', text: 'Waiting for headless Chrome…' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        payload: { type: 'chatScreenshot', data: 'data:image/png;base64,second', alt: 'Browser screenshot' },
+      }),
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'second turn',
+        payload: { role: 'assistant', content: 'second turn' },
+      }),
+    ], manifestStub());
+
+    const screenshots = messages.filter((message) => message.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 1);
+    assert.equal(screenshots[0].data, 'data:image/png;base64,second');
+    assert.equal(screenshots[0].closeAfter, true);
+    assert.ok(messages.some((message) => message.type === 'banner' && message.text === 'Waiting for headless Chrome…'));
+    assert.ok(messages.some((message) => message.type === 'claude' && message.text === 'first turn'));
+    assert.ok(messages.some((message) => message.type === 'claude' && message.text === 'second turn'));
+  });
+
+  it('drops replayed local browser screenshots once a user message has started the next turn', () => {
+    const messages = buildTranscriptDisplayMessages([
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'browser turn',
+        payload: { role: 'assistant', content: 'browser turn' },
+      }),
+      createTranscriptRecord({
+        kind: 'tool_call',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        toolCallId: 'call-1',
+        toolName: 'mcp__chrome-devtools__navigate_page',
+        input: { url: 'https://example.com' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        payload: { type: 'chatScreenshot', data: 'data:image/png;base64,valid', alt: 'Browser screenshot' },
+      }),
+      createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'next prompt',
+        payload: { role: 'user', content: 'next prompt' },
+      }),
+      createTranscriptRecord({
+        kind: 'ui_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        payload: { type: 'chatScreenshot', data: 'data:image/png;base64,stale', alt: 'Browser screenshot' },
+      }),
+    ], manifestStub());
+
+    const screenshots = messages.filter((message) => message.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 1);
+    assert.equal(screenshots[0].data, 'data:image/png;base64,valid');
+    assert.ok(messages.some((message) => message.type === 'user' && message.text === 'next prompt'));
+  });
+
   it('builds a transcript display tail from the end of a large transcript file', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-display-tail-'));
     const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
@@ -1069,6 +1308,52 @@ describe('transcript helpers', () => {
       assert.ok(result.messages.some((message) => message.type === 'claude' && message.text.includes('entry-119')));
       assert.ok(!result.messages.some((message) => message.type === 'claude' && message.text.includes('entry-0 ')));
       assert.ok(result.startOffset > 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to a reverse scan when malformed trailing lines hide the latest visible transcript messages', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-transcript-display-tail-fallback-'));
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    const goodEntries = [
+      createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'latest valid user prompt',
+        payload: { role: 'user', content: 'latest valid user prompt' },
+      }),
+      createTranscriptRecord({
+        kind: 'assistant_message',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:api',
+        agentId: 'dev',
+        text: 'latest valid assistant reply',
+        payload: { role: 'assistant', content: 'latest valid assistant reply' },
+      }),
+    ];
+    const malformedTail = [
+      'x'.repeat(2200),
+      'y'.repeat(2200),
+      'z'.repeat(2200),
+    ].join('\n') + '\n';
+    fs.writeFileSync(
+      transcriptPath,
+      goodEntries.map((entry) => JSON.stringify(entry)).join('\n') + '\n' + malformedTail,
+      'utf8'
+    );
+
+    try {
+      const result = await buildTranscriptDisplayTail(transcriptPath, manifestStub(), {
+        maxChars: 50_000,
+        initialBytes: 256,
+        maxBytes: 1024,
+      });
+      assert.ok(result.messages.some((message) => message.type === 'user' && message.text === 'latest valid user prompt'));
+      assert.ok(result.messages.some((message) => message.type === 'claude' && message.text === 'latest valid assistant reply'));
+      assert.ok(result.bytesRead > 1024);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

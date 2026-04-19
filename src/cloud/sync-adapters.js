@@ -937,6 +937,16 @@ function normalizeRunManifest(local) {
     agentRuntimeOverrides: local.agentRuntimeOverrides && typeof local.agentRuntimeOverrides === 'object'
       ? cloneJson(local.agentRuntimeOverrides)
       : {},
+    chromePageBinding: local.chromePageBinding && typeof local.chromePageBinding === 'object'
+      ? {
+          targetId: typeof local.chromePageBinding.targetId === 'string' ? local.chromePageBinding.targetId : null,
+          url: typeof local.chromePageBinding.url === 'string' ? local.chromePageBinding.url : null,
+          pageNumber: Number.isFinite(Number(local.chromePageBinding.pageNumber))
+            ? Number(local.chromePageBinding.pageNumber)
+            : null,
+          boundBy: typeof local.chromePageBinding.boundBy === 'string' ? local.chromePageBinding.boundBy : null,
+        }
+      : null,
     selfTesting: Boolean(local.selfTesting),
     selfTestPrompts: local.selfTestPrompts && typeof local.selfTestPrompts === 'object'
       ? cloneJson(local.selfTestPrompts)
@@ -1029,6 +1039,7 @@ function buildLocalManifestFromPayload(repoRoot, payload, fallbackId) {
     workerMcpServers: normalized.workerMcpServers,
     agents: normalized.agents,
     agentRuntimeOverrides: normalized.agentRuntimeOverrides,
+    chromePageBinding: normalized.chromePageBinding,
     panelId: null,
     chatTarget: normalized.chatTarget,
     controllerSystemPrompt: null,
