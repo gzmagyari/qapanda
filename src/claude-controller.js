@@ -6,6 +6,7 @@ const { buildControllerPrompt } = require('./prompts');
 const { validateControllerDecision, controllerDecisionSchema } = require('./schema');
 const { countTranscriptLinesSync } = require('./transcript');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const { isClaudeCliCommand, sanitizeClaudeSessionImagesForResume } = require('./claude-session-sanitizer');
 
 async function materializeClaudeControllerLaunchFiles(manifest, loop) {
   const baseFile = loop && loop.controller && loop.controller.promptFile
@@ -114,6 +115,30 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
   const launchFiles = await materializeClaudeControllerLaunchFiles(manifest, loop);
   const args = buildClaudeControllerArgs(manifest, loop, launchFiles);
   let discoveredSessionId = manifest.controller.sessionId;
+
+  const configuredControllerSessionId = manifest.controller.sessionId;
+  if (isClaudeCliCommand(manifest.controller.bin) && configuredControllerSessionId) {
+    try {
+      const stats = await sanitizeClaudeSessionImagesForResume({
+        repoRoot: manifest.repoRoot,
+        sessionId: configuredControllerSessionId,
+        maxDimension: 2000,
+      });
+      if (stats.changed) {
+        require('fs').appendFileSync(
+          require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'),
+          `[${new Date().toISOString()}] sanitized claude-controller session images sessionId=${configuredControllerSessionId} replaced=${stats.replacedImages} file=${stats.filePath} backup=${stats.backupPath}\n`
+        );
+      }
+    } catch (error) {
+      try {
+        require('fs').appendFileSync(
+          require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'),
+          `[${new Date().toISOString()}] failed to sanitize claude-controller session images sessionId=${configuredControllerSessionId} error=${error && error.message ? error.message : String(error)}\n`
+        );
+      } catch {}
+    }
+  }
 
   let accumulatedText = '';
   let lastAssistantMessage = '';

@@ -9,6 +9,7 @@ const { workerLabelFor } = require('./render');
 const { isRemoteCli, resolveRemoteCommand, ensureDesktop, cancelRemoteRun, getLinkedInstance } = require('./remote-desktop');
 const { lookupAgentConfig, ensureWorkerSessionState } = require('./state');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const { isClaudeCliCommand, sanitizeClaudeSessionImagesForResume } = require('./claude-session-sanitizer');
 
 /**
  * @param {object} manifest
@@ -290,6 +291,30 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   let spawnEnv = cleanEnv;
   if (agentConfig && agentConfig.thinking) {
     spawnEnv = { ...cleanEnv, CLAUDE_CODE_EFFORT_LEVEL: agentConfig.thinking };
+  }
+
+  const resumingClaudeSession = agentSession ? !!agentSession.hasStarted : !!manifest.worker.hasStarted;
+  if (resumingClaudeSession && isClaudeCliCommand(workerBin) && discoveredSessionId) {
+    try {
+      const stats = await sanitizeClaudeSessionImagesForResume({
+        repoRoot: manifest.repoRoot,
+        sessionId: discoveredSessionId,
+        maxDimension: 2000,
+      });
+      if (stats.changed) {
+        require('fs').appendFileSync(
+          require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'),
+          `[${new Date().toISOString()}] sanitized claude-worker session images sessionId=${discoveredSessionId} replaced=${stats.replacedImages} file=${stats.filePath} backup=${stats.backupPath}\n`
+        );
+      }
+    } catch (error) {
+      try {
+        require('fs').appendFileSync(
+          require('path').join(require('os').tmpdir(), 'cc-chrome-debug.log'),
+          `[${new Date().toISOString()}] failed to sanitize claude-worker session images sessionId=${discoveredSessionId} error=${error && error.message ? error.message : String(error)}\n`
+        );
+      } catch {}
+    }
   }
 
   // Debug: log the exact command and key env vars
