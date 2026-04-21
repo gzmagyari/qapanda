@@ -176,6 +176,20 @@ function _sendCdpRequest(instance, method, params = {}, options = {}) {
   });
 }
 
+function _httpText(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout: 3000 }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        resolve(Buffer.concat(chunks).toString());
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
 function _buildChromeLaunchArgs(port, userDataDir) {
   const args = [
     '--headless=new',
@@ -472,6 +486,33 @@ function _applyBoundTarget(instance, target, { reason = null, pageNumber = null 
   instance.boundPageNumber = Number.isFinite(Number(pageNumber)) ? Number(pageNumber) : null;
 }
 
+async function _fetchChromePageTargets(port) {
+  return _httpGet(`http://127.0.0.1:${port}/json/list`)
+    .catch(() => _httpGet(`http://127.0.0.1:${port}/json`).catch(() => null));
+}
+
+async function _closeChromeTarget(port, targetId) {
+  const encodedTargetId = encodeURIComponent(String(targetId || '').trim());
+  if (!encodedTargetId) throw new Error('Missing target id.');
+  return _httpText(`http://127.0.0.1:${port}/json/close/${encodedTargetId}`);
+}
+
+async function _waitForCollapsedTargets(port, keepTargetId, closingTargetIds = [], maxMs = 1500) {
+  let latest = null;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < maxMs) {
+    latest = await _fetchChromePageTargets(port).catch(() => null);
+    const pages = filterChromePageTargets(latest);
+    const keepPresent = !keepTargetId || pages.some((page) => page.id === keepTargetId);
+    const closingRemain = closingTargetIds.some((id) => pages.some((page) => page.id === id));
+    if (keepPresent && !closingRemain) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return latest;
+}
+
 function _resolvePreferredPageTarget(instance, targets) {
   const pages = filterChromePageTargets(targets);
   if (!pages.length) return { target: null, reason: 'no-pages' };
@@ -480,7 +521,18 @@ function _resolvePreferredPageTarget(instance, targets) {
     targetId: instance && instance.boundTargetId || null,
     url: instance && instance.boundTargetUrl || null,
   }, instance && instance.currentTargetId || null);
-  if (bound.target) return bound;
+  if (bound.target) {
+    const best = _selectBestPageTarget(pages, instance && instance.currentTargetId || null);
+    if (
+      best &&
+      best.id !== bound.target.id &&
+      _isPlaceholderPageUrl(bound.target.url) &&
+      !_isPlaceholderPageUrl(best.url)
+    ) {
+      return { target: best, reason: 'best-over-placeholder-binding' };
+    }
+    return bound;
+  }
 
   return {
     target: _selectBestPageTarget(pages, instance && instance.currentTargetId || null),
@@ -903,6 +955,48 @@ async function capturePanelScreenshot(panelId, options = {}) {
   };
 }
 
+async function bindPanelToTarget(panelId, { targetId = null, reason = 'mcp', pageNumber = null, reconnect = true } = {}) {
+  const instance = _instances.get(panelId);
+  if (!instance || !instance.port) return { status: 'no-instance' };
+  const normalizedTargetId = typeof targetId === 'string' ? targetId.trim() : '';
+  if (!normalizedTargetId) return { status: 'missing-target-id' };
+
+  const targets = await _fetchChromePageTargets(instance.port);
+  if (!targets) return { status: 'unreachable' };
+  const pages = filterChromePageTargets(targets);
+  const target = pages.find((page) => page.id === normalizedTargetId) || null;
+  if (!target) {
+    _dbg(`bindPanelToTarget: target not found panelId=${panelId} targetId=${normalizedTargetId} reason=${reason}`);
+    _dbgState('bindPanelToTarget:not-found', panelId);
+    return { status: 'not-found' };
+  }
+
+  const resolvedPageNumber = Number.isFinite(Number(pageNumber))
+    ? Number(pageNumber)
+    : Math.max(1, pages.findIndex((page) => page.id === target.id) + 1);
+  _applyBoundTarget(instance, target, { reason, pageNumber: resolvedPageNumber });
+  const switched = instance.currentTargetId !== target.id;
+  if (reconnect && switched) {
+    _dbg(`bindPanelToTarget: switching panelId=${panelId} from=${instance.currentTargetId || 'null'} to=${target.id} url=${target.url || ''} reason=${reason}`);
+    _connectToTarget(instance, target);
+  } else if (!switched) {
+    instance.currentTargetUrl = target.url || instance.currentTargetUrl || null;
+    if (target.url) instance.lastSelectedUrl = target.url;
+  }
+  if (instance.knownTargetIds instanceof Set) {
+    instance.knownTargetIds.add(target.id);
+  }
+  if (reconnect || !switched) {
+    _notifyTargetUrl(instance, target.url || null);
+  }
+  _dbgState('bindPanelToTarget:done', panelId);
+  return {
+    status: switched ? (reconnect ? 'switched' : 'bound-only') : 'already-bound',
+    targetId: target.id || null,
+    targetUrl: target.url || null,
+  };
+}
+
 function setPanelPageBinding(panelId, binding = null) {
   const instance = _instances.get(panelId);
   if (!instance) return false;
@@ -922,6 +1016,99 @@ function setPanelPageBinding(panelId, binding = null) {
   instance.boundPageNumber = Number.isFinite(Number(binding.pageNumber)) ? Number(binding.pageNumber) : null;
   _dbgState('setPanelPageBinding:set', panelId);
   return true;
+}
+
+async function collapsePanelToSinglePage(panelId, { keepTargetId = null, reason = 'collapse', reconnect = false } = {}) {
+  const instance = _instances.get(panelId);
+  if (!instance || !instance.port) return { status: 'no-instance' };
+
+  const targets = await _fetchChromePageTargets(instance.port);
+  if (!targets) return { status: 'unreachable' };
+  const pages = filterChromePageTargets(targets);
+  if (!pages.length) return { status: 'no-pages' };
+
+  const normalizedKeepTargetId = typeof keepTargetId === 'string' ? keepTargetId.trim() : '';
+  let keepTarget = null;
+  let resolution = null;
+  if (normalizedKeepTargetId) {
+    keepTarget = pages.find((page) => page.id === normalizedKeepTargetId) || null;
+    resolution = keepTarget ? 'explicit-target' : 'keep-target-missing';
+    if (!keepTarget) {
+      _dbg(`collapsePanelToSinglePage: keep target missing panelId=${panelId} targetId=${normalizedKeepTargetId} reason=${reason}`);
+      _dbgState('collapsePanelToSinglePage:keep-target-missing', panelId);
+      return { status: 'keep-target-missing', resolution };
+    }
+  } else {
+    const resolved = _resolvePreferredPageTarget(instance, targets);
+    keepTarget = resolved.target;
+    resolution = resolved.reason || null;
+    if (!keepTarget) {
+      _dbg(`collapsePanelToSinglePage: unresolved panelId=${panelId} reason=${reason} resolution=${resolution || 'unresolved'}`);
+      _dbgState('collapsePanelToSinglePage:unresolved', panelId);
+      return { status: resolution || 'unresolved', resolution };
+    }
+  }
+
+  const keepPageNumber = Math.max(1, pages.findIndex((page) => page.id === keepTarget.id) + 1);
+  const extraTargets = pages.filter((page) => page.id !== keepTarget.id);
+  _applyBoundTarget(instance, keepTarget, { reason, pageNumber: keepPageNumber });
+
+  const closedTargets = [];
+  const closeErrors = [];
+  for (const page of extraTargets) {
+    try {
+      await _closeChromeTarget(instance.port, page.id);
+      closedTargets.push({ id: page.id, url: page.url || null });
+    } catch (error) {
+      closeErrors.push({
+        id: page.id,
+        url: page.url || null,
+        error: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+
+  const finalTargets = extraTargets.length > 0
+    ? await _waitForCollapsedTargets(instance.port, keepTarget.id, extraTargets.map((page) => page.id))
+    : targets;
+  const finalPages = filterChromePageTargets(finalTargets);
+  if (instance.knownTargetIds instanceof Set) {
+    instance.knownTargetIds = new Set(finalPages.map((page) => page.id));
+  }
+
+  const survivor = finalPages.find((page) => page.id === keepTarget.id) || null;
+  if (!survivor) {
+    _dbg(`collapsePanelToSinglePage: kept target disappeared panelId=${panelId} keepTargetId=${keepTarget.id} reason=${reason}`);
+    _dbgState('collapsePanelToSinglePage:keep-target-lost', panelId);
+    return {
+      status: 'keep-target-lost',
+      resolution,
+      targetId: keepTarget.id || null,
+      targetUrl: keepTarget.url || null,
+      closedTargets,
+      closeErrors,
+      remainingPageCount: finalPages.length,
+    };
+  }
+
+  const bindResult = await bindPanelToTarget(panelId, {
+    targetId: survivor.id,
+    reason,
+    pageNumber: Math.max(1, finalPages.findIndex((page) => page.id === survivor.id) + 1),
+    reconnect,
+  });
+  _dbg(`collapsePanelToSinglePage: panelId=${panelId} reason=${reason} resolution=${resolution} keep=${survivor.id} closed=${closedTargets.length} errors=${closeErrors.length} reconnect=${reconnect}`);
+  _dbgState('collapsePanelToSinglePage:done', panelId);
+  return {
+    status: extraTargets.length > 0 ? (closeErrors.length > 0 ? 'partial' : 'collapsed') : 'single-page',
+    resolution,
+    targetId: survivor.id || null,
+    targetUrl: survivor.url || null,
+    closedTargets,
+    closeErrors,
+    remainingPageCount: finalPages.length,
+    bindStatus: bindResult && bindResult.status ? bindResult.status : null,
+  };
 }
 
 async function syncPanelPageTarget(panelId, { pageNumber = null, expectedUrl = null, reason = 'mcp' } = {}) {
@@ -980,8 +1167,10 @@ module.exports = {
   getChromePort,
   getChromeDebugState,
   setPanelPageBinding,
+  bindPanelToTarget,
   sendInput,
   syncPanelPageTarget,
+  collapsePanelToSinglePage,
   capturePanelScreenshot,
   _buildChromeLaunchArgs,
   _dbg,

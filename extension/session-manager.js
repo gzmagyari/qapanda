@@ -45,7 +45,7 @@ const {
   workerSessionKey,
 } = require('./src/transcript');
 const { backfillUsageSummaryFromRun, usageSummaryMessage, usageSummaryNeedsBackfill } = require('./src/usage-summary');
-const { parseChromePagesToolResult } = require('./chrome-page-binding');
+const { parseChromeCurrentPageToolResult, parseChromePagesToolResult } = require('./chrome-page-binding');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000; // 30 minutes
 const PROGRESS_TAIL_MAX_BYTES = 512 * 1024;
@@ -334,9 +334,11 @@ class SessionManager {
   async _handleMcpToolCompletion(payload = {}) {
     if (!this._activeManifest) return;
     const screenshots = screenshotMessagesFromResult(payload.output);
+    const serverName = payload.serverName || payload.server || '';
+    const toolName = payload.toolName || payload.tool || '';
+    const normalizedTool = this._normalizeCompletedToolName(toolName);
     if (screenshots.length > 0) {
       const seenScreenshotData = new Set();
-      const normalizedTool = this._normalizeCompletedToolName(payload.toolName || payload.tool || payload.serverName || payload.server || '');
       for (const screenshot of screenshots) {
         const data = screenshot && screenshot.data ? String(screenshot.data) : '';
         if (data && seenScreenshotData.has(data)) continue;
@@ -347,33 +349,98 @@ class SessionManager {
         this._postMessage({ ...screenshot });
       }
     }
-    const serverName = payload.serverName || payload.server || '';
-    const toolName = payload.toolName || payload.tool || '';
-    if (!this._isChromePageManagementTool(serverName, toolName)) return;
-    const normalizedTool = this._normalizeCompletedToolName(toolName);
-    const parsed = parseChromePagesToolResult(payload.output);
-    if (!parsed || !parsed.selectedPageUrl) {
+    if (!(this._isChromeDevtoolsMcpName(serverName) || this._isChromeDevtoolsMcpName(toolName))) return;
+
+    const isPageManagementTool = this._isChromePageManagementTool(serverName, toolName);
+    const parsedPages = isPageManagementTool ? parseChromePagesToolResult(payload.output) : null;
+    const currentPage = parseChromeCurrentPageToolResult(payload.output);
+
+    let selection = null;
+    let syncSource = null;
+    if (parsedPages && parsedPages.selectedPageUrl) {
+      selection = {
+        pageNumber: parsedPages.selectedPageNumber,
+        expectedUrl: parsedPages.selectedPageUrl,
+        reason: `mcp:${normalizedTool}`,
+      };
+      syncSource = 'page-list';
+    } else if (currentPage && currentPage.currentPageUrl) {
+      selection = {
+        pageNumber: currentPage.pageNumber || null,
+        expectedUrl: currentPage.currentPageUrl,
+        reason: `mcp:${normalizedTool}`,
+      };
+      syncSource = currentPage.source || 'current-page';
+    }
+
+    if (!selection || !selection.expectedUrl) {
       this._traceBrowser('_handleMcpToolCompletion:ignored', {
         toolName: normalizedTool,
-        reason: 'no-selected-page',
+        reason: 'no-current-page',
       });
       return;
     }
+
     const { syncPanelPageTarget } = require('./chrome-manager');
     const syncResult = await syncPanelPageTarget(this._panelId, {
-      pageNumber: parsed.selectedPageNumber,
-      expectedUrl: parsed.selectedPageUrl,
-      reason: `mcp:${normalizedTool}`,
+      pageNumber: selection.pageNumber,
+      expectedUrl: selection.expectedUrl,
+      reason: selection.reason,
     }).catch((error) => ({ status: 'error', error: error && error.message ? error.message : String(error) }));
     this._traceBrowser('_handleMcpToolCompletion:sync', {
       toolName: normalizedTool,
-      selectedPageNumber: parsed.selectedPageNumber,
-      selectedPageUrl: parsed.selectedPageUrl,
+      syncSource,
+      selectedPageNumber: selection.pageNumber,
+      selectedPageUrl: selection.expectedUrl,
       syncResult,
     });
-    if (syncResult && syncResult.status && syncResult.status !== 'no-instance' && syncResult.status !== 'unreachable') {
+    let collapseResult = null;
+    const shouldCollapseToSyncedPage = (
+      syncResult &&
+      syncResult.targetId &&
+      (
+        normalizedTool === 'new_page' ||
+        (currentPage && currentPage.currentPageUrl && currentPage.source !== 'page-list')
+      )
+    );
+    if (shouldCollapseToSyncedPage) {
+      collapseResult = await this._collapseChromeToSinglePage(
+        normalizedTool === 'new_page' ? 'mcp:new_page' : `mcp:${normalizedTool}:current-page`,
+        {
+        keepTargetId: syncResult.targetId,
+        reconnect: true,
+        save: false,
+      });
+      this._traceBrowser('_handleMcpToolCompletion:collapse', {
+        toolName: normalizedTool,
+        collapseResult,
+      });
+    }
+    if ((syncResult && syncResult.targetId) || (collapseResult && collapseResult.targetId)) {
       await this._syncBrowserBindingToManifest(true);
     }
+  }
+
+  async _collapseChromeToSinglePage(reason, options = {}) {
+    const { collapsePanelToSinglePage } = require('./chrome-manager');
+    const collapseResult = await collapsePanelToSinglePage(this._panelId, {
+      keepTargetId: options.keepTargetId || null,
+      reason,
+      reconnect: options.reconnect === true,
+    }).catch((error) => ({
+      status: 'error',
+      error: error && error.message ? error.message : String(error),
+    }));
+    this._traceBrowser('_collapseChromeToSinglePage', {
+      reason,
+      keepTargetId: options.keepTargetId || null,
+      reconnect: options.reconnect === true,
+      collapseResult,
+    });
+    if (options.save && collapseResult && collapseResult.targetId) {
+      await this._syncBrowserBindingToManifest(true);
+    }
+    return collapseResult;
   }
 
   _normalizeAgentRuntimeOverrides(overrides) {
@@ -680,6 +747,11 @@ class SessionManager {
           ? this._activeManifest.chromePageBinding
           : null
       );
+      const collapseResult = await this._collapseChromeToSinglePage(`startup:${source}`, {
+        reconnect: false,
+        save: false,
+      });
+      this._traceBrowser('_ensurePanelChrome:collapse', { source, reservedPort, collapseResult });
       this._traceBrowser('_ensurePanelChrome:ensured', { source, reservedPort, result: chrome });
       if (options.emitLifecycleBanner !== false) {
         if (chrome.status === 'started') {

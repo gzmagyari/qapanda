@@ -66,6 +66,48 @@ function parseChromePagesToolResult(result) {
   return null;
 }
 
+function parseChromeCurrentPageText(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+
+  const rootMatch = text.match(/\bRootWebArea\s+"[^"]*"\s+url="([^"]+)"/i);
+  if (rootMatch && rootMatch[1]) {
+    return {
+      currentPageUrl: rootMatch[1].trim(),
+      pageNumber: null,
+      source: 'snapshot',
+    };
+  }
+
+  const navigatedMatch = text.match(/\bNavigated to\s+([^\s]+)/i);
+  if (navigatedMatch && navigatedMatch[1]) {
+    return {
+      currentPageUrl: navigatedMatch[1].trim(),
+      pageNumber: null,
+      source: 'navigation',
+    };
+  }
+
+  const parsedPages = parseChromePagesText(text);
+  if (parsedPages && parsedPages.selectedPageUrl) {
+    return {
+      currentPageUrl: parsedPages.selectedPageUrl,
+      pageNumber: parsedPages.selectedPageNumber,
+      source: 'page-list',
+    };
+  }
+
+  return null;
+}
+
+function parseChromeCurrentPageToolResult(result) {
+  const texts = extractChromeTextBlocks(result);
+  for (const text of texts) {
+    const parsed = parseChromeCurrentPageText(text);
+    if (parsed && parsed.currentPageUrl) return parsed;
+  }
+  return null;
+}
+
 function filterChromePageTargets(targets) {
   return (Array.isArray(targets) ? targets : []).filter((target) =>
     target &&
@@ -150,6 +192,8 @@ function resolveChromeTargetFromSelection(targets, selection = {}, fallbackCurre
 module.exports = {
   extractChromeTextBlocks,
   filterChromePageTargets,
+  parseChromeCurrentPageText,
+  parseChromeCurrentPageToolResult,
   parseChromePagesText,
   parseChromePagesToolResult,
   resolveChromeTargetByBinding,

@@ -50,6 +50,7 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     startScreencastCalls: [],
     setPanelPageBindingCalls: [],
     syncPanelPageTargetCalls: [],
+    collapsePanelToSinglePageCalls: [],
     prestartConnectionCalls: [],
   };
 
@@ -160,6 +161,14 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
         });
         if (chrome.syncPanelPageTarget) return chrome.syncPanelPageTarget(panelId, selection);
         return { status: 'already-bound' };
+      },
+      collapsePanelToSinglePage: async (panelId, options) => {
+        captured.collapsePanelToSinglePageCalls.push({
+          panelId,
+          options: options == null ? null : JSON.parse(JSON.stringify(options)),
+        });
+        if (chrome.collapsePanelToSinglePage) return chrome.collapsePanelToSinglePage(panelId, options);
+        return { status: 'single-page', targetId: 'target-1', targetUrl: 'https://www.google.com/' };
       },
       getChromeDebugState: (panelId) => {
         if (chrome.getChromeDebugState) return chrome.getChromeDebugState(panelId);
@@ -538,6 +547,14 @@ test('_restoreBrowserForAttachedRun reapplies the saved chrome page binding befo
         boundBy: 'mcp:select_page',
       },
     }]);
+    assert.deepEqual(captured.collapsePanelToSinglePageCalls, [{
+      panelId: 'run-panel-bound-page',
+      options: {
+        keepTargetId: null,
+        reason: 'startup:_restoreBrowserForAttachedRun',
+        reconnect: false,
+      },
+    }]);
   } finally {
     cleanup();
   }
@@ -617,6 +634,197 @@ test('_handleMcpToolCompletion syncs the browser binding from chrome page-manage
     }]);
     assert.equal(session._activeManifest.chromePageBinding.targetId, 'target-settings');
     assert.equal(session._activeManifest.chromePageBinding.url, 'https://app.qapanda.localhost/app/settings');
+    assert.equal(captured.saveManifestCalls.length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_handleMcpToolCompletion collapses extra tabs after new_page and keeps the selected target', async () => {
+  const manifest = {
+    runId: 'browser-new-page-collapse',
+    panelId: 'panel-new-page-1',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: {} },
+    agents: {},
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      syncPanelPageTarget: async () => ({
+        status: 'switched',
+        targetId: 'target-new',
+        targetUrl: 'https://app.qapanda.localhost/app/pricing',
+      }),
+      collapsePanelToSinglePage: async () => ({
+        status: 'collapsed',
+        targetId: 'target-new',
+        targetUrl: 'https://app.qapanda.localhost/app/pricing',
+      }),
+      getChromeDebugState: () => ({
+        panelId: 'panel-new-page-1',
+        reservedPort: 45555,
+        pendingEnsure: false,
+        instance: {
+          boundTargetId: 'target-new',
+          boundTargetUrl: 'https://app.qapanda.localhost/app/pricing',
+          boundBy: 'mcp:new_page',
+          boundPageNumber: 2,
+        },
+      }),
+    },
+  });
+  try {
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = 'panel-new-page-1';
+    session._chromePortReservation = 45555;
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome_devtools',
+      toolName: 'new_page',
+      output: {
+        content: [{
+          type: 'text',
+          text: '## Pages\n1: https://www.google.com/\n2: https://app.qapanda.localhost/app/pricing [selected]',
+        }],
+      },
+    });
+
+    assert.deepEqual(captured.syncPanelPageTargetCalls, [{
+      panelId: 'panel-new-page-1',
+      selection: {
+        pageNumber: 2,
+        expectedUrl: 'https://app.qapanda.localhost/app/pricing',
+        reason: 'mcp:new_page',
+      },
+    }]);
+    assert.deepEqual(captured.collapsePanelToSinglePageCalls, [{
+      panelId: 'panel-new-page-1',
+      options: {
+        keepTargetId: 'target-new',
+        reason: 'mcp:new_page',
+        reconnect: true,
+      },
+    }]);
+    assert.equal(captured.saveManifestCalls.length, 1);
+    assert.equal(session._activeManifest.chromePageBinding.targetId, 'target-new');
+  } finally {
+    cleanup();
+  }
+});
+
+test('_handleMcpToolCompletion does not collapse tabs when new_page target resolution fails', async () => {
+  const manifest = {
+    runId: 'browser-new-page-no-collapse',
+    panelId: 'panel-new-page-2',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: {} },
+    agents: {},
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      syncPanelPageTarget: async () => ({ status: 'ambiguous-url' }),
+    },
+  });
+  try {
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = 'panel-new-page-2';
+    session._chromePortReservation = 45555;
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome_devtools',
+      toolName: 'new_page',
+      output: {
+        content: [{
+          type: 'text',
+          text: '## Pages\n1: https://app.qapanda.localhost/app\n2: https://app.qapanda.localhost/app/pricing [selected]',
+        }],
+      },
+    });
+
+    assert.equal(captured.collapsePanelToSinglePageCalls.length, 0);
+    assert.equal(captured.saveManifestCalls.length, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_handleMcpToolCompletion syncs and collapses to the live page from chrome snapshot output', async () => {
+  const manifest = {
+    runId: 'browser-snapshot-sync',
+    panelId: 'panel-snapshot-1',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: {} },
+    agents: {},
+  };
+  const { session, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      syncPanelPageTarget: async () => ({
+        status: 'switched',
+        targetId: 'target-app',
+        targetUrl: 'http://localhost:8001/',
+      }),
+      collapsePanelToSinglePage: async () => ({
+        status: 'collapsed',
+        targetId: 'target-app',
+        targetUrl: 'http://localhost:8001/',
+      }),
+      getChromeDebugState: () => ({
+        panelId: 'panel-snapshot-1',
+        reservedPort: 45555,
+        pendingEnsure: false,
+        instance: {
+          boundTargetId: 'target-app',
+          boundTargetUrl: 'http://localhost:8001/',
+          boundBy: 'mcp:wait_for:current-page',
+          boundPageNumber: 1,
+        },
+      }),
+    },
+  });
+  try {
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = 'panel-snapshot-1';
+    session._chromePortReservation = 45555;
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome_devtools',
+      toolName: 'wait_for',
+      output: {
+        content: [{
+          type: 'text',
+          text: [
+            'Element found.',
+            '## Latest page snapshot',
+            'uid=1_0 RootWebArea "BacktestLoop Dashboard" url="http://localhost:8001/"',
+          ].join('\n'),
+        }],
+      },
+    });
+
+    assert.deepEqual(captured.syncPanelPageTargetCalls, [{
+      panelId: 'panel-snapshot-1',
+      selection: {
+        pageNumber: null,
+        expectedUrl: 'http://localhost:8001/',
+        reason: 'mcp:wait_for',
+      },
+    }]);
+    assert.deepEqual(captured.collapsePanelToSinglePageCalls, [{
+      panelId: 'panel-snapshot-1',
+      options: {
+        keepTargetId: 'target-app',
+        reason: 'mcp:wait_for:current-page',
+        reconnect: true,
+      },
+    }]);
+    assert.equal(session._activeManifest.chromePageBinding.targetId, 'target-app');
+    assert.equal(session._activeManifest.chromePageBinding.url, 'http://localhost:8001/');
     assert.equal(captured.saveManifestCalls.length, 1);
   } finally {
     cleanup();
@@ -1033,7 +1241,10 @@ test('sendTranscript does not duplicate v2 tool cards or mirrored screenshots', 
     assert.ok(hist, 'should post transcriptHistory');
     assert.equal(hist.messages.filter(m => m.type === 'mcpCardStart').length, 1);
     assert.equal(hist.messages.filter(m => m.type === 'mcpCardComplete').length, 1);
-    assert.equal(hist.messages.filter(m => m.type === 'chatScreenshot').length, 1);
+    const screenshots = hist.messages.filter(m => m.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 2);
+    assert.ok(screenshots.some((message) => message.alt === 'Tool screenshot'));
+    assert.ok(screenshots.some((message) => message.alt === 'Browser screenshot'));
   } finally {
     cleanup();
   }

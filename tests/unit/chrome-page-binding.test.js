@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  parseChromeCurrentPageToolResult,
   parseChromePagesText,
   parseChromePagesToolResult,
   resolveChromeTargetByBinding,
@@ -35,6 +36,25 @@ test('parseChromePagesToolResult reads plain-text page lists from MCP result obj
 
   assert.equal(parsed.selectedPageNumber, 1);
   assert.equal(parsed.selectedPageUrl, 'https://app.qapanda.localhost/app');
+});
+
+test('parseChromeCurrentPageToolResult extracts the live page URL from snapshot-bearing chrome output', () => {
+  const parsed = parseChromeCurrentPageToolResult({
+    content: [{
+      type: 'text',
+      text: [
+        'Element found.',
+        '## Latest page snapshot',
+        'uid=1_0 RootWebArea "BacktestLoop Dashboard" url="http://localhost:8001/"',
+      ].join('\n'),
+    }],
+  });
+
+  assert.deepEqual(parsed, {
+    currentPageUrl: 'http://localhost:8001/',
+    pageNumber: null,
+    source: 'snapshot',
+  });
 });
 
 test('resolveChromeTargetFromSelection prefers an exact unique URL match over a mismatched slot', () => {
