@@ -1675,7 +1675,7 @@
           const editBtn = document.createElement('button');
           editBtn.className = 'mcp-btn';
           editBtn.textContent = 'Edit';
-          editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
+          editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAllAgentLists(); });
           actions.appendChild(editBtn);
         }
         if (!isRemoved) {
@@ -1700,11 +1700,11 @@
         const editBtn = document.createElement('button');
         editBtn.className = 'mcp-btn';
         editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAgentList(scope); });
+        editBtn.addEventListener('click', () => { agentEditingForm = { scope, id }; renderAllAgentLists(); });
         const delBtn = document.createElement('button');
         delBtn.className = 'mcp-btn mcp-btn-danger';
         delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => { delete agents[id]; notifyAgentChanged(scope); renderAgentList(scope); });
+        delBtn.addEventListener('click', () => { delete agents[id]; notifyAgentChanged(scope); renderAllAgentLists(); });
         actions.appendChild(editBtn);
         actions.appendChild(delBtn);
       }
@@ -1759,8 +1759,9 @@
       cliOptions.map(v => '<option value="' + v + '"' + (existingCli === v ? ' selected' : '') + '>' + cliLabels[v] + '</option>').join('') +
       '</select>';
 
+    const showDeleteButton = scope !== 'system' && !!editId;
     form.innerHTML =
-      '<div class="agent-form-row"><label>ID</label><input class="mcp-input" id="agent-f-id" value="' + escapeHtml(editId || '') + '" ' + (editId ? 'disabled' : '') + ' placeholder="unique-id (e.g. qa, dev)"></div>' +
+      '<div class="agent-form-row"><label>ID</label><input class="mcp-input" id="agent-f-id" value="' + escapeHtml(editId || '') + '" placeholder="unique-id (e.g. qa, dev)"></div>' +
       '<div class="agent-form-row"><label>Name</label><input class="mcp-input" id="agent-f-name" value="' + escapeHtml(existing ? existing.name || '' : '') + '" placeholder="Display name"></div>' +
       '<div class="agent-form-row"><label>Description</label><input class="mcp-input" id="agent-f-desc" value="' + escapeHtml(existing ? existing.description || '' : '') + '" placeholder="Short description visible to the controller (what this agent does)"></div>' +
       '<div class="agent-form-row"><label>CLI Backend</label>' + cliSelectHtml + '</div>' +
@@ -1782,15 +1783,17 @@
       '<div class="agent-form-row"><label>Prompt</label><textarea class="mcp-input mcp-textarea" id="agent-f-prompt" placeholder="System prompt for this agent. Overrides the default worker prompt. NOT visible to the controller.">' + escapeHtml(existing ? existing.system_prompt || '' : '') + '</textarea></div>' +
       '<div class="agent-form-row"><label>MCPs</label><textarea class="mcp-input mcp-textarea-json" id="agent-f-mcps" placeholder="Optional additional MCP servers (JSON, same format as MCP tab)">' + escapeHtml(mcpsJson) + '</textarea></div>' +
       '<div id="agent-f-error" class="mcp-form-error"></div>' +
-      '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="agent-f-save">Save</button><button class="mcp-btn" id="agent-f-cancel">Cancel</button></div>';
+      '<div class="mcp-form-actions"><button class="mcp-btn mcp-btn-primary" id="agent-f-save">Save</button>' +
+      (showDeleteButton ? '<button class="mcp-btn mcp-btn-danger" id="agent-f-delete">Delete</button>' : '') +
+      '<button class="mcp-btn" id="agent-f-cancel">Cancel</button></div>';
 
     setTimeout(() => {
-      const cliEl = document.getElementById('agent-f-cli');
-      const providerEl = document.getElementById('agent-f-provider');
-      const providerRow = document.getElementById('agent-f-provider-row');
-      const modelEl = document.getElementById('agent-f-model');
-      const customModelEl = document.getElementById('agent-f-custom-model');
-      const thinkingEl = document.getElementById('agent-f-thinking');
+      const cliEl = form.querySelector('#agent-f-cli');
+      const providerEl = form.querySelector('#agent-f-provider');
+      const providerRow = form.querySelector('#agent-f-provider-row');
+      const modelEl = form.querySelector('#agent-f-model');
+      const customModelEl = form.querySelector('#agent-f-custom-model');
+      const thinkingEl = form.querySelector('#agent-f-thinking');
 
       function isCodexCli(v) { return v === 'codex' || v === 'qa-remote-codex'; }
       function effectiveAgentModelValue() {
@@ -1835,18 +1838,18 @@
         // Provider row only visible for API CLI
         if (providerRow) providerRow.style.display = useApi ? '' : 'none';
         // Run Mode only applies to claude CLI
-        const runModeRow = document.getElementById('agent-f-runmode-row');
+        const runModeRow = form.querySelector('#agent-f-runmode-row');
         if (runModeRow) {
           const isClaude = !cli || cli === 'claude';
           runModeRow.style.display = isClaude ? '' : 'none';
         }
         // Codex Mode only applies to codex CLI
-        const codexModeRow = document.getElementById('agent-f-codexmode-row');
+        const codexModeRow = form.querySelector('#agent-f-codexmode-row');
         if (codexModeRow) {
           codexModeRow.style.display = useCodex ? '' : 'none';
         }
         // API compaction threshold only applies to API CLI
-        const apiCompactionRow = document.getElementById('agent-f-api-compaction-row');
+        const apiCompactionRow = form.querySelector('#agent-f-api-compaction-row');
         if (apiCompactionRow) {
           apiCompactionRow.style.display = useApi ? '' : 'none';
         }
@@ -1865,33 +1868,44 @@
         // Only toggle custom model input — don't repopulate the dropdown
         if (customModelEl) customModelEl.classList.toggle('visible', modelEl.value === '_custom');
       });
-      document.getElementById('agent-f-save').addEventListener('click', () => saveAgentForm(scope, editId));
-      document.getElementById('agent-f-cancel').addEventListener('click', () => { agentEditingForm = null; renderAgentList(scope); });
+      const saveBtn = form.querySelector('#agent-f-save');
+      const cancelBtn = form.querySelector('#agent-f-cancel');
+      const deleteBtn = form.querySelector('#agent-f-delete');
+      if (saveBtn) saveBtn.addEventListener('click', () => saveAgentForm(scope, editId, form));
+      if (cancelBtn) cancelBtn.addEventListener('click', () => { agentEditingForm = null; renderAllAgentLists(); });
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+          delete agents[editId];
+          agentEditingForm = null;
+          notifyAgentChanged(scope);
+          renderAllAgentLists();
+        });
+      }
     }, 0);
 
     return form;
   }
 
-  function saveAgentForm(scope, editId) {
+  function saveAgentForm(scope, editId, form) {
     const isSystem = scope === 'system';
     const agents = isSystem ? agentsSystem : (scope === 'global' ? agentsGlobal : agentsProject);
-    const id = (document.getElementById('agent-f-id').value || '').trim();
-    const name = (document.getElementById('agent-f-name').value || '').trim();
-    const description = (document.getElementById('agent-f-desc').value || '').trim();
-    const cli = (document.getElementById('agent-f-cli') ? document.getElementById('agent-f-cli').value : '') || null;
-    const provider = (document.getElementById('agent-f-provider') ? document.getElementById('agent-f-provider').value : '') || null;
-    let model = (document.getElementById('agent-f-model') ? document.getElementById('agent-f-model').value : '') || null;
+    const id = (((form.querySelector('#agent-f-id') || {}).value) || '').trim();
+    const name = (((form.querySelector('#agent-f-name') || {}).value) || '').trim();
+    const description = (((form.querySelector('#agent-f-desc') || {}).value) || '').trim();
+    const cli = (((form.querySelector('#agent-f-cli') || {}).value) || '') || null;
+    const provider = (((form.querySelector('#agent-f-provider') || {}).value) || '') || null;
+    let model = (((form.querySelector('#agent-f-model') || {}).value) || '') || null;
     if (model === '_custom') {
-      const customModel = (document.getElementById('agent-f-custom-model') ? document.getElementById('agent-f-custom-model').value : '').trim();
+      const customModel = ((((form.querySelector('#agent-f-custom-model') || {}).value) || '')).trim();
       model = customModel || null;
     }
-    const thinking = (document.getElementById('agent-f-thinking') ? document.getElementById('agent-f-thinking').value : '') || null;
-    const runMode = (document.getElementById('agent-f-runmode') ? document.getElementById('agent-f-runmode').value : '') || null;
-    const codexMode = (document.getElementById('agent-f-codexmode') ? document.getElementById('agent-f-codexmode').value : '') || null;
-    const apiCompactionTriggerMessagesText = (document.getElementById('agent-f-api-compaction') ? document.getElementById('agent-f-api-compaction').value : '').trim();
-    const systemPrompt = (document.getElementById('agent-f-prompt').value || '').trim();
-    const mcpsText = (document.getElementById('agent-f-mcps').value || '').trim();
-    const errorEl = document.getElementById('agent-f-error');
+    const thinking = (((form.querySelector('#agent-f-thinking') || {}).value) || '') || null;
+    const runMode = (((form.querySelector('#agent-f-runmode') || {}).value) || '') || null;
+    const codexMode = (((form.querySelector('#agent-f-codexmode') || {}).value) || '') || null;
+    const apiCompactionTriggerMessagesText = ((((form.querySelector('#agent-f-api-compaction') || {}).value) || '')).trim();
+    const systemPrompt = ((((form.querySelector('#agent-f-prompt') || {}).value) || '')).trim();
+    const mcpsText = ((((form.querySelector('#agent-f-mcps') || {}).value) || '')).trim();
+    const errorEl = form.querySelector('#agent-f-error');
 
     if (!id) { if (errorEl) errorEl.textContent = 'ID is required'; return; }
     if (id === 'default') { if (errorEl) errorEl.textContent = '"default" is reserved'; return; }
@@ -1934,7 +1948,7 @@
       if (editId && editId !== id) delete agents[editId];
       agents[id] = agentData;
       notifyAgentChanged(scope);
-      renderAgentList(scope);
+      renderAllAgentLists();
     }
   }
 
@@ -1946,7 +1960,7 @@
   document.querySelectorAll('.agent-add-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       agentEditingForm = { scope: btn.dataset.scope, id: null };
-      renderAgentList(btn.dataset.scope);
+      renderAllAgentLists();
     });
   });
 
@@ -3396,6 +3410,12 @@
     } else {
       el.style.display = 'none';
     }
+  }
+
+  function renderAllAgentLists() {
+    renderAgentList('system');
+    renderAgentList('global');
+    renderAgentList('project');
   }
 
   function updateBrowserTab() {

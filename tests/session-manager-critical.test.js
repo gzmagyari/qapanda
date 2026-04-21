@@ -383,6 +383,28 @@ test('_handleMcpToolCompletion posts and persists live tool screenshots for imag
   }
 });
 
+test('_handleMcpToolCompletion supports Claude-style tool_result image blocks', async () => {
+  const { session, posted, cleanup } = buildSession();
+
+  try {
+    session._chatTarget = 'agent-dev';
+    await session._handleMcpToolCompletion({
+      toolName: 'mcp__chrome-devtools__take_screenshot',
+      output: [
+        { type: 'text', text: 'Captured the page.' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'ZmFrZQ==' } },
+      ],
+    });
+
+    const postedMessage = posted.find((msg) => msg.type === 'chatScreenshot');
+    assert.ok(postedMessage, 'expected Claude-style screenshot output to be posted to the webview');
+    assert.equal(postedMessage.alt, 'Tool screenshot');
+    assert.equal(postedMessage.data, 'data:image/png;base64,ZmFrZQ==');
+  } finally {
+    cleanup();
+  }
+});
+
 test('_handleMcpToolCompletion does not emit screenshots for non-image tool output', async () => {
   const { session, posted, cleanup } = buildSession();
 

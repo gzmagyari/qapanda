@@ -15,6 +15,38 @@ const CHAT_LOG_SKIP = new Set([
   'liveQaReportCard', 'clearLiveQaReportCard',
 ]);
 
+function baseClaudeToolName(fullToolName) {
+  const parts = String(fullToolName || '').split('__');
+  return parts.length >= 3 ? parts[parts.length - 1] : String(fullToolName || '');
+}
+
+function claudeToolMeta(fullToolName) {
+  const value = String(fullToolName || '');
+  const isChromeDevtools = value.startsWith('mcp__chrome-devtools__');
+  return {
+    isChromeDevtools,
+    isComputerUse: isChromeDevtools || value.startsWith('mcp__computer-control__'),
+  };
+}
+
+function extractClaudeToolResults(raw) {
+  if (!raw || raw.type !== 'user') return [];
+  const blocks = Array.isArray(raw.message && raw.message.content) ? raw.message.content : [];
+  const results = [];
+  for (const block of blocks) {
+    if (!block || block.type !== 'tool_result' || !block.tool_use_id) continue;
+    results.push({
+      toolUseId: String(block.tool_use_id),
+      output: raw.tool_use_result != null
+        ? raw.tool_use_result
+        : Array.isArray(block.content)
+          ? block.content
+          : [],
+    });
+  }
+  return results;
+}
+
 class WebviewRenderer {
   constructor(panel, options = {}) {
     this._panel = panel;
@@ -209,7 +241,14 @@ class WebviewRenderer {
     }
     if (summary.kind === 'tool-start') {
       this.flushStream();
-      this._toolCalls.set(summary.index, { name: summary.toolName, inputJson: '' });
+      this._toolCalls.set(summary.index, {
+        name: summary.toolName,
+        toolUseId: summary.toolUseId || null,
+        inputJson: '',
+        initialInput: summary.toolInput || null,
+        input: summary.toolInput || null,
+        cardId: `claude-${summary.index}-${Date.now()}`,
+      });
       return;
     }
     if (summary.kind === 'tool-input-delta') {
@@ -222,8 +261,9 @@ class WebviewRenderer {
     if (summary.kind === 'block-stop') {
       const tc = this._toolCalls.get(summary.index);
       if (tc) {
-        let input = {};
-        try { input = JSON.parse(tc.inputJson); } catch {}
+        let input = tc.initialInput || {};
+        try { if (tc.inputJson) input = JSON.parse(tc.inputJson); } catch {}
+        tc.input = input;
         // Extract tool name and try card rendering
         const ctrlToolParts = tc.name.split('__');
         const ctrlToolName = ctrlToolParts.length >= 3 ? ctrlToolParts[ctrlToolParts.length - 1] : tc.name;
@@ -255,6 +295,36 @@ class WebviewRenderer {
       this._post({ type: 'rawEvent', source: 'claude', raw });
       return;
     }
+    const toolResults = extractClaudeToolResults(raw);
+    if (toolResults.length > 0) {
+      for (const resultEntry of toolResults) {
+        let pendingIndex = null;
+        let pending = null;
+        for (const [index, candidate] of this._toolCalls.entries()) {
+          if (candidate && candidate.toolUseId === resultEntry.toolUseId) {
+            pendingIndex = index;
+            pending = candidate;
+            break;
+          }
+        }
+        if (!pending) continue;
+        let input = pending.input || pending.initialInput || {};
+        try { if (pending.inputJson) input = JSON.parse(pending.inputJson); } catch {}
+        const toolName = baseClaudeToolName(pending.name);
+        const { renderCompleteCard } = require('./src/mcp-cards');
+        renderCompleteCard(toolName, input, resultEntry.output, this, this.workerLabel, pending.cardId || `claude-${Date.now()}`, claudeToolMeta(pending.name));
+        if (typeof this.handleMcpToolCompletion === 'function') {
+          Promise.resolve(this.handleMcpToolCompletion({
+            toolName: pending.name,
+            tool: pending.name,
+            input,
+            output: resultEntry.output,
+          })).catch(() => {});
+        }
+        this._toolCalls.delete(pendingIndex);
+      }
+      return;
+    }
     const summary = summarizeClaudeEvent(raw);
     if (!summary) return;
 
@@ -264,7 +334,14 @@ class WebviewRenderer {
     }
     if (summary.kind === 'tool-start') {
       this.flushStream();
-      this._toolCalls.set(summary.index, { name: summary.toolName, inputJson: '' });
+      this._toolCalls.set(summary.index, {
+        name: summary.toolName,
+        toolUseId: summary.toolUseId || null,
+        inputJson: '',
+        initialInput: summary.toolInput || null,
+        input: summary.toolInput || null,
+        cardId: `claude-${summary.index}-${Date.now()}`,
+      });
       return;
     }
     if (summary.kind === 'tool-input-delta') {
@@ -277,22 +354,18 @@ class WebviewRenderer {
     if (summary.kind === 'block-stop') {
       const tc = this._toolCalls.get(summary.index);
       if (tc) {
-        let input = {};
-        try { input = JSON.parse(tc.inputJson); } catch {}
+        let input = tc.initialInput || {};
+        try { if (tc.inputJson) input = JSON.parse(tc.inputJson); } catch {}
+        tc.input = input;
         // Extract tool name from Claude format: mcp__server__tool → tool
-        const toolParts = tc.name.split('__');
-        const toolName = toolParts.length >= 3 ? toolParts[toolParts.length - 1] : tc.name;
-        // Try rendering a visual card via shared CARD_MAP
-        const { tryRenderMcpCard } = require('./src/mcp-cards');
-        const suppress = tryRenderMcpCard(toolName, input, {}, this, this.workerLabel);
-        if (suppress) {
-          this._toolCalls.delete(summary.index);
+        const toolName = baseClaudeToolName(tc.name);
+        const { renderStartCard, CARD_MAP } = require('./src/mcp-cards');
+        const suppress = renderStartCard(toolName, input, this, this.workerLabel, tc.cardId, claudeToolMeta(tc.name));
+        if (suppress || (CARD_MAP[toolName] && CARD_MAP[toolName].suppress)) {
           return;
         }
         const desc = this._formatToolCall(tc.name, input);
-        const isComputerUse = tc.name.startsWith('mcp__computer-control__') || tc.name.startsWith('mcp__chrome-devtools__');
-        const isChromeDevtools = tc.name.startsWith('mcp__chrome-devtools__');
-        this._post({ type: 'toolCall', label: this.workerLabel, text: desc, isComputerUse, isChromeDevtools });
+        this._post({ type: 'toolCall', label: this.workerLabel, text: desc, ...claudeToolMeta(tc.name) });
         this._toolCalls.delete(summary.index);
       }
       return;

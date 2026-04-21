@@ -243,6 +243,39 @@ describe('buildClaudeArgs', () => {
     assert.equal(config.mcpServers['cc-tasks'].type, 'http');
     assert.equal(config.mcpServers['cc-tasks'].url, 'http://localhost:12345/mcp');
   });
+
+  it('can use file-backed launch artifacts for Claude on Windows-safe runtime paths', () => {
+    const manifest = baseManifest({
+      workerMcpServers: {
+        'detached-command': { command: 'node', args: ['mcp.js'] },
+      },
+    });
+    const agentConfig = { system_prompt: 'You are a QA tester.', mcps: {} };
+    const args = buildClaudeArgs(manifest, {
+      prompt: 'hello',
+      loop: baseLoop(),
+      agentConfig,
+      mcpConfigPath: '/tmp/worker.mcp-config.json',
+      systemPromptFile: '/tmp/worker.system-prompt.txt',
+    });
+    assert.ok(args.includes('--mcp-config'));
+    assert.equal(args[args.indexOf('--mcp-config') + 1], '/tmp/worker.mcp-config.json');
+    assert.ok(args.includes('--system-prompt-file'));
+    assert.equal(args[args.indexOf('--system-prompt-file') + 1], '/tmp/worker.system-prompt.txt');
+    assert.ok(!args.includes('--system-prompt'), 'runtime file path should replace inline system prompt');
+  });
+
+  it('can use append-system-prompt-file for default worker instructions', () => {
+    const manifest = baseManifest();
+    const args = buildClaudeArgs(manifest, {
+      prompt: 'hello',
+      loop: baseLoop(),
+      appendSystemPromptFile: '/tmp/worker.append-system-prompt.txt',
+    });
+    assert.ok(args.includes('--append-system-prompt-file'));
+    assert.equal(args[args.indexOf('--append-system-prompt-file') + 1], '/tmp/worker.append-system-prompt.txt');
+    assert.ok(!args.includes('--append-system-prompt'), 'runtime file path should replace inline append prompt');
+  });
 });
 
 // ── buildCodexArgs (controller) ──────────────────────────────────

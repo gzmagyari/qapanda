@@ -1287,18 +1287,49 @@ function buildStartCardMessages(toolName, input, label, cardId, fullToolNameOver
 function screenshotMessagesFromResult(result) {
   let normalized = result;
   if (typeof normalized === 'string') normalized = safeJsonParse(normalized) || {};
+  if (Array.isArray(normalized)) normalized = { content: normalized };
   if (!normalized || !Array.isArray(normalized.content)) return [];
   const messages = [];
   for (const block of normalized.content) {
-    if (block && block.type === 'image' && block.data) {
+    const source = block && block.source && typeof block.source === 'object' ? block.source : null;
+    const data = block && block.data
+      ? block.data
+      : source && source.type === 'base64' && source.data
+        ? source.data
+        : null;
+    const mimeType = block && block.mimeType
+      ? block.mimeType
+      : source && source.media_type
+        ? source.media_type
+        : 'image/png';
+    if (block && block.type === 'image' && data) {
       messages.push({
         type: 'chatScreenshot',
-        data: `data:${block.mimeType || 'image/png'};base64,${block.data}`,
+        data: `data:${mimeType};base64,${data}`,
         alt: 'Tool screenshot',
       });
     }
   }
   return messages;
+}
+
+function extractClaudeToolResultEntries(raw) {
+  if (!raw || raw.type !== 'user') return [];
+  const blocks = Array.isArray(raw.message && raw.message.content) ? raw.message.content : [];
+  const results = [];
+  for (const block of blocks) {
+    if (!block || block.type !== 'tool_result' || !block.tool_use_id) continue;
+    const output = raw.tool_use_result != null
+      ? raw.tool_use_result
+      : Array.isArray(block.content)
+        ? block.content
+        : [];
+    results.push({
+      toolUseId: String(block.tool_use_id),
+      output,
+    });
+  }
+  return results;
 }
 
 function isLocalBrowserScreenshotMessage(msg) {
@@ -1545,10 +1576,45 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
       const raw = entry.payload;
       if (String(entry.backend || '').includes(':claude')) {
         const stateKey = `${entry.sessionKey}:${entry.agentId || ''}`;
+        const toolResults = extractClaudeToolResultEntries(raw);
+        if (toolResults.length > 0) {
+          for (const resultEntry of toolResults) {
+            let pending = null;
+            for (const candidate of pendingClaudeTools.values()) {
+              if (candidate && candidate.toolUseId === resultEntry.toolUseId) {
+                pending = candidate;
+                break;
+              }
+            }
+            if (!pending) continue;
+            const fullToolName = pending.name;
+            const toolName = baseToolName(fullToolName);
+            const input = pending.input || pending.initialInput || {};
+            if (pending.renderedStart) {
+              const cardMessages = buildCardMessages(toolName, input, resultEntry.output, label, pending.cardId, fullToolName);
+              if (cardMessages.length > 0) {
+                messages.push(...cardMessages);
+              }
+            }
+            if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
+              messages.push(...screenshotMessagesFromResult(resultEntry.output));
+            }
+            pendingClaudeTools.delete(pending.key);
+          }
+          continue;
+        }
         const summary = summarizeClaudeEvent(raw);
         if (!summary) continue;
         if (summary.kind === 'tool-start') {
-          pendingClaudeTools.set(`${stateKey}:${summary.index}`, { name: summary.toolName, inputJson: '' });
+          pendingClaudeTools.set(`${stateKey}:${summary.index}`, {
+            key: `${stateKey}:${summary.index}`,
+            name: summary.toolName,
+            toolUseId: summary.toolUseId || null,
+            inputJson: '',
+            initialInput: summary.toolInput || null,
+            cardId: `tx-claude-${stateKey}-${summary.index}`,
+            renderedStart: false,
+          });
           continue;
         }
         if (summary.kind === 'tool-input-delta') {
@@ -1559,14 +1625,17 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
         if (summary.kind === 'block-stop') {
           const pending = pendingClaudeTools.get(`${stateKey}:${summary.index}`);
           if (!pending) continue;
-          let input = {};
-          try { input = JSON.parse(pending.inputJson); } catch {}
+          let input = pending.initialInput || {};
+          try {
+            if (pending.inputJson) input = JSON.parse(pending.inputJson);
+          } catch {}
           const fullToolName = pending.name;
           const toolName = baseToolName(fullToolName);
-          const cardId = `tx-claude-${stateKey}-${summary.index}`;
-          const cardMessages = buildCardMessages(toolName, input, {}, label, cardId, fullToolName);
+          const cardMessages = buildStartCardMessages(toolName, input, label, pending.cardId, fullToolName);
           if (cardMessages.length > 0) {
             messages.push(...cardMessages);
+            pending.renderedStart = true;
+            pending.input = input;
           } else {
             messages.push({
               type: 'toolCall',
@@ -1575,8 +1644,17 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
               isComputerUse: fullToolName.startsWith('mcp__computer-control__') || fullToolName.startsWith('mcp__chrome-devtools__'),
               isChromeDevtools: fullToolName.startsWith('mcp__chrome-devtools__'),
             });
+            pendingClaudeTools.delete(`${stateKey}:${summary.index}`);
           }
-          pendingClaudeTools.delete(`${stateKey}:${summary.index}`);
+          if (!pending.renderedStart && CARD_MAP[toolName] && CARD_MAP[toolName].suppress) {
+            pending.input = input;
+            pending.renderedStart = true;
+          }
+          if (!pendingClaudeTools.has(`${stateKey}:${summary.index}`)) {
+            continue;
+          }
+          pending.input = input;
+          pending.initialInput = input;
           continue;
         }
         continue;

@@ -207,6 +207,83 @@ describe('transcript helpers', () => {
     );
   });
 
+  it('replays Claude chrome tool results from raw tool_result events', () => {
+    const messages = buildTranscriptDisplayMessages([
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:claude',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+              type: 'tool_use',
+              id: 'tool-1',
+              name: 'mcp__chrome-devtools__take_screenshot',
+              input: {},
+            },
+          },
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:claude',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'stream_event',
+          event: { type: 'content_block_stop', index: 0 },
+        },
+      }),
+      createTranscriptRecord({
+        kind: 'backend_event',
+        sessionKey: 'worker:agent:dev',
+        backend: 'worker:claude',
+        requestId: 'r1',
+        loopIndex: 1,
+        agentId: 'dev',
+        payload: {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'tool-1',
+              content: [
+                { type: 'text', text: 'Captured the page.' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'ZmFrZQ==' } },
+              ],
+            }],
+          },
+          tool_use_result: [
+            { type: 'text', text: 'Captured the page.' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'ZmFrZQ==' } },
+          ],
+        },
+      }),
+    ], {
+      controller: { cli: 'codex' },
+      worker: { cli: 'claude' },
+      agents: {
+        dev: { name: 'ClaudeDev', cli: 'claude' },
+      },
+    });
+
+    assert.equal(messages.filter((msg) => msg.type === 'mcpCardStart').length, 1);
+    assert.equal(messages.filter((msg) => msg.type === 'mcpCardComplete').length, 1);
+    const screenshots = messages.filter((msg) => msg.type === 'chatScreenshot');
+    assert.equal(screenshots.length, 1);
+    assert.equal(screenshots[0].alt, 'Tool screenshot');
+    assert.equal(screenshots[0].data, 'data:image/png;base64,ZmFrZQ==');
+  });
+
   it('dedupes persisted tool screenshots mirrored from tool results by exact payload', () => {
     const entries = [
       createTranscriptRecord({

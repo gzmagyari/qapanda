@@ -1,4 +1,5 @@
-const { writeText, randomId } = require('./utils');
+const path = require('node:path');
+const { writeText, writeJson, randomId } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent } = require('./events');
 const { buildControllerPrompt } = require('./prompts');
@@ -6,7 +7,42 @@ const { validateControllerDecision, controllerDecisionSchema } = require('./sche
 const { countTranscriptLinesSync } = require('./transcript');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 
-function buildClaudeControllerArgs(manifest, loop) {
+async function materializeClaudeControllerLaunchFiles(manifest, loop) {
+  const baseFile = loop && loop.controller && loop.controller.promptFile
+    ? loop.controller.promptFile.replace(/\.prompt\.txt$/i, '')
+    : path.join(manifest.runDir || manifest.repoRoot || '.', 'controller');
+  const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};
+  if (Object.keys(controllerMcp).length === 0) {
+    return {};
+  }
+  const mcpConfig = { mcpServers: {} };
+  for (const [name, server] of Object.entries(controllerMcp)) {
+    if (!server) continue;
+    if (server.url) {
+      mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
+      continue;
+    }
+    if (!server.command) continue;
+    mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
+    if (server.env) mcpConfig.mcpServers[name].env = server.env;
+  }
+  if (Object.keys(mcpConfig.mcpServers).length === 0) {
+    return {};
+  }
+  let json = JSON.stringify(mcpConfig);
+  if (manifest.extensionDir) {
+    json = json.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+  }
+  if (manifest.repoRoot) {
+    json = json.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
+  }
+  const mcpConfigPath = `${baseFile}.mcp-config.json`;
+  await writeJson(mcpConfigPath, JSON.parse(json));
+  return { mcpConfigPath };
+}
+
+function buildClaudeControllerArgs(manifest, loop, options = {}) {
+  const mcpConfigPath = options.mcpConfigPath || null;
   const args = [
     '-p',
     '--output-format',
@@ -37,26 +73,30 @@ function buildClaudeControllerArgs(manifest, loop) {
   // Pass controller MCP servers
   const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};
   if (Object.keys(controllerMcp).length > 0) {
-    const mcpConfig = { mcpServers: {} };
-    for (const [name, server] of Object.entries(controllerMcp)) {
-      if (!server) continue;
-      if (server.url) {
-        mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
-        continue;
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath);
+    } else {
+      const mcpConfig = { mcpServers: {} };
+      for (const [name, server] of Object.entries(controllerMcp)) {
+        if (!server) continue;
+        if (server.url) {
+          mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
+          continue;
+        }
+        if (!server.command) continue;
+        mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
+        if (server.env) mcpConfig.mcpServers[name].env = server.env;
       }
-      if (!server.command) continue;
-      mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
-      if (server.env) mcpConfig.mcpServers[name].env = server.env;
-    }
-    if (Object.keys(mcpConfig.mcpServers).length > 0) {
-      let mcpJson = JSON.stringify(mcpConfig);
-      if (manifest.extensionDir) {
-        mcpJson = mcpJson.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+      if (Object.keys(mcpConfig.mcpServers).length > 0) {
+        let mcpJson = JSON.stringify(mcpConfig);
+        if (manifest.extensionDir) {
+          mcpJson = mcpJson.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+        }
+        if (manifest.repoRoot) {
+          mcpJson = mcpJson.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
+        }
+        args.push('--mcp-config', mcpJson);
       }
-      if (manifest.repoRoot) {
-        mcpJson = mcpJson.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
-      }
-      args.push('--mcp-config', mcpJson);
     }
     // Disable built-in Bash when detached-command is available
     if (controllerMcp['detached-command']) {
@@ -71,7 +111,8 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
   const prompt = buildControllerPrompt(manifest, request, { systemPromptOverride: controllerPromptOverride });
   await writeText(loop.controller.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
-  const args = buildClaudeControllerArgs(manifest, loop);
+  const launchFiles = await materializeClaudeControllerLaunchFiles(manifest, loop);
+  const args = buildClaudeControllerArgs(manifest, loop, launchFiles);
   let discoveredSessionId = manifest.controller.sessionId;
 
   let accumulatedText = '';
@@ -193,5 +234,6 @@ async function runClaudeControllerTurn({ manifest, request, loop, renderer, emit
 
 module.exports = {
   buildClaudeControllerArgs,
+  materializeClaudeControllerLaunchFiles,
   runClaudeControllerTurn,
 };

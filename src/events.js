@@ -225,7 +225,14 @@ function summarizeClaudeEvent(raw) {
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       const block = event.content_block;
       const name = block.name || 'tool';
-      return { source: 'worker', kind: 'tool-start', toolName: name, index: event.index };
+      return {
+        source: 'worker',
+        kind: 'tool-start',
+        toolName: name,
+        toolUseId: block.id || null,
+        toolInput: block.input && typeof block.input === 'object' ? block.input : null,
+        index: event.index,
+      };
     }
     if (event.type === 'content_block_stop') {
       return { source: 'worker', kind: 'block-stop', index: event.index };

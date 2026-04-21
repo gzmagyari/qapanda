@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const path = require('node:path');
 const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
 const { parseJsonLine, extractTextFromClaudeContent, summarizeClaudeEvent } = require('./events');
@@ -15,9 +16,93 @@ const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
  * @param {object} [options.agentConfig] - Agent config (system_prompt, mcps)
  * @param {object} [options.agentSession] - { sessionId, hasStarted }
  */
+function buildResolvedClaudeMcpConfig(manifest, agentConfig) {
+  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
+  const agentMcps = (agentConfig && agentConfig.mcps) || {};
+  const mcpServers = { ...baseMcpServers, ...agentMcps };
+  if (Object.keys(mcpServers).length === 0) {
+    return { mcpServers, mcpConfig: null };
+  }
+  const mcpConfig = { mcpServers: {} };
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (!server) continue;
+    if (server.url) {
+      mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
+      continue;
+    }
+    if (!server.command) continue;
+    mcpConfig.mcpServers[name] = {
+      type: 'stdio',
+      command: server.command,
+      args: server.args || [],
+    };
+    if (server.env) {
+      mcpConfig.mcpServers[name].env = server.env;
+    }
+  }
+  let json = JSON.stringify(mcpConfig);
+  if (manifest.chromeDebugPort) {
+    json = json.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
+  }
+  if (manifest.extensionDir) {
+    json = json.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
+  }
+  if (manifest.repoRoot) {
+    json = json.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
+  }
+  return { mcpServers, mcpConfig: JSON.parse(json) };
+}
+
+function buildClaudeWorkerPromptText(manifest, agentConfig) {
+  const selfTestOpts = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
+  const promptsDirs = buildPromptsDirs(manifest.repoRoot);
+  if (agentConfig && agentConfig.system_prompt) {
+    return {
+      systemPrompt: buildAgentWorkerSystemPrompt(
+        agentConfig,
+        selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+        promptsDirs
+      ),
+      appendSystemPrompt: null,
+    };
+  }
+  return {
+    systemPrompt: null,
+    appendSystemPrompt: buildAgentWorkerSystemPrompt(
+      agentConfig,
+      selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
+      promptsDirs
+    ) || manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt(),
+  };
+}
+
+async function materializeClaudeWorkerLaunchFiles(manifest, workerRecord, agentConfig) {
+  const baseFile = workerRecord && workerRecord.promptFile
+    ? workerRecord.promptFile.replace(/\.prompt\.txt$/i, '')
+    : path.join(manifest.runDir || manifest.repoRoot || '.', 'worker');
+  const launchFiles = {};
+  const { mcpConfig } = buildResolvedClaudeMcpConfig(manifest, agentConfig);
+  if (mcpConfig && Object.keys(mcpConfig.mcpServers || {}).length > 0) {
+    launchFiles.mcpConfigPath = `${baseFile}.mcp-config.json`;
+    await writeJson(launchFiles.mcpConfigPath, mcpConfig);
+  }
+  const { systemPrompt, appendSystemPrompt } = buildClaudeWorkerPromptText(manifest, agentConfig);
+  if (systemPrompt) {
+    launchFiles.systemPromptFile = `${baseFile}.system-prompt.txt`;
+    await writeText(launchFiles.systemPromptFile, `${systemPrompt}\n`);
+  } else if (appendSystemPrompt) {
+    launchFiles.appendSystemPromptFile = `${baseFile}.append-system-prompt.txt`;
+    await writeText(launchFiles.appendSystemPromptFile, `${appendSystemPrompt}\n`);
+  }
+  return launchFiles;
+}
+
 function buildClaudeArgs(manifest, options = {}) {
   const agentConfig = options.agentConfig || null;
   const agentSession = options.agentSession || null;
+  const mcpConfigPath = options.mcpConfigPath || null;
+  const systemPromptFile = options.systemPromptFile || null;
+  const appendSystemPromptFile = options.appendSystemPromptFile || null;
 
   // Check if this is a remote agent (running inside a container)
   const isRemoteAgent = agentConfig && typeof agentConfig.cli === 'string' && agentConfig.cli.startsWith('qa-remote');
@@ -84,41 +169,12 @@ function buildClaudeArgs(manifest, options = {}) {
 
   // Pass MCP servers via --mcp-config with inline JSON (prefer role-specific, fall back to shared)
   // IMPORTANT: must come BEFORE --system-prompt because multiline prompts break cmd.exe on Windows
-  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
-  const agentMcps = (agentConfig && agentConfig.mcps) || {};
-  const mcpServers = { ...baseMcpServers, ...agentMcps };
+  const { mcpServers, mcpConfig } = buildResolvedClaudeMcpConfig(manifest, agentConfig);
   if (Object.keys(mcpServers).length > 0) {
-    const mcpConfig = { mcpServers: {} };
-    for (const [name, server] of Object.entries(mcpServers)) {
-      if (!server) continue;
-      // Support HTTP MCP servers (for container access via host.docker.internal)
-      if (server.url) {
-        mcpConfig.mcpServers[name] = { type: 'http', url: server.url };
-        continue;
-      }
-      if (!server.command) continue;
-      mcpConfig.mcpServers[name] = {
-        type: 'stdio',
-        command: server.command,
-        args: server.args || [],
-      };
-      if (server.env) {
-        mcpConfig.mcpServers[name].env = server.env;
-      }
-    }
-    if (Object.keys(mcpConfig.mcpServers).length > 0) {
-      let mcpJson = JSON.stringify(mcpConfig);
-      // Replace placeholders with actual values
-      if (manifest.chromeDebugPort) {
-        mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
-      }
-      if (manifest.extensionDir) {
-        mcpJson = mcpJson.replace(/\{EXTENSION_DIR\}/g, manifest.extensionDir.replace(/\\/g, '/'));
-      }
-      if (manifest.repoRoot) {
-        mcpJson = mcpJson.replace(/\{REPO_ROOT\}/g, manifest.repoRoot.replace(/\\/g, '/'));
-      }
-      args.push('--mcp-config', mcpJson);
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath);
+    } else if (mcpConfig && Object.keys(mcpConfig.mcpServers || {}).length > 0) {
+      args.push('--mcp-config', JSON.stringify(mcpConfig));
     }
     // Disable built-in Claude in Chrome when we have our own chrome-devtools MCP
     if (!isRemoteAgent && mcpServers['chrome-devtools']) {
@@ -139,21 +195,14 @@ function buildClaudeArgs(manifest, options = {}) {
   // System prompt: agent with custom prompt uses --system-prompt (full replacement),
   // otherwise --append-system-prompt adds to Claude Code's default system prompt
   // NOTE: must be LAST because multiline text breaks cmd.exe arg parsing on Windows
-  const selfTestOpts = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
-  const _promptsDirs = buildPromptsDirs(manifest.repoRoot);
-  if (agentConfig && agentConfig.system_prompt) {
-    const sysPrompt = buildAgentWorkerSystemPrompt(
-      agentConfig,
-      selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
-      _promptsDirs
-    );
-    args.push('--system-prompt', sysPrompt);
+  const { systemPrompt, appendSystemPrompt } = buildClaudeWorkerPromptText(manifest, agentConfig);
+  if (systemPromptFile) {
+    args.push('--system-prompt-file', systemPromptFile);
+  } else if (appendSystemPromptFile) {
+    args.push('--append-system-prompt-file', appendSystemPromptFile);
+  } else if (systemPrompt) {
+    args.push('--system-prompt', systemPrompt);
   } else {
-    const appendSystemPrompt = buildAgentWorkerSystemPrompt(
-      agentConfig,
-      selfTestOpts ? { ...selfTestOpts, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
-      _promptsDirs
-    ) || manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt();
     if (appendSystemPrompt) {
       args.push('--append-system-prompt', appendSystemPrompt);
     }
@@ -179,7 +228,8 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
     manifest.worker.agentSessions[agentId] = agentSession;
   }
 
-  let args = buildClaudeArgs(manifest, { agentConfig, agentSession });
+  const launchFiles = await materializeClaudeWorkerLaunchFiles(manifest, workerRecord, agentConfig);
+  let args = buildClaudeArgs(manifest, { agentConfig, agentSession, ...launchFiles });
 
   let accumulatedText = '';
   let lastAssistantMessage = '';
@@ -216,7 +266,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
         if (agentSession && agentSession.hasStarted) {
           agentSession.sessionId = crypto.randomUUID();
           agentSession.hasStarted = false;
-          args = buildClaudeArgs(manifest, { agentConfig, agentSession });
+          args = buildClaudeArgs(manifest, { agentConfig, agentSession, ...launchFiles });
         }
       }
       renderer.desktopReady(desktop.novncPort);
@@ -407,6 +457,9 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
  */
 function buildInteractiveArgs(manifest, options = {}) {
   const agentConfig = options.agentConfig || null;
+  const mcpConfigPath = options.mcpConfigPath || null;
+  const systemPromptFile = options.systemPromptFile || null;
+  const appendSystemPromptFile = options.appendSystemPromptFile || null;
   const args = [
     '--dangerously-skip-permissions',
     '--setting-sources', 'local',
@@ -425,22 +478,12 @@ function buildInteractiveArgs(manifest, options = {}) {
   for (const dir of manifest.worker.addDirs || []) args.push('--add-dir', dir);
 
   // MCP config (same logic as buildClaudeArgs)
-  const baseMcpServers = manifest.workerMcpServers || manifest.mcpServers || {};
-  const agentMcps = (agentConfig && agentConfig.mcps) || {};
-  const mcpServers = { ...baseMcpServers, ...agentMcps };
+  const { mcpServers, mcpConfig } = buildResolvedClaudeMcpConfig(manifest, agentConfig);
   if (Object.keys(mcpServers).length > 0) {
-    const mcpConfig = { mcpServers: {} };
-    for (const [name, server] of Object.entries(mcpServers)) {
-      if (!server) continue;
-      if (server.url) { mcpConfig.mcpServers[name] = { type: 'http', url: server.url }; continue; }
-      if (!server.command) continue;
-      mcpConfig.mcpServers[name] = { type: 'stdio', command: server.command, args: server.args || [] };
-      if (server.env) mcpConfig.mcpServers[name].env = server.env;
-    }
-    if (Object.keys(mcpConfig.mcpServers).length > 0) {
-      let mcpJson = JSON.stringify(mcpConfig);
-      if (manifest.chromeDebugPort) mcpJson = mcpJson.replace(/\{CHROME_DEBUG_PORT\}/g, String(manifest.chromeDebugPort));
-      args.push('--mcp-config', mcpJson);
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath);
+    } else if (mcpConfig && Object.keys(mcpConfig.mcpServers || {}).length > 0) {
+      args.push('--mcp-config', JSON.stringify(mcpConfig));
     }
     // Disable built-in Claude in Chrome when we have our own chrome-devtools MCP
     if (mcpServers['chrome-devtools']) {
@@ -449,21 +492,14 @@ function buildInteractiveArgs(manifest, options = {}) {
   }
 
   // System prompt (same logic as buildClaudeArgs)
-  const selfTestOpts2 = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
-  const _promptsDirs2 = buildPromptsDirs(manifest.repoRoot);
-  if (agentConfig && agentConfig.system_prompt) {
-    const sysPrompt2 = buildAgentWorkerSystemPrompt(
-      agentConfig,
-      selfTestOpts2 ? { ...selfTestOpts2, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
-      _promptsDirs2
-    );
-    args.push('--system-prompt', sysPrompt2);
+  const { systemPrompt, appendSystemPrompt } = buildClaudeWorkerPromptText(manifest, agentConfig);
+  if (systemPromptFile) {
+    args.push('--system-prompt-file', systemPromptFile);
+  } else if (appendSystemPromptFile) {
+    args.push('--append-system-prompt-file', appendSystemPromptFile);
+  } else if (systemPrompt) {
+    args.push('--system-prompt', systemPrompt);
   } else {
-    const appendSystemPrompt = buildAgentWorkerSystemPrompt(
-      agentConfig,
-      selfTestOpts2 ? { ...selfTestOpts2, repoRoot: manifest.repoRoot } : { repoRoot: manifest.repoRoot },
-      _promptsDirs2
-    ) || manifest.worker.appendSystemPrompt || buildDefaultWorkerAppendSystemPrompt();
     if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
   }
 
@@ -503,10 +539,11 @@ async function runWorkerTurnInteractive({ manifest, request, loop, workerRecord,
 
   let session = manifest.worker._interactiveSessions[sessionKey];
   if (!session || session._closed) {
+    const launchFiles = await materializeClaudeWorkerLaunchFiles(manifest, workerRecord, agentConfig);
     session = new ClaudeSession({
       cwd: manifest.repoRoot,
       bin: workerBin,
-      args: buildInteractiveArgs(manifest, { agentConfig }),
+      args: buildInteractiveArgs(manifest, { agentConfig, ...launchFiles }),
       env: spawnEnv,
     });
     manifest.worker._interactiveSessions[sessionKey] = session;
