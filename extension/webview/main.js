@@ -151,6 +151,7 @@
   tabBar.addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
     if (!btn) return;
+    const previousTab = getActiveTabKey();
     const tab = btn.dataset.tab;
     _dbg('TAB click: ' + tab);
     tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -190,6 +191,8 @@
         if (fr) fr.style.display = 'none';
       }
       vscode.postMessage({ type: 'browserStart' });
+    } else if (previousTab === 'browser' && !splitChromeWrapper) {
+      vscode.postMessage({ type: 'browserStopScreencast', reason: 'browser-tab-hidden' });
     }
     renderCloudEntryScreen();
   });
@@ -3434,6 +3437,7 @@
 
   function showSplitChrome() {
     if (suppressUiLog || splitChromeWrapper || !chromePort || !currentSection) return;
+    vscode.postMessage({ type: 'browserStartScreencast', reason: 'split-browser-shown' });
     hideThinking();
 
     const insertionParent = resolveSectionParent(currentSection);
@@ -3558,6 +3562,9 @@
     splitChromeLeft = null;
     splitChromeCollapsed = false;
     chromeImgEl = null;
+    if (getActiveTabKey() !== 'browser') {
+      vscode.postMessage({ type: 'browserStopScreencast', reason: 'split-browser-hidden' });
+    }
     // Force scroll to bottom — layout changed so shouldAutoScroll() would give wrong result
     requestAnimationFrame(scrollToBottom);
   }

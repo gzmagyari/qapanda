@@ -886,6 +886,7 @@ function _activateInner(context) {
       postMessage,
       initialConfig: panelConfig,
       extensionPath: context.extensionUri.fsPath,
+      webviewVisible: panel.visible !== false,
     });
     // Pass HTTP MCP server ports so agents can reach them
     session._tasksMcpPort = ports.tasksPort;
@@ -1157,6 +1158,16 @@ function _activateInner(context) {
 
     activePanels.add(panel);
 
+    panel.onDidChangeViewState(
+      (event) => {
+        session.setWebviewVisible(event.webviewPanel.visible).catch((error) => {
+          appendPanelDebugLog(repoRoot, `EXT-HOST view-state ERROR message=${error && error.message ? error.message : String(error)}`);
+        });
+      },
+      null,
+      context.subscriptions
+    );
+
     panel.onDidDispose(
       () => {
         activePanels.delete(panel);
@@ -1266,6 +1277,7 @@ async function _deserializeInner(panel, state, context) {
         postMessage,
         initialConfig: panelConfig,
         extensionPath: context.extensionUri.fsPath,
+        webviewVisible: panel.visible !== false,
       });
       session._tasksMcpPort = ports.tasksPort;
       session._testsMcpPort = ports.testsPort;
@@ -1530,6 +1542,16 @@ async function _deserializeInner(panel, state, context) {
       panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
       activePanels.add(panel);
+
+      panel.onDidChangeViewState(
+        (event) => {
+          session.setWebviewVisible(event.webviewPanel.visible).catch((error) => {
+            appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized) view-state ERROR message=${error && error.message ? error.message : String(error)}`);
+          });
+        },
+        null,
+        context.subscriptions
+      );
 
       panel.onDidDispose(
         () => {

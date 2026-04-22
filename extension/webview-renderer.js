@@ -399,6 +399,9 @@ class WebviewRenderer {
   }
 
   chromeDevtoolsDetected() {
+    if (typeof this.handleChromeDevtoolsDetected === 'function') {
+      Promise.resolve(this.handleChromeDevtoolsDetected()).catch(() => {});
+    }
     this._post({ type: 'toolCall', label: this.workerLabel, text: 'Using Chrome DevTools', isComputerUse: false, isChromeDevtools: true });
   }
 

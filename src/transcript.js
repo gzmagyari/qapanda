@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const path = require('node:path');
 const readline = require('node:readline');
 
 const { appendJsonl, nowIso, readText, safeJsonParse } = require('./utils');
@@ -18,6 +19,7 @@ const DEFAULT_TRANSCRIPT_TAIL_MAX_BYTES = 16 * 1024 * 1024;
 const TRANSCRIPT_TAIL_TRUNCATION_BANNER = 'Showing only the latest chat tail for this run.';
 const TRANSCRIPT_SCREENSHOT_PLACEHOLDER = '[Screenshot]';
 const TRANSCRIPT_CARD_PLACEHOLDER = '[Card]';
+const MAX_TOOL_SCREENSHOT_FILE_BYTES = 20 * 1024 * 1024;
 
 function controllerSessionKey() {
   return CONTROLLER_SESSION_KEY;
@@ -1284,30 +1286,123 @@ function buildStartCardMessages(toolName, input, label, cardId, fullToolNameOver
   return [msg];
 }
 
-function screenshotMessagesFromResult(result) {
+function imageMimeTypeForFile(filePath) {
+  const ext = String(path.extname(filePath || '') || '').toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.bmp') return 'image/bmp';
+  return 'image/png';
+}
+
+function isScreenshotToolContext(options = {}) {
+  const toolName = String(options.toolName || '').toLowerCase();
+  const serverName = String(options.serverName || '').toLowerCase();
+  return (
+    toolName.includes('screenshot') ||
+    toolName.includes('screen_shot') ||
+    (serverName.includes('chrome-devtools') || serverName.includes('chrome_devtools')) &&
+      (toolName === 'take_screenshot' || toolName.endsWith('__take_screenshot'))
+  );
+}
+
+function normalizeScreenshotFileCandidate(value, repoRoot) {
+  if (typeof value !== 'string') return null;
+  let candidate = value.trim();
+  if (!candidate) return null;
+  candidate = candidate.replace(/^["'`]+|["'`]+$/g, '').trim();
+  const imagePathMatch = candidate.match(/^(.+?\.(?:png|jpe?g|webp|gif|bmp))\b/i);
+  if (imagePathMatch) candidate = imagePathMatch[1];
+  if (!candidate) return null;
+  if (!path.isAbsolute(candidate)) {
+    const root = typeof repoRoot === 'string' && repoRoot ? repoRoot : process.cwd();
+    candidate = path.resolve(root, candidate);
+  }
+  return candidate;
+}
+
+function screenshotFileCandidatesFromResult(result, input, repoRoot) {
+  const candidates = [];
+  const add = (value) => {
+    const candidate = normalizeScreenshotFileCandidate(value, repoRoot);
+    if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+  };
+
+  if (input && typeof input === 'object') {
+    add(input.filePath);
+    add(input.path);
+  }
+
   let normalized = result;
   if (typeof normalized === 'string') normalized = safeJsonParse(normalized) || {};
   if (Array.isArray(normalized)) normalized = { content: normalized };
-  if (!normalized || !Array.isArray(normalized.content)) return [];
+  const blocks = normalized && Array.isArray(normalized.content) ? normalized.content : [];
+  for (const block of blocks) {
+    const text = block && typeof block.text === 'string' ? block.text : '';
+    if (!text) continue;
+    const savedMatch = text.match(/Saved screenshot to\s+(.+?)(?:\r?\n|$)/i);
+    if (savedMatch) add(savedMatch[1]);
+  }
+  return candidates;
+}
+
+function screenshotMessageFromFile(filePath) {
+  let stat = null;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat || !stat.isFile() || stat.size <= 0 || stat.size > MAX_TOOL_SCREENSHOT_FILE_BYTES) return null;
+  let data = '';
+  try {
+    data = fs.readFileSync(filePath).toString('base64');
+  } catch {
+    return null;
+  }
+  return {
+    type: 'chatScreenshot',
+    data: `data:${imageMimeTypeForFile(filePath)};base64,${data}`,
+    alt: 'Tool screenshot',
+  };
+}
+
+function screenshotMessagesFromResult(result, options = {}) {
+  let normalized = result;
+  if (typeof normalized === 'string') normalized = safeJsonParse(normalized) || {};
+  if (Array.isArray(normalized)) normalized = { content: normalized };
   const messages = [];
-  for (const block of normalized.content) {
-    const source = block && block.source && typeof block.source === 'object' ? block.source : null;
-    const data = block && block.data
-      ? block.data
-      : source && source.type === 'base64' && source.data
-        ? source.data
-        : null;
-    const mimeType = block && block.mimeType
-      ? block.mimeType
-      : source && source.media_type
-        ? source.media_type
-        : 'image/png';
-    if (block && block.type === 'image' && data) {
-      messages.push({
-        type: 'chatScreenshot',
-        data: `data:${mimeType};base64,${data}`,
-        alt: 'Tool screenshot',
-      });
+  if (normalized && Array.isArray(normalized.content)) {
+    for (const block of normalized.content) {
+      const source = block && block.source && typeof block.source === 'object' ? block.source : null;
+      const data = block && block.data
+        ? block.data
+        : source && source.type === 'base64' && source.data
+          ? source.data
+          : null;
+      const mimeType = block && block.mimeType
+        ? block.mimeType
+        : source && source.media_type
+          ? source.media_type
+          : 'image/png';
+      if (block && block.type === 'image' && data) {
+        messages.push({
+          type: 'chatScreenshot',
+          data: `data:${mimeType};base64,${data}`,
+          alt: 'Tool screenshot',
+        });
+      }
+    }
+  }
+
+  if (messages.length === 0 && isScreenshotToolContext(options)) {
+    const candidates = screenshotFileCandidatesFromResult(result, options.input || {}, options.repoRoot || null);
+    for (const candidate of candidates) {
+      const message = screenshotMessageFromFile(candidate);
+      if (message) {
+        messages.push(message);
+        break;
+      }
     }
   }
   return messages;
@@ -1568,7 +1663,12 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
         messages.push(...cardMessages);
       }
       if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
-        messages.push(...screenshotMessagesFromResult(entry.result));
+        messages.push(...screenshotMessagesFromResult(entry.result, {
+          serverName: fullToolName,
+          toolName: fullToolName,
+          input: entry.input || {},
+          repoRoot: manifest && manifest.repoRoot,
+        }));
       }
       continue;
     }
@@ -1597,7 +1697,12 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
               }
             }
             if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
-              messages.push(...screenshotMessagesFromResult(resultEntry.output));
+              messages.push(...screenshotMessagesFromResult(resultEntry.output, {
+                serverName: fullToolName,
+                toolName: fullToolName,
+                input,
+                repoRoot: manifest && manifest.repoRoot,
+              }));
             }
             pendingClaudeTools.delete(pending.key);
           }
@@ -1710,7 +1815,12 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
             });
           }
           if (!persistedToolScreenshotScopes.has(toolScreenshotReplayScope(entry))) {
-            messages.push(...screenshotMessagesFromResult(output));
+            messages.push(...screenshotMessagesFromResult(output, {
+              serverName: fullToolName,
+              toolName: fullToolName,
+              input,
+              repoRoot: manifest && manifest.repoRoot,
+            }));
           }
           continue;
         }

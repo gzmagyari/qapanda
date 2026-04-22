@@ -620,7 +620,7 @@ function _getWS() {
 // Connect screencast WebSocket to a specific CDP page target
 function _connectToTarget(instance, target) {
   const WS = _getWS();
-  if (!WS) { _dbg('_connectToTarget: no WebSocket available'); return; }
+  if (!WS) { _dbg('_connectToTarget: no WebSocket available'); return false; }
 
   // Close old WebSocket if any
   if (instance.ws) {
@@ -756,6 +756,7 @@ function _connectToTarget(instance, target) {
   instance.lastTargetSelectedAt = new Date().toISOString();
   if (instance.knownTargetIds) instance.knownTargetIds.add(target.id);
   _dbgState('_connectToTarget:attached', instance.panelId);
+  return true;
 }
 
 /**
@@ -767,12 +768,16 @@ function _connectToTarget(instance, target) {
 async function startScreencast(panelId, onFrame, onNav) {
   _dbg(`startScreencast called, panelId=${panelId}`);
   const instance = _instances.get(panelId);
-  if (!instance) { _dbg('startScreencast: no instance for panelId'); return; }
+  if (!instance) {
+    _dbg('startScreencast: no instance for panelId');
+    return { started: false, reason: 'no-instance' };
+  }
   _dbgState('startScreencast:entry', panelId);
 
   instance.frameCallback = onFrame;
   instance.navCallback = onNav || null;
-  instance.screencastGeneration = (Number(instance.screencastGeneration) || 0) + 1;
+  const generation = (Number(instance.screencastGeneration) || 0) + 1;
+  instance.screencastGeneration = generation;
   instance.lastScreencastStartedAt = new Date().toISOString();
   if (instance.tabPoller) {
     clearInterval(instance.tabPoller);
@@ -802,12 +807,28 @@ async function startScreencast(panelId, onFrame, onNav) {
       if (attempt < 15) await new Promise(r => setTimeout(r, 2000));
     }
 
-    if (!page || !page.webSocketDebuggerUrl) {
-      _dbg('startScreencast: GIVING UP — no page target found after 15 attempts');
-      return;
+    if (instance.screencastGeneration !== generation) {
+      _dbg(`startScreencast: stale generation ${generation}; current=${instance.screencastGeneration}`);
+      return { started: false, reason: 'stale-generation' };
     }
 
-    _connectToTarget(instance, page);
+    if (!page || !page.webSocketDebuggerUrl) {
+      if (instance.screencastGeneration === generation) {
+        instance.frameCallback = null;
+        instance.navCallback = null;
+      }
+      _dbg('startScreencast: GIVING UP — no page target found after 15 attempts');
+      return { started: false, reason: 'no-page-target' };
+    }
+
+    const connected = _connectToTarget(instance, page);
+    if (!connected) {
+      if (instance.screencastGeneration === generation) {
+        instance.frameCallback = null;
+        instance.navCallback = null;
+      }
+      return { started: false, reason: 'connect-failed', targetId: page.id, url: page.url || null };
+    }
     _notifyTargetUrl(instance, page.url || null);
 
     // Poll for tab changes every 2 seconds — follow genuinely new tabs, recover from closed tabs
@@ -852,8 +873,14 @@ async function startScreencast(panelId, onFrame, onNav) {
 
     _dbg('startScreencast: setup complete, polling for tab changes');
     _dbgState('startScreencast:ready', panelId);
+    return { started: true, targetId: page.id, url: page.url || null };
   } catch (err) {
     _dbg(`startScreencast: EXCEPTION: ${err.message}\n${err.stack}`);
+    if (instance.screencastGeneration === generation) {
+      instance.frameCallback = null;
+      instance.navCallback = null;
+    }
+    return { started: false, reason: 'error', error: err.message };
   }
 }
 
@@ -864,6 +891,7 @@ function stopScreencast(panelId) {
   const instance = _instances.get(panelId);
   if (!instance) return;
   _dbgState('stopScreencast:entry', panelId);
+  instance.screencastGeneration = (Number(instance.screencastGeneration) || 0) + 1;
   instance.frameCallback = null;
   if (instance.tabPoller) { clearInterval(instance.tabPoller); instance.tabPoller = null; }
   if (instance.ws) {

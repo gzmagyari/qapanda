@@ -337,6 +337,49 @@ describe('transcript helpers', () => {
     assert.equal(screenshots[0].alt, 'Tool screenshot');
   });
 
+  it('replays Codex CLI screenshot files when tool output only records the saved path', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-transcript-file-shot-'));
+    const screenshotPath = path.join(tempDir, 'codex-shot.png');
+    fs.writeFileSync(screenshotPath, Buffer.from('file-shot'));
+
+    try {
+      const entries = [
+        createTranscriptRecord({
+          kind: 'backend_event',
+          sessionKey: 'worker:agent:QA-Browser',
+          backend: 'worker:codex',
+          requestId: 'r1',
+          loopIndex: 1,
+          agentId: 'QA-Browser',
+          payload: {
+            type: 'item.completed',
+            item: {
+              type: 'mcp_tool_call',
+              id: 'shot-1',
+              server: 'chrome_devtools',
+              tool: 'take_screenshot',
+              status: 'completed',
+              arguments: { filePath: screenshotPath },
+              result: {
+                content: [
+                  { type: 'text', text: `Took a screenshot.\nSaved screenshot to ${screenshotPath}` },
+                ],
+              },
+            },
+          },
+        }),
+      ];
+
+      const messages = buildTranscriptDisplayMessages(entries, { ...manifestStub(), repoRoot: tempDir });
+      const screenshots = messages.filter((msg) => msg.type === 'chatScreenshot');
+      assert.equal(screenshots.length, 1);
+      assert.equal(screenshots[0].alt, 'Tool screenshot');
+      assert.equal(screenshots[0].data, `data:image/png;base64,${Buffer.from('file-shot').toString('base64')}`);
+    } finally {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
   it('replays repeated persisted tool screenshots even when their image payloads are identical', () => {
     const screenshotPayload = {
       content: [{ type: 'image', mimeType: 'image/png', data: 'ZmFrZQ==' }],

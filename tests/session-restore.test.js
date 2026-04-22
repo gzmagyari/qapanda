@@ -48,6 +48,7 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     attachExistingChromeCalls: [],
     ensureChromeCalls: [],
     startScreencastCalls: [],
+    stopScreencastCalls: [],
     setPanelPageBindingCalls: [],
     syncPanelPageTargetCalls: [],
     collapsePanelToSinglePageCalls: [],
@@ -145,6 +146,11 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
       startScreencast: async (panelId, _onFrame, _onNav) => {
         captured.startScreencastCalls.push({ panelId });
         if (chrome.startScreencast) return chrome.startScreencast(panelId, _onFrame, _onNav);
+        return { started: true, targetId: 'target-1', url: 'https://www.google.com/' };
+      },
+      stopScreencast: (panelId) => {
+        captured.stopScreencastCalls.push({ panelId });
+        if (chrome.stopScreencast) return chrome.stopScreencast(panelId);
       },
       setPanelPageBinding: (panelId, binding) => {
         captured.setPanelPageBindingCalls.push({
@@ -555,6 +561,169 @@ test('_restoreBrowserForAttachedRun reapplies the saved chrome page binding befo
         reconnect: false,
       },
     }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_restoreBrowserForAttachedRun restores Chrome readiness without starting screencast while hidden', async () => {
+  const manifest = {
+    runId: 'existing-run-hidden-webview',
+    panelId: 'run-panel-hidden-webview',
+    chromeDebugPort: 45555,
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: { 'QA-Browser': { hasStarted: true } } },
+    agents: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } },
+  };
+  const { session, posted, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    sessionOptions: { webviewVisible: false },
+    chrome: {
+      ensureChrome: async (_panelId, options) => ({ port: options.port, status: 'existing' }),
+    },
+  });
+  try {
+    session.setAgents({ system: { 'QA-Browser': { name: 'QA Engineer (Browser)', cli: 'codex', enabled: true, mcps: { 'chrome-devtools': {} } } }, global: {}, project: {} });
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = manifest.panelId;
+
+    await session._restoreBrowserForAttachedRun();
+
+    assert.deepEqual(captured.ensureChromeCalls, [{ panelId: 'run-panel-hidden-webview', options: { port: 45555 } }]);
+    assert.deepEqual(captured.startScreencastCalls, []);
+    assert.ok(posted.some((msg) => msg && msg.type === 'chromeReady' && msg.chromePort === 45555));
+
+    await session.setWebviewVisible(true);
+
+    assert.deepEqual(captured.startScreencastCalls, []);
+
+    await session._requestChromeScreencast('test-explicit-screencast');
+
+    assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'run-panel-hidden-webview' }]);
+
+    await session.setWebviewVisible(false);
+    assert.deepEqual(captured.stopScreencastCalls, [{ panelId: 'run-panel-hidden-webview' }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_ensureChromeIfNeeded makes browser MCP ready without starting frame streaming', async () => {
+  const manifest = {
+    runId: 'browser-enabled-dev-run',
+    panelId: 'panel-browser-enabled-dev',
+    controller: { model: null, config: [], cli: 'codex' },
+    worker: { model: null, cli: 'codex', agentSessions: { dev: { hasStarted: true } } },
+    workerMcpServers: {},
+    agents: {
+      dev: {
+        name: 'Developer',
+        cli: 'codex',
+        enabled: true,
+        mcps: { 'chrome-devtools': { command: 'npx', args: ['chrome-devtools-mcp'] } },
+      },
+    },
+  };
+  const { session, posted, cleanup, captured } = buildSession({
+    runExists: true,
+    manifest,
+    chrome: {
+      ensureChrome: async (_panelId, options) => ({ port: options.port || 45555, status: 'started' }),
+    },
+  });
+  try {
+    session._activeManifest = JSON.parse(JSON.stringify(manifest));
+    session._panelId = manifest.panelId;
+
+    await session._ensureChromeIfNeeded('dev');
+
+    assert.equal(captured.ensureChromeCalls.length, 1);
+    assert.equal(captured.ensureChromeCalls[0].panelId, 'panel-browser-enabled-dev');
+    assert.deepEqual(captured.startScreencastCalls, []);
+    assert.ok(posted.some((msg) => msg && msg.type === 'chromeReady' && msg.chromePort === 45555));
+  } finally {
+    cleanup();
+  }
+});
+
+test('chrome devtools tool detection requests screencast for the active turn', async () => {
+  const { session, cleanup, captured } = buildSession();
+  try {
+    session._panelId = 'panel-tool-detected';
+    session._chromePort = 53333;
+
+    await session._renderer.handleChromeDevtoolsDetected();
+
+    assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'panel-tool-detected' }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_startChromeScreencast does not restart an already-active screencast on the same port', async () => {
+  const { session, posted, cleanup, captured } = buildSession();
+  try {
+    session._panelId = 'panel-screencast-dedupe';
+
+    await session._startChromeScreencast(53333, 'first-start');
+    await session._startChromeScreencast(53333, 'second-start');
+
+    assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'panel-screencast-dedupe' }]);
+    assert.equal(posted.filter((msg) => msg && msg.type === 'chromeReady' && msg.chromePort === 53333).length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_startChromeScreencast does not mark active when chrome-manager fails to attach', async () => {
+  const { session, posted, cleanup, captured } = buildSession({
+    chrome: {
+      startScreencast: async () => ({ started: false, reason: 'no-page-target' }),
+    },
+  });
+  try {
+    session._panelId = 'panel-screencast-failed-start';
+
+    await session._startChromeScreencast(53333, 'failed-start-1');
+    await session._startChromeScreencast(53333, 'failed-start-2');
+
+    assert.equal(session._screencastActive, false);
+    assert.equal(session._screencastPort, null);
+    assert.deepEqual(captured.startScreencastCalls, [
+      { panelId: 'panel-screencast-failed-start' },
+      { panelId: 'panel-screencast-failed-start' },
+    ]);
+    assert.equal(posted.some((msg) => msg && msg.type === 'chromeReady'), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test('_startChromeScreencast does not resurrect streaming if webview is hidden while start is pending', async () => {
+  let releaseStart;
+  const startPromise = new Promise((resolve) => {
+    releaseStart = () => resolve({ started: true, targetId: 'target-1', url: 'https://www.google.com/' });
+  });
+  const { session, posted, cleanup, captured } = buildSession({
+    chrome: {
+      startScreencast: async () => startPromise,
+    },
+  });
+  try {
+    session._panelId = 'panel-screencast-hide-race';
+
+    const pendingStart = session._startChromeScreencast(53333, 'slow-start');
+    await new Promise((resolve) => setImmediate(resolve));
+    await session.setWebviewVisible(false);
+    releaseStart();
+    await pendingStart;
+
+    assert.equal(session._screencastActive, false);
+    assert.equal(session._screencastPort, null);
+    assert.deepEqual(captured.startScreencastCalls, [{ panelId: 'panel-screencast-hide-race' }]);
+    assert.ok(captured.stopScreencastCalls.length >= 1);
+    assert.equal(posted.some((msg) => msg && msg.type === 'chromeReady'), false);
   } finally {
     cleanup();
   }

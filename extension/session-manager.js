@@ -137,6 +137,11 @@ class SessionManager {
     this._extensionPath = options.extensionPath || '';
     this._chromePort = null;
     this._chromePortReservation = null;
+    this._webviewVisible = options.webviewVisible !== false;
+    this._screencastActive = false;
+    this._screencastPort = null;
+    this._screencastStartToken = 0;
+    this._screencastWanted = false;
     this._restoreBrowserPromise = null;
     this._prestartPromise = null;
     this._prestartDone = false;
@@ -165,6 +170,10 @@ class SessionManager {
     if (this._renderer && typeof this._renderer === 'object') {
       this._renderer.handleMcpToolCompletion = async (payload) => {
         await this._handleMcpToolCompletion(payload);
+      };
+      this._renderer.handleChromeDevtoolsDetected = async () => {
+        if (!this._chromePort) return;
+        await this._requestChromeScreencast('chrome-devtools-detected');
       };
     }
     this._agentDelegateMcpServer = null;
@@ -333,10 +342,15 @@ class SessionManager {
 
   async _handleMcpToolCompletion(payload = {}) {
     if (!this._activeManifest) return;
-    const screenshots = screenshotMessagesFromResult(payload.output);
     const serverName = payload.serverName || payload.server || '';
     const toolName = payload.toolName || payload.tool || '';
     const normalizedTool = this._normalizeCompletedToolName(toolName);
+    const screenshots = screenshotMessagesFromResult(payload.output, {
+      serverName,
+      toolName,
+      input: payload.input || payload.arguments || payload.args || {},
+      repoRoot: this._repoRoot,
+    });
     if (screenshots.length > 0) {
       const seenScreenshotData = new Set();
       for (const screenshot of screenshots) {
@@ -766,6 +780,8 @@ class SessionManager {
       await this._syncBrowserBindingToManifest(true);
       if (options.startScreencast !== false) {
         await this._startChromeScreencast(chrome.port, source);
+      } else {
+        this._postMessage({ type: 'chromeReady', chromePort: chrome.port });
       }
       this._traceBrowser('_ensurePanelChrome:done', { source, reservedPort, result: chrome });
       return chrome;
@@ -1980,6 +1996,18 @@ class SessionManager {
       return;
     }
 
+    if (msg.type === 'browserStartScreencast') {
+      this._traceBrowser('handleIncomingMessage:browserStartScreencast', { reason: msg.reason || null });
+      await this._requestChromeScreencast(msg.reason || 'browser-start-screencast');
+      return;
+    }
+
+    if (msg.type === 'browserStopScreencast') {
+      this._traceBrowser('handleIncomingMessage:browserStopScreencast', { reason: msg.reason || null });
+      this._stopChromeScreencast(msg.reason || 'browser-stop-screencast');
+      return;
+    }
+
     if (msg.type === 'chromeInput') {
       const { sendInput } = require('./chrome-manager');
       this._traceBrowser('handleIncomingMessage:chromeInput', { method: msg.cdpMethod });
@@ -2803,6 +2831,10 @@ class SessionManager {
 
   _runNeedsChromeDevtools() {
     const agents = (this._activeManifest && this._activeManifest.agents) || this._effectiveAgents();
+    const activeAgentId = this._currentAgentTargetId(this._chatTarget);
+    if (activeAgentId) {
+      return this._agentHasChromeDevtools(agents && agents[activeAgentId]);
+    }
     return Object.values(agents).some((agent) =>
       agent && agent.mcps && Object.keys(agent.mcps).some((name) =>
         name.includes('chrome-devtools') || name.includes('chrome_devtools')
@@ -2825,19 +2857,104 @@ class SessionManager {
     );
   }
 
+  async setWebviewVisible(visible) {
+    const nextVisible = visible !== false;
+    if (this._webviewVisible === nextVisible) return;
+    this._webviewVisible = nextVisible;
+    this._traceBrowser('setWebviewVisible', {
+      visible: nextVisible,
+      chromePort: this._chromePort || null,
+      screencastActive: this._screencastActive,
+      screencastPort: this._screencastPort || null,
+    });
+    if (!nextVisible) {
+      this._pauseChromeScreencast('webview-hidden');
+      return;
+    }
+    if (this._chromePort && this._screencastWanted) {
+      await this._startChromeScreencast(this._chromePort, 'view-state-visible');
+    }
+  }
+
+  _pauseChromeScreencast(source) {
+    this._screencastStartToken += 1;
+    try { require('./chrome-manager').stopScreencast(this._panelId); } catch {}
+    this._screencastActive = false;
+    this._screencastPort = null;
+    this._traceBrowser('_pauseChromeScreencast', { source, wanted: this._screencastWanted });
+  }
+
+  _stopChromeScreencast(source) {
+    this._screencastWanted = false;
+    this._pauseChromeScreencast(source);
+  }
+
+  async _requestChromeScreencast(source) {
+    this._screencastWanted = true;
+    if (!this._chromePort) {
+      await this._ensurePanelChrome(source, {
+        lifecycle: 'screencast',
+        startScreencast: true,
+        emitLifecycleBanner: false,
+      });
+      return;
+    }
+    await this._startChromeScreencast(this._chromePort, source);
+  }
+
   async _startChromeScreencast(port, source) {
     const { startScreencast } = require('./chrome-manager');
+    this._screencastWanted = true;
+    if (!this._webviewVisible) {
+      this._sDbg(`${source}: Chrome on port ${port}, skipping screencast because webview is hidden panelId=${this._panelId}`);
+      this._traceBrowser('_startChromeScreencast:skipped-hidden', { source, port });
+      return;
+    }
+    if (this._screencastActive && this._screencastPort === port) {
+      this._sDbg(`${source}: Chrome screencast already active on port ${port}, posting chromeReady panelId=${this._panelId}`);
+      this._postMessage({ type: 'chromeReady', chromePort: port });
+      this._traceBrowser('_startChromeScreencast:already-active', { source, port });
+      return;
+    }
+    const startToken = ++this._screencastStartToken;
     this._sDbg(`${source}: Chrome on port ${port}, calling startScreencast panelId=${this._panelId}`);
     this._traceBrowser('_startChromeScreencast:before', { source, port });
-    await startScreencast(this._panelId, (frameData, metadata) => {
+    const startResult = await startScreencast(this._panelId, (frameData, metadata) => {
       this._postMessage({ type: 'chromeFrame', data: frameData, metadata });
     }, (url) => {
       this._traceBrowser('_startChromeScreencast:navigation', { source, port, url });
       this._postMessage({ type: 'chromeUrl', url });
     });
+    if (!startResult || startResult.started !== true) {
+      if (this._screencastStartToken === startToken) {
+        this._screencastActive = false;
+        this._screencastPort = null;
+      }
+      this._traceBrowser('_startChromeScreencast:not-started', { source, port, result: startResult || null });
+      return startResult || null;
+    }
+    if (!this._webviewVisible || this._screencastStartToken !== startToken) {
+      if (!this._webviewVisible) {
+        try { require('./chrome-manager').stopScreencast(this._panelId); } catch {}
+        this._screencastActive = false;
+        this._screencastPort = null;
+      }
+      this._traceBrowser('_startChromeScreencast:aborted-after-start', {
+        source,
+        port,
+        visible: this._webviewVisible,
+        startToken,
+        currentToken: this._screencastStartToken,
+        result: startResult,
+      });
+      return startResult;
+    }
     this._sDbg(`${source}: startScreencast returned, posting chromeReady`);
+    this._screencastActive = true;
+    this._screencastPort = port;
     this._postMessage({ type: 'chromeReady', chromePort: port });
-    this._traceBrowser('_startChromeScreencast:after', { source, port });
+    this._traceBrowser('_startChromeScreencast:after', { source, port, result: startResult });
+    return startResult;
   }
 
   async _restoreBrowserForAttachedRun() {
@@ -2857,6 +2974,7 @@ class SessionManager {
           lifecycle: 'restore',
           expectRestart: Number.isFinite(savedPort) && savedPort > 0,
           emitLifecycleBanner: false,
+          startScreencast: false,
         });
         if (!chrome) return;
         if (chrome.status === 'started' && Number.isFinite(savedPort) && savedPort > 0) {
@@ -2916,7 +3034,7 @@ class SessionManager {
     if (needsChrome) {
       const reservedPort = await this._reserveChromePort();
       this._browserBanner(`browser-prestart:${this._panelId}:${reservedPort}`, `Prestarting Chrome on port ${reservedPort}.`);
-      await this._ensurePanelChrome('prestart', { port: reservedPort, lifecycle: 'prestart', emitLifecycleBanner: false });
+      await this._ensurePanelChrome('prestart', { port: reservedPort, lifecycle: 'prestart', emitLifecycleBanner: false, startScreencast: false });
       this._traceBrowser('_prestartAsync:chrome-ready', { reservedPort });
     }
     const chromeReady = !!this._chromePort;
@@ -3073,7 +3191,7 @@ class SessionManager {
     this._renderer.banner('Waiting for headless Chrome\u2026');
     await this._ensurePanelChrome('_ensureChromeIfNeeded', {
       lifecycle: this._chromePort ? 'reuse' : 'worker',
-      startScreencast: true,
+      startScreencast: false,
     });
 
     // Always ensure the port is on the manifest for buildClaudeArgs to use
@@ -3449,6 +3567,7 @@ class SessionManager {
     this.abort();
     this._stopAgentDelegateMcp();
     this._closePanelScopedAppServerConnections().catch(() => {});
+    this._stopChromeScreencast('dispose');
     try { require('./chrome-manager').releaseChromeReservation(this._panelId); } catch {}
     this._prestartDone = false;
     // Close any persistent interactive Claude sessions

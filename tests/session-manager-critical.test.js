@@ -405,6 +405,57 @@ test('_handleMcpToolCompletion supports Claude-style tool_result image blocks', 
   }
 });
 
+test('_handleMcpToolCompletion posts Codex CLI screenshot files when output has no image block', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qapanda-codex-file-shot-'));
+  const screenshotPath = path.join(tempDir, 'codex-shot.png');
+  const transcriptFile = path.join(tempDir, 'transcript.jsonl');
+  const chatLogFile = path.join(tempDir, 'chat.jsonl');
+  fs.writeFileSync(screenshotPath, Buffer.from('file-shot'));
+
+  const { session, posted, cleanup } = buildSession({
+    manifest: {
+      runId: 'codex-file-shot-run',
+      repoRoot: tempDir,
+      status: 'running',
+      controllerSystemPrompt: 'prompt',
+      controller: { model: null, config: [], sessionId: 'controller-session-1' },
+      worker: { model: null, cli: 'codex' },
+      files: {
+        progress: path.join(tempDir, 'progress.md'),
+        transcript: transcriptFile,
+        chatLog: chatLogFile,
+      },
+      requests: [{ id: 'req-1', loops: [{ index: 1 }] }],
+    },
+  });
+
+  try {
+    session._chatTarget = 'agent-QA-Browser';
+    await session._handleMcpToolCompletion({
+      serverName: 'chrome_devtools',
+      toolName: 'take_screenshot',
+      input: { filePath: screenshotPath, fullPage: true },
+      output: {
+        content: [
+          { type: 'text', text: `Took a screenshot of the full current page.\nSaved screenshot to ${screenshotPath}` },
+        ],
+      },
+    });
+
+    const postedMessage = posted.find((msg) => msg.type === 'chatScreenshot');
+    assert.ok(postedMessage, 'expected file-backed screenshot to be posted to the webview');
+    assert.equal(postedMessage.alt, 'Tool screenshot');
+    assert.equal(postedMessage.data, `data:image/png;base64,${Buffer.from('file-shot').toString('base64')}`);
+
+    const chatLogText = fs.readFileSync(chatLogFile, 'utf8');
+    assert.match(chatLogText, /"alt":"Tool screenshot"/);
+    assert.match(chatLogText, /data:image\/png;base64/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 test('_handleMcpToolCompletion does not emit screenshots for non-image tool output', async () => {
   const { session, posted, cleanup } = buildSession();
 
