@@ -162,7 +162,37 @@ describe('summarizeCodexEvent', () => {
     assert.ok(summary.text.includes('cc-tasks'));
   });
 
+  it('parses context compaction start and finish events', () => {
+    const started = summarizeCodexEvent({ type: 'item.started', item: { type: 'context_compaction' } });
+    assert.equal(started.kind, 'compaction');
+    assert.equal(started.active, true);
+    assert.equal(started.text, 'Compacting chat context...');
+
+    const completed = summarizeCodexEvent({ type: 'item.completed', item: { type: 'context_compaction' } });
+    assert.equal(completed.kind, 'compaction');
+    assert.equal(completed.active, false);
+    assert.equal(completed.text, 'Finished compacting chat context.');
+
+    const threadCompacted = summarizeCodexEvent({ type: 'thread.compacted' });
+    assert.equal(threadCompacted.kind, 'compaction');
+    assert.equal(threadCompacted.active, false);
+  });
+
   it('returns null for unknown event types', () => {
     assert.equal(summarizeCodexEvent({ type: 'totally_unknown' }), null);
+  });
+});
+
+describe('summarizeCodexWorkerEvent', () => {
+  it('parses context compaction worker events', () => {
+    const started = summarizeCodexWorkerEvent({ type: 'item.started', item: { type: 'context_compaction' } });
+    assert.equal(started.kind, 'compaction');
+    assert.equal(started.active, true);
+    assert.equal(started.text, 'Compacting chat context...');
+
+    const completed = summarizeCodexWorkerEvent({ type: 'codex.event.context_compacted' });
+    assert.equal(completed.kind, 'compaction');
+    assert.equal(completed.active, false);
+    assert.equal(completed.text, 'Finished compacting chat context.');
   });
 });

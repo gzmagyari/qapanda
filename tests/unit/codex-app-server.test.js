@@ -93,4 +93,23 @@ describe('CodexAppServerConnection.startTurn', () => {
     assert.equal(capturedParams.approvalPolicy, 'never');
     assert.ok(!Object.prototype.hasOwnProperty.call(capturedParams, 'sandbox'));
   });
+
+  it('sends thread/compact/start for manual compaction', async () => {
+    const conn = new CodexAppServerConnection({ bin: 'codex', cwd: '/test/repo' });
+    conn._threadId = 'thread-compact-1';
+
+    let capturedMethod = null;
+    let capturedParams = null;
+    conn.sendRequest = async (method, params) => {
+      capturedMethod = method;
+      capturedParams = params;
+      return { ok: true };
+    };
+
+    const result = await conn.compactThread();
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(capturedMethod, 'thread/compact/start');
+    assert.deepEqual(capturedParams, { threadId: 'thread-compact-1' });
+  });
 });

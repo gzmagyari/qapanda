@@ -44,6 +44,7 @@ async function materializeClaudeControllerLaunchFiles(manifest, loop) {
 
 function buildClaudeControllerArgs(manifest, loop, options = {}) {
   const mcpConfigPath = options.mcpConfigPath || null;
+  const includeJsonSchema = options.includeJsonSchema !== false;
   const args = [
     '-p',
     '--output-format',
@@ -69,7 +70,9 @@ function buildClaudeControllerArgs(manifest, loop, options = {}) {
   }
 
   // Enforce structured JSON output — works with both --session-id and --resume in -p mode
-  args.push('--json-schema', JSON.stringify(controllerDecisionSchema));
+  if (includeJsonSchema) {
+    args.push('--json-schema', JSON.stringify(controllerDecisionSchema));
+  }
 
   // Pass controller MCP servers
   const controllerMcp = manifest.controllerMcpServers || manifest.mcpServers || {};

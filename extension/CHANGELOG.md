@@ -19,6 +19,6 @@ All notable user-facing changes for the VS Code extension are documented here in
 - 🏷️ Renamed user-facing **Tasks** to **Issues** across the UI.
 - 🔢 Added clearer test/issue IDs with short numeric badges plus raw IDs across cards, tabs, reports, and detail views.
 - ✂️ Added proper copy buttons across chat messages, cards, overlays, tests, issues, and QA reports.
-- 🧠 Added automatic context compaction plus manual `/compact` for long API sessions.
+- 🧠 Added automatic context compaction plus manual `/compact` for long sessions.
 - 🪶 Tightened compaction so older history is summarized, older images are dropped, and only the latest image context is preserved.
 - 🐼 Added the animated panda beside the chat input.

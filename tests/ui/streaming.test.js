@@ -28,6 +28,19 @@ describe('Streaming and running state', () => {
     assert.ok(!textarea.disabled, 'textarea should be enabled when not running');
   });
 
+  it('running compaction state shows the compaction loader text', () => {
+    wv.postMessage({
+      type: 'running',
+      value: true,
+      showStop: false,
+      statusKind: 'compaction',
+      statusText: 'Compacting chat context...',
+    });
+    const thinking = wv.document.querySelector('.thinking-standalone');
+    assert.ok(thinking, 'thinking indicator should render');
+    assert.match(thinking.textContent, /Compacting chat context/);
+  });
+
   it('toolCall renders tool description', () => {
     wv.postMessage({ type: 'toolCall', label: 'Developer', text: 'Running command: ls -la' });
     const msgs = wv.document.getElementById('messages');

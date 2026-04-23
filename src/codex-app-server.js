@@ -110,7 +110,10 @@ class CodexAppServerConnection {
   _dispatch(msg) {
     // Response to a request (has id)
     if (msg.id != null && this._pendingRequests.has(msg.id)) {
-      _wizardDbg('codex-appserver', `dispatch:response id=${msg.id} hasError=${!!msg.error}`, {
+      const errorMessage = msg && msg.error
+        ? (msg.error.message || JSON.stringify(msg.error))
+        : null;
+      _wizardDbg('codex-appserver', `dispatch:response id=${msg.id} hasError=${!!msg.error}${errorMessage ? ` error=${errorMessage}` : ''}`, {
         repoRoot: this._cwd,
       });
       const pending = this._pendingRequests.get(msg.id);
@@ -245,6 +248,24 @@ class CodexAppServerConnection {
       repoRoot: this._cwd,
     });
     return this._turnId;
+  }
+
+  /**
+   * Trigger manual context compaction for a thread.
+   */
+  async compactThread(threadId = null) {
+    const targetThreadId = threadId || this._threadId;
+    if (!targetThreadId) throw new Error('No active thread');
+    _wizardDbg('codex-appserver', `thread:compact:start threadId=${targetThreadId}`, {
+      repoRoot: this._cwd,
+    });
+    const result = await this.sendRequest('thread/compact/start', {
+      threadId: targetThreadId,
+    });
+    _wizardDbg('codex-appserver', `thread:compact:requested threadId=${targetThreadId}`, {
+      repoRoot: this._cwd,
+    });
+    return result;
   }
 
   /**

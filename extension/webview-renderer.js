@@ -214,6 +214,17 @@ class WebviewRenderer {
     }
     const summary = summarizeCodexEvent(raw);
     if (!summary || this.quiet) return;
+    if (summary.kind === 'compaction') {
+      if (typeof this.handleCompactionActivity === 'function') {
+        Promise.resolve(this.handleCompactionActivity({
+          active: summary.active !== false,
+          key: 'codex-controller',
+          source: 'controller',
+          statusText: summary.text || 'Compacting chat context...',
+        })).catch(() => {});
+      }
+      return;
+    }
     if (summary.kind === 'reasoning') {
       this.streamMarkdown(this.controllerLabel, summary.text);
       this.flushStream();

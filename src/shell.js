@@ -51,7 +51,7 @@ const {
   resolveResumeToken,
 } = require('./named-workspaces');
 const { listApiProviders, loadProviderSettings, isKnownApiProvider } = require('./api-provider-registry');
-const { compactApiSessionHistory, currentApiSessionTarget, describeCompactionResult } = require('./api-compaction');
+const { compactCurrentSession, resolveCurrentCompactionTarget } = require('./session-compaction');
 
 const ERROR_RETRY_DELAY_MS = 30 * 60_000;
 
@@ -93,7 +93,7 @@ Commands:
   /workflow [name]     List or run a workflow
   /detach              Detach from the current run
   /clear               Clear chat, detach, start fresh
-  /compact             Compact the current API session now
+  /compact             Compact the current session now
   /quit                Exit the shell
 
 Config:
@@ -596,38 +596,33 @@ async function runInteractiveShell(options = {}) {
             renderer.banner('No run is attached.');
             continue;
           }
-          const targetInfo = directAgent
-            ? currentApiSessionTarget({
-                manifest: activeManifest,
-                target: directAgent === 'default' ? 'worker-default' : 'worker-agent',
-                directAgent: directAgent === 'default' ? null : directAgent,
-                workerCli,
-              })
-            : currentApiSessionTarget({
-                manifest: activeManifest,
-                target: 'controller',
-                controllerCli,
-                workerCli,
-              });
-          if (!targetInfo) {
-            renderer.banner('The current target is not using API mode.');
-            continue;
-          }
-          const { requestId, loopIndex } = latestRequestMeta(activeManifest);
-          renderer.banner(`Compacting ${directAgent ? 'current agent session' : 'controller session'}...`);
-          const result = await compactApiSessionHistory({
+          const chatTarget = directAgent
+            ? (directAgent === 'default' ? 'claude' : `agent-${directAgent}`)
+            : 'controller';
+          const targetInfo = resolveCurrentCompactionTarget({
             manifest: activeManifest,
-            sessionKey: targetInfo.sessionKey,
-            backend: targetInfo.backend,
-            requestId,
-            loopIndex,
-            provider: targetInfo.provider,
-            baseURL: targetInfo.baseURL,
-            model: targetInfo.model,
-            thinking: targetInfo.thinking,
-            force: true,
+            chatTarget,
+            controllerCli,
+            workerCli,
           });
-          renderer.banner(describeCompactionResult(result, directAgent ? 'Current agent session' : 'Controller session'));
+          const { requestId, loopIndex } = latestRequestMeta(activeManifest);
+          if (targetInfo && !['unsupported-codex-exec', 'unsupported'].includes(targetInfo.kind)) {
+            renderer.banner(`Compacting ${directAgent ? 'current agent session' : 'controller session'}...`);
+          }
+          try {
+            const result = await compactCurrentSession({
+              manifest: activeManifest,
+              chatTarget,
+              controllerCli,
+              workerCli,
+              requestId,
+              loopIndex,
+            });
+            await saveManifest(activeManifest);
+            renderer.banner((result && result.message) || 'Compaction finished.');
+          } catch (error) {
+            renderer.banner(`Compaction failed: ${error && error.message ? error.message : String(error)}`);
+          }
           continue;
         }
 

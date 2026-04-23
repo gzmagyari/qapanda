@@ -688,7 +688,18 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
     // Render using worker-specific summarizer
     const summary = summarizeCodexWorkerEvent(mapped);
     if (summary && !manifest.settings.quiet) {
-      if (summary.kind === 'reasoning') {
+      if (summary.kind === 'compaction') {
+        if (typeof renderer.handleCompactionActivity === 'function') {
+          Promise.resolve(renderer.handleCompactionActivity({
+            active: summary.active !== false,
+            key: `codex-worker:${agentId || 'default'}`,
+            source: 'worker',
+            statusText: summary.text || 'Compacting chat context...',
+          })).catch(() => {});
+        } else {
+          renderer.claude(summary.text);
+        }
+      } else if (summary.kind === 'reasoning') {
         renderer.streamMarkdown(workerLabel, summary.text);
         renderer.flushStream();
       } else {

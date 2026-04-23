@@ -12,7 +12,7 @@ const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
-const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
+const sessionCompactionPath = path.join(extDir, 'src', 'session-compaction.js');
 const appServerPath = path.join(extDir, 'src', 'codex-app-server.js');
 const namedWorkspacesPath = path.join(extDir, 'src', 'named-workspaces.js');
 const chromePath = path.join(extDir, 'chrome-manager.js');
@@ -36,7 +36,7 @@ function stubRenderer() {
 const origState = require(statePath);
 const origOrch = require(orchPath);
 const origPrompts = require(promptsPath);
-const origCompaction = require(compactionPath);
+const origSessionCompaction = require(sessionCompactionPath);
 const origAppServer = require(appServerPath);
 const origChrome = require(chromePath);
 
@@ -201,7 +201,12 @@ function buildSession({ config = {}, runExists = true, manifest = null, chrome =
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: origOrch };
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
-    require.cache[compactionPath] = { id: compactionPath, filename: compactionPath, loaded: true, exports: origCompaction };
+    require.cache[sessionCompactionPath] = {
+      id: sessionCompactionPath,
+      filename: sessionCompactionPath,
+      loaded: true,
+      exports: origSessionCompaction,
+    };
     require.cache[appServerPath] = { id: appServerPath, filename: appServerPath, loaded: true, exports: origAppServer };
     require.cache[chromePath] = { id: chromePath, filename: chromePath, loaded: true, exports: origChrome };
   };
@@ -1043,17 +1048,16 @@ test('prestart on an unattached panel does not reserve or start Chrome just beca
 
 test('/compact compacts the current API agent session locally', async () => {
   let captured = null;
-  require.cache[compactionPath] = {
-    id: compactionPath,
-    filename: compactionPath,
+  require.cache[sessionCompactionPath] = {
+    id: sessionCompactionPath,
+    filename: sessionCompactionPath,
     loaded: true,
     exports: {
-      ...origCompaction,
-      compactApiSessionHistory: async (opts) => {
+      ...origSessionCompaction,
+      compactCurrentSession: async (opts) => {
         captured = opts;
-        return { performed: true, replayMessageCountBefore: 520, replayMessageCountAfter: 80 };
+        return { performed: true, message: 'Current agent session compacted successfully.' };
       },
-      describeCompactionResult: () => 'Current agent session compacted successfully.',
     },
   };
 
@@ -1077,11 +1081,17 @@ test('/compact compacts the current API agent session locally', async () => {
     await session.reattachRun('existing-run-42');
     await session.handleMessage({ type: 'userInput', text: '/compact' });
     assert.ok(captured, 'should invoke local compaction');
-    assert.equal(captured.sessionKey, 'worker:agent:QA-Browser');
-    assert.equal(captured.backend, 'worker:api');
-    assert.equal(captured.force, true);
+    assert.equal(captured.chatTarget, 'agent-QA-Browser');
+    assert.equal(captured.workerCli, 'api');
+    assert.equal(captured.manifest.runId, 'existing-run-42');
     assert.ok(
-      posted.some((msg) => msg.type === 'running' && msg.value === true && msg.showStop === false),
+      posted.some((msg) =>
+        msg.type === 'running' &&
+        msg.value === true &&
+        msg.showStop === false &&
+        msg.statusKind === 'compaction' &&
+        msg.statusText === 'Compacting chat context...'
+      ),
       'should show an in-progress indicator immediately'
     );
     assert.ok(
@@ -1093,17 +1103,20 @@ test('/compact compacts the current API agent session locally', async () => {
   }
 });
 
-test('/compact no-ops with a banner when current target is not API', async () => {
+test('/compact reports an explicit unsupported banner for plain Codex exec targets', async () => {
   let called = false;
-  require.cache[compactionPath] = {
-    id: compactionPath,
-    filename: compactionPath,
+  require.cache[sessionCompactionPath] = {
+    id: sessionCompactionPath,
+    filename: sessionCompactionPath,
     loaded: true,
     exports: {
-      ...origCompaction,
-      compactApiSessionHistory: async () => {
+      ...origSessionCompaction,
+      compactCurrentSession: async () => {
         called = true;
-        return { performed: true };
+        return {
+          performed: false,
+          message: 'Manual compact is not supported by the current Codex exec backend. Use Codex app-server or wait for auto-compaction.',
+        };
       },
     },
   };
@@ -1117,7 +1130,42 @@ test('/compact no-ops with a banner when current target is not API', async () =>
   try {
     await session.reattachRun('existing-run-42');
     await session.handleMessage({ type: 'userInput', text: '/compact' });
-    assert.equal(called, false, 'should not compact non-API targets');
+    assert.equal(called, true, 'should route through the shared compaction dispatcher');
+    const bannerCall = session._renderer.__calls.find((call) =>
+      call.method === 'banner' && /not supported by the current Codex exec backend/i.test(call.args[0])
+    );
+    assert.ok(bannerCall, 'should show an explicit unsupported-backend banner');
+  } finally {
+    cleanup();
+  }
+});
+
+test('/compact surfaces a failure banner when compaction throws', async () => {
+  require.cache[sessionCompactionPath] = {
+    id: sessionCompactionPath,
+    filename: sessionCompactionPath,
+    loaded: true,
+    exports: {
+      ...origSessionCompaction,
+      compactCurrentSession: async () => {
+        throw new Error('thread not found');
+      },
+    },
+  };
+
+  const manifest = {
+    runId: 'existing-run-42',
+    controller: { cli: 'codex', model: null, config: [] },
+    worker: { cli: 'codex', model: null },
+  };
+  const { session, cleanup } = buildSession({ runExists: true, manifest });
+  try {
+    await session.reattachRun('existing-run-42');
+    await session.handleMessage({ type: 'userInput', text: '/compact' });
+    const bannerCall = session._renderer.__calls.find((call) =>
+      call.method === 'banner' && /Compaction failed: thread not found/i.test(call.args[0])
+    );
+    assert.ok(bannerCall, 'should show a failure banner when compaction throws');
   } finally {
     cleanup();
   }

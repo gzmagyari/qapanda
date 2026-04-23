@@ -5035,11 +5035,12 @@
   let thinkingTick = 0;
   let thinkingMsgIndex = 0;
   let thinkingDots = 0;
+  let thinkingStatusText = '';
   let pandaMascotEl = null;
   let pandaIdleTicks = 0;
   let lastRunOutcome = null;
 
-  function showThinking() {
+  function showThinking(options = {}) {
     hideThinking();
     thinkingEl = document.createElement('div');
     thinkingEl.className = 'thinking-standalone';
@@ -5054,6 +5055,7 @@
     pandaIdleTicks = 0;
     thinkingMsgIndex = Math.floor(Math.random() * pandaMessages.length);
     thinkingDots = 0;
+    thinkingStatusText = typeof options.statusText === 'string' ? options.statusText.trim() : '';
     updateThinkingText(content);
     thinkingInterval = setInterval(() => updateThinkingText(content), 200);
     autoScroll();
@@ -5062,6 +5064,13 @@
   function updateThinkingText(el) {
     const spinner = spinnerChars[thinkingTick % spinnerChars.length];
     const dots = '.'.repeat((thinkingDots % 3) + 1);
+    if (thinkingStatusText) {
+      el.textContent = spinner + ' ' + thinkingStatusText + dots;
+      thinkingTick++;
+      thinkingDots++;
+      pandaIdleTicks++;
+      return;
+    }
     const msg = pandaMessages[thinkingMsgIndex % pandaMessages.length];
     el.textContent = spinner + ' ' + msg + dots;
     thinkingTick++;
@@ -5082,6 +5091,7 @@
       clearInterval(thinkingInterval);
       thinkingInterval = null;
     }
+    thinkingStatusText = '';
     if (thinkingEl && thinkingEl.parentNode) {
       thinkingEl.parentNode.removeChild(thinkingEl);
     }
@@ -6997,7 +7007,7 @@
         if (btnOrchestrate) btnOrchestrate.style.display = 'none';
         btnStop.style.display = msg.showStop === false ? 'none' : 'inline-block';
         textarea.disabled = true;
-        showThinking();
+        showThinking({ statusText: msg.statusText || '' });
       } else {
         isRunning = false;
         hideThinking();
@@ -7850,7 +7860,7 @@
     { cmd: '/list', desc: 'List saved runs' },
     { cmd: '/logs', desc: 'Show recent events' },
     { cmd: '/clear', desc: 'Clear chat and start fresh' },
-    { cmd: '/compact', desc: 'Compact the current API session' },
+    { cmd: '/compact', desc: 'Compact the current session' },
     { cmd: '/detach', desc: 'Detach from current run' },
     { cmd: '/controller-model', desc: 'Set Codex model' },
     { cmd: '/worker-model', desc: 'Set Claude model' },

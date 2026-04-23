@@ -18,7 +18,7 @@ const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');
 const promptsPath = path.join(extDir, 'src', 'prompts.js');
-const compactionPath = path.join(extDir, 'src', 'api-compaction.js');
+const sessionCompactionPath = path.join(extDir, 'src', 'session-compaction.js');
 const chromePath = path.join(extDir, 'chrome-manager.js');
 
 const origState = require(statePath);
@@ -139,7 +139,7 @@ function buildSession({ manifest = null, runManagerLoopImpl = null, chrome = {} 
     require.cache[statePath] = { id: statePath, filename: statePath, loaded: true, exports: origState };
     delete require.cache[orchPath];
     require.cache[promptsPath] = { id: promptsPath, filename: promptsPath, loaded: true, exports: origPrompts };
-    delete require.cache[compactionPath];
+    delete require.cache[sessionCompactionPath];
     require.cache[chromePath] = { id: chromePath, filename: chromePath, loaded: true, exports: origChrome };
   };
 

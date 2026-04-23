@@ -61,7 +61,7 @@ Latest updates. See the full history in [CHANGELOG.md](./CHANGELOG.md).
 - 🧪 Added live QA progress cards plus cleaner final test summaries.
 - 📋 Added a unified **QA Report** with `This Run` / `This Session`, clickable details, copy actions, and **Export PDF**.
 - 🏷️ Renamed user-facing **Tasks** to **Issues** and improved test/issue ID visibility across the UI.
-- 🧠 Added automatic context compaction plus manual `/compact` for long API sessions.
+- 🧠 Added automatic context compaction plus manual `/compact` for long sessions.
 - 🐼 Added the animated panda beside the chat input.
 
 ### Why QA Panda?

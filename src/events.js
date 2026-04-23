@@ -74,6 +74,15 @@ function summarizeCodexEvent(raw) {
     const started = raw.type === 'item.started';
     const prefix = started ? '' : 'Finished: ';
 
+    if (item.type === 'context_compaction') {
+      return {
+        source: 'controller',
+        kind: 'compaction',
+        active: started,
+        text: started ? 'Compacting chat context...' : 'Finished compacting chat context.',
+      };
+    }
+
     if (item.type === 'command_execution' && item.command) {
       return {
         source: 'controller',
@@ -135,6 +144,15 @@ function summarizeCodexEvent(raw) {
     }
   }
 
+  if (raw.type === 'thread.compacted' || raw.type === 'codex.event.context_compacted') {
+    return {
+      source: 'controller',
+      kind: 'compaction',
+      active: false,
+      text: 'Finished compacting chat context.',
+    };
+  }
+
   return null;
 }
 
@@ -161,6 +179,14 @@ function summarizeCodexWorkerEvent(raw) {
     const item = raw.item || {};
     const started = raw.type === 'item.started';
 
+    if (item.type === 'context_compaction') {
+      return {
+        kind: 'compaction',
+        active: started,
+        text: started ? 'Compacting chat context...' : 'Finished compacting chat context.',
+      };
+    }
+
     if (item.type === 'command_execution' && item.command) {
       return { kind: 'status', text: started ? `Running: ${item.command}` : `Done: ${item.command}` };
     }
@@ -184,6 +210,14 @@ function summarizeCodexWorkerEvent(raw) {
     if (item.type === 'agent_message' && item.text) {
       return { kind: 'agent-message', text: item.text };
     }
+  }
+
+  if (raw.type === 'thread.compacted' || raw.type === 'codex.event.context_compacted') {
+    return {
+      kind: 'compaction',
+      active: false,
+      text: 'Finished compacting chat context.',
+    };
   }
 
   return null;

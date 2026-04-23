@@ -112,6 +112,8 @@ class SessionManager {
     this._running = false;
     this._activityCounts = { foreground: 0, utility: 0 };
     this._runningUiState = { value: false, showStop: false };
+    this._compactionStates = new Map();
+    this._nextCompactionToken = 1;
     this._executingAgentStack = [];
     this._postMessage = options.postMessage || (() => {});
     this._waitTimer = null;
@@ -174,6 +176,9 @@ class SessionManager {
       this._renderer.handleChromeDevtoolsDetected = async () => {
         if (!this._chromePort) return;
         await this._requestChromeScreencast('chrome-devtools-detected');
+      };
+      this._renderer.handleCompactionActivity = async (payload) => {
+        this._handleCompactionActivity(payload);
       };
     }
     this._agentDelegateMcpServer = null;
@@ -242,11 +247,19 @@ class SessionManager {
   }
 
   _computeRunningUiState() {
+    const compaction = this._currentCompactionState();
     if ((this._activityCounts.foreground || 0) > 0) {
-      return { value: true, showStop: true };
+      return compaction
+        ? { value: true, showStop: true, statusKind: 'compaction', statusText: compaction.statusText || 'Compacting chat context...' }
+        : { value: true, showStop: true };
     }
     if ((this._activityCounts.utility || 0) > 0) {
-      return { value: true, showStop: false };
+      return compaction
+        ? { value: true, showStop: false, statusKind: 'compaction', statusText: compaction.statusText || 'Compacting chat context...' }
+        : { value: true, showStop: false };
+    }
+    if (compaction) {
+      return { value: true, showStop: false, statusKind: 'compaction', statusText: compaction.statusText || 'Compacting chat context...' };
     }
     return { value: false, showStop: false };
   }
@@ -256,11 +269,16 @@ class SessionManager {
     this._running = next.value;
     if (!force &&
         this._runningUiState.value === next.value &&
-        this._runningUiState.showStop === next.showStop) {
+        this._runningUiState.showStop === next.showStop &&
+        this._runningUiState.statusKind === next.statusKind &&
+        this._runningUiState.statusText === next.statusText) {
       return;
     }
     this._runningUiState = next;
-    this._postMessage({ type: 'running', value: next.value, showStop: next.showStop });
+    const message = { type: 'running', value: next.value, showStop: next.showStop };
+    if (next.statusKind) message.statusKind = next.statusKind;
+    if (next.statusText) message.statusText = next.statusText;
+    this._postMessage(message);
   }
 
   _beginActivity(kind = 'foreground') {
@@ -272,8 +290,60 @@ class SessionManager {
       if (ended) return;
       ended = true;
       this._activityCounts[key] = Math.max(0, (this._activityCounts[key] || 0) - 1);
+      if (key === 'foreground' && this._activityCounts[key] === 0) {
+        this._clearCompactionStatesByKind('live');
+      }
+      if (key === 'utility' && this._activityCounts[key] === 0) {
+        this._clearCompactionStatesByKind('manual');
+      }
       this._syncRunningState();
     };
+  }
+
+  _currentCompactionState() {
+    const iterator = this._compactionStates.values();
+    const first = iterator.next();
+    return first && !first.done ? first.value : null;
+  }
+
+  _setCompactionState(key, state) {
+    if (!key) return;
+    if (state) this._compactionStates.set(String(key), state);
+    else this._compactionStates.delete(String(key));
+    this._syncRunningState();
+  }
+
+  _clearCompactionStatesByKind(kind) {
+    for (const [key, value] of this._compactionStates.entries()) {
+      if (!value || value.kind !== kind) continue;
+      this._compactionStates.delete(key);
+    }
+  }
+
+  _beginCompactionState(kind = 'live', options = {}) {
+    const token = options.key || `${kind}:${this._nextCompactionToken++}`;
+    this._setCompactionState(token, {
+      kind,
+      statusText: options.statusText || 'Compacting chat context...',
+    });
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this._setCompactionState(token, null);
+    };
+  }
+
+  _handleCompactionActivity(payload = {}) {
+    const key = payload.key || `compaction:${payload.source || 'unknown'}`;
+    if (payload.active === false) {
+      this._setCompactionState(key, null);
+      return;
+    }
+    this._setCompactionState(key, {
+      kind: 'live',
+      statusText: payload.statusText || 'Compacting chat context...',
+    });
   }
 
   _pushExecutingAgent(agentId) {
@@ -2123,62 +2193,51 @@ class SessionManager {
       return;
     }
     this._syncActiveManifestApiConfig();
-
-    const {
-      compactApiSessionHistory,
-      currentApiSessionTarget,
-      describeCompactionResult,
-    } = require('./src/api-compaction');
-
-    let targetInfo = null;
-    if (!this._chatTarget || this._chatTarget === 'controller') {
-      targetInfo = currentApiSessionTarget({
-        manifest: this._activeManifest,
-        target: 'controller',
-        controllerCli: this._controllerCli,
-        workerCli: this._workerCli,
-      });
-    } else if (this._chatTarget === 'claude') {
-      targetInfo = currentApiSessionTarget({
-        manifest: this._activeManifest,
-        target: 'worker-default',
-        workerCli: this._workerCli,
-      });
-    } else if (this._chatTarget.startsWith('agent-')) {
-      targetInfo = currentApiSessionTarget({
-        manifest: this._activeManifest,
-        target: 'worker-agent',
-        directAgent: this._chatTarget.slice('agent-'.length),
-        workerCli: this._workerCli,
-      });
-    }
-
-    if (!targetInfo) {
-      this._renderer.banner('The current target is not using API mode.');
-      return;
-    }
+    const { compactCurrentSession } = require('./src/session-compaction');
 
     const { requestId, loopIndex } = this._latestRequestMeta();
-    const label = !this._chatTarget || this._chatTarget === 'controller'
-      ? 'Controller session'
-      : 'Current agent session';
     const endActivity = this._beginActivity('utility');
+    const endCompaction = this._beginCompactionState('manual', {
+      key: 'manual:/compact',
+      statusText: 'Compacting chat context...',
+    });
     try {
-      const result = await compactApiSessionHistory({
-        manifest: this._activeManifest,
-        sessionKey: targetInfo.sessionKey,
-        backend: targetInfo.backend,
+      appendWizardDebug('session-compaction', '_compactCurrentSession:start', {
+        repoRoot: this._repoRoot,
+        runId: this._activeManifest.runId,
+        chatTarget: this._chatTarget,
         requestId,
         loopIndex,
-        provider: targetInfo.provider,
-        baseURL: targetInfo.baseURL,
-        model: targetInfo.model,
-        thinking: targetInfo.thinking,
-        force: true,
+      });
+      const result = await compactCurrentSession({
+        manifest: this._activeManifest,
+        chatTarget: this._chatTarget,
+        controllerCli: this._controllerCli,
+        workerCli: this._workerCli,
+        requestId,
+        loopIndex,
         renderer: this._renderer,
       });
-      this._renderer.banner(describeCompactionResult(result, label));
+      await saveManifest(this._activeManifest);
+      this._renderer.banner((result && result.message) || 'Compaction finished.');
+      appendWizardDebug('session-compaction', '_compactCurrentSession:done', {
+        repoRoot: this._repoRoot,
+        runId: this._activeManifest.runId,
+        chatTarget: this._chatTarget,
+        performed: !!(result && result.performed),
+        message: result && result.message || null,
+      });
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      appendWizardDebug('session-compaction', '_compactCurrentSession:failed', {
+        repoRoot: this._repoRoot,
+        runId: this._activeManifest.runId,
+        chatTarget: this._chatTarget,
+        message,
+      });
+      this._renderer.banner(`Compaction failed: ${message}`);
     } finally {
+      endCompaction();
       endActivity();
     }
   }
@@ -2259,7 +2318,7 @@ class SessionManager {
         '  /list                          List saved runs\n' +
         '  /logs [n]                      Show the last n event lines\n' +
         '  /clear                         Clear chat and start fresh\n' +
-        '  /compact                       Compact the current API session now\n' +
+        '  /compact                       Compact the current session now\n' +
         '  /detach                        Detach from the current run\n' +
         '  /controller-model [name]       Set/show Codex model\n' +
         '  /worker-model [name]           Set/show Claude model\n' +
