@@ -63,6 +63,7 @@ const {
   CLOUD_RUN_ARG_SPEC,
   buildDirectCloudRunPrompt,
   buildCloudRunOptions,
+  buildLiveUserMessage,
   createCloudRunEventBridge,
   detectCloudRunExecutionIssue,
   emitCloudRunRawEvent,
@@ -901,6 +902,13 @@ async function runPreparedHostedWorkflowCloudRun(spec, options) {
 
   try {
     await saveManifest(manifest);
+    emitCloudRunRawEvent({
+      type: 'session.note',
+      phase: 'planning',
+      message: 'Run instructions received.',
+      _streamDetail: true,
+      liveItem: buildLiveUserMessage('Run instructions', String(redactValue(workflowContext.launchInstruction) || workflowContext.launchInstruction)),
+    });
     await runManagerLoop(manifest, renderer, { userMessage: workflowContext.launchInstruction, onEvent: bridge });
   } catch (error) {
     if (error instanceof Error) {
@@ -924,14 +932,24 @@ async function runCloudRunCommand(argv) {
   }
   const { spec } = loadCloudRunSpec(parsed.options.specPath);
   const options = buildCloudRunOptions(spec, parsed.options);
+  const userPrompt = spec.workflowDefinition ? null : buildDirectCloudRunPrompt(spec);
   emitCloudRunRawEvent({ type: 'session.started', mode: 'cloud-run', targetUrl: spec.targetUrl || undefined });
+  if (userPrompt) {
+    emitCloudRunRawEvent({
+      type: 'session.note',
+      phase: 'planning',
+      message: 'Run instructions received.',
+      _streamDetail: true,
+      liveItem: buildLiveUserMessage('Run instructions', userPrompt),
+    });
+  }
   if (spec.targetUrl) {
     emitCloudRunRawEvent({ type: 'browser.navigation', url: spec.targetUrl });
   }
   try {
     const manifest = spec.workflowDefinition
       ? await runPreparedHostedWorkflowCloudRun(spec, options)
-      : await runPreparedOneShot(buildDirectCloudRunPrompt(spec), options, {
+      : await runPreparedOneShot(userPrompt, options, {
           preloadCloud: false,
           onEvent: createCloudRunEventBridge(spec),
           printSummary: false,

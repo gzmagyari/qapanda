@@ -1082,6 +1082,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         text: workerResult.resultText,
       },
       renderer,
+      options.onEvent,
     );
 
     request.status = 'stopped';

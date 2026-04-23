@@ -577,8 +577,39 @@ test('createCloudRunEventBridge redacts hosted workflow secrets in raw worker re
 
   const event = parseCliRawEventLine(rawEvents[0]);
   assert.equal(event.type, 'session.note');
+  assert.equal(event._streamDetail, true);
+  assert.equal(event.liveItem.kind, 'assistant_message');
   assert.match(event.message, /\[REDACTED_WORKFLOW_SECRET:login_password\]/);
   assert.doesNotMatch(event.message, /super-secret-password/);
+});
+
+test('createCloudRunEventBridge treats worker result as the final transcript item and hides turn-complete noise', async () => {
+  const rawEvents = [];
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk, encoding, callback) => {
+    rawEvents.push(String(chunk));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+
+  try {
+    const bridge = createCloudRunEventBridge({ title: 'Login2' });
+    await bridge({ source: 'worker-api', type: 'complete', iterations: 10 });
+    await bridge({
+      source: 'worker-result',
+      exitCode: 0,
+      text: '## Test Execution Report\n\nThe login page is blocked by a Cloudflare 521 error.',
+    });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  assert.equal(rawEvents.length, 1);
+  const event = parseCliRawEventLine(rawEvents[0]);
+  assert.equal(event.type, 'session.note');
+  assert.equal(event.phase, 'results');
+  assert.equal(event.liveItem.kind, 'assistant_message');
+  assert.match(event.liveItem.text, /Test Execution Report/);
 });
 
 test('createCloudRunEventBridge promotes controller guidance and progress into customer-facing raw events', async () => {
@@ -756,6 +787,7 @@ test('main dispatches cloud-run spec into the one-shot pipeline', async () => {
     assert.deepEqual(calls.summary, []);
     const rawLines = calls.rawEvents.join('').split(/\r?\n/).filter(Boolean).map((line) => parseCliRawEventLine(line));
     assert.ok(rawLines.some((event) => event && event.type === 'session.started'));
+    assert.ok(rawLines.some((event) => event && event.type === 'session.note' && event.liveItem && event.liveItem.kind === 'user_message' && /Check the login form\./.test(event.liveItem.text)));
     assert.ok(rawLines.some((event) => event && event.type === 'browser.navigation'));
     assert.ok(rawLines.some((event) => event && event.type === 'artifact.created' && event.filename === 'run-report.json'));
     assert.ok(rawLines.some((event) => event && event.type === 'session.completed'));

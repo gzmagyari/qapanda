@@ -272,6 +272,17 @@ function buildLiveAssistantMessage(actor, label, text) {
   };
 }
 
+function buildLiveUserMessage(label, text) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) return null;
+  return {
+    kind: 'user_message',
+    actor: 'user',
+    label,
+    text: trimmed,
+  };
+}
+
 function buildLiveToolCall(actor, label, toolName, input, options = {}) {
   const normalizedInput = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const summary = formatToolCall(toolName, normalizedInput);
@@ -402,11 +413,7 @@ function detailFromApiEvent(event, spec) {
     };
   }
   if (event.type === 'complete') {
-    return {
-      phase: actor === 'controller' ? 'planning' : 'execution',
-      message: `${label} completed the current turn.`,
-      liveItem: buildLiveSystemNote(actor, label, `${label} completed the current turn.`, event.source),
-    };
+    return null;
   }
   return null;
 }
@@ -632,12 +639,18 @@ function createCloudRunEventBridge(spec, options = {}) {
     }
     if (event.source === 'worker-result') {
       const redactedText = redactValue(event.text);
-      emitCloudRunRawEvent({
-        type: 'session.note',
+      const resultText = typeof redactedText === 'string' && redactedText.trim()
+        ? redactedText.trim()
+        : 'Worker turn completed.';
+      emitCloudRunDetailEvent({
         phase: 'results',
-        message: typeof redactedText === 'string' && redactedText.trim()
-          ? redactedText.trim()
-          : 'Worker turn completed.',
+        message: resultText,
+        liveItem: buildLiveAssistantMessage('worker', spec.title, resultText),
+        source: event.source,
+        parsed: {
+          source: event.source,
+          exitCode: typeof event.exitCode === 'number' ? event.exitCode : null,
+        },
       });
       return;
     }
@@ -916,6 +929,7 @@ module.exports = {
   createCloudRunEventBridge,
   detectCloudRunExecutionIssue,
   extractMeasuredUsageFromTranscriptEntries,
+  buildLiveUserMessage,
   emitCloudRunRawEvent,
   loadCloudRunSpec,
   validateCloudRunSpec,
