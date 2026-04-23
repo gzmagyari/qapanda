@@ -1,6 +1,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildClaudeArgs } = require('../../src/claude');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { buildClaudeArgs, buildClaudeStreamJsonInput } = require('../../src/claude');
 const { buildCodexArgs } = require('../../src/codex');
 const { buildCodexWorkerArgs } = require('../../src/codex-worker');
 
@@ -276,6 +279,44 @@ describe('buildClaudeArgs', () => {
     assert.equal(args[args.indexOf('--append-system-prompt-file') + 1], '/tmp/worker.append-system-prompt.txt');
     assert.ok(!args.includes('--append-system-prompt'), 'runtime file path should replace inline append prompt');
   });
+
+  it('switches Claude to stream-json input when user images are attached', () => {
+    const manifest = baseManifest();
+    const args = buildClaudeArgs(manifest, {
+      userContent: [{
+        type: 'image_asset',
+        filePath: '/tmp/pasted-image.png',
+        mimeType: 'image/png',
+      }],
+    });
+
+    assert.ok(args.includes('--input-format'), 'should include input format override');
+    assert.equal(args[args.indexOf('--input-format') + 1], 'stream-json');
+  });
+
+  it('builds Claude stream-json stdin with text and base64 image blocks', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpanda-claude-images-'));
+    const filePath = path.join(tmpDir, 'clip.png');
+    fs.writeFileSync(filePath, Buffer.from('fake'));
+
+    const stdinText = buildClaudeStreamJsonInput('Inspect this UI', [{
+      type: 'image_asset',
+      filePath,
+      mimeType: 'image/png',
+    }]);
+    const message = JSON.parse(stdinText.trim());
+
+    assert.equal(message.type, 'user');
+    assert.equal(message.message.role, 'user');
+    assert.equal(message.message.content[0].type, 'text');
+    assert.equal(message.message.content[0].text, 'Inspect this UI');
+    assert.equal(message.message.content[1].type, 'image');
+    assert.equal(message.message.content[1].source.type, 'base64');
+    assert.equal(message.message.content[1].source.media_type, 'image/png');
+    assert.equal(message.message.content[1].source.data, Buffer.from('fake').toString('base64'));
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
 
 // ── buildCodexArgs (controller) ──────────────────────────────────
@@ -431,5 +472,22 @@ describe('buildCodexWorkerArgs', () => {
     const cFlags = args.filter((a, i) => i > 0 && args[i - 1] === '-c');
     const hasToolTimeout = cFlags.some((f) => f === 'mcp_servers.cc_agent_delegate.tool_timeout_sec=600');
     assert.ok(hasToolTimeout, 'should raise worker tool timeout for agent delegation MCP');
+  });
+
+  it('passes image attachments to Codex CLI with repeated --image flags', () => {
+    const manifest = baseManifest();
+    const args = buildCodexWorkerArgs(manifest, baseWorkerRecord(), {
+      agentConfig: null,
+      agentSession: null,
+      userContent: [
+        { type: 'image_asset', filePath: '/tmp/one.png', mimeType: 'image/png' },
+        { type: 'image_asset', filePath: '/tmp/two.png', mimeType: 'image/png' },
+      ],
+    });
+
+    const imageFlagIndexes = args
+      .map((value, index) => value === '--image' ? index : -1)
+      .filter((index) => index >= 0);
+    assert.deepEqual(imageFlagIndexes.map((index) => args[index + 1]), ['/tmp/one.png', '/tmp/two.png']);
   });
 });

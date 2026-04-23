@@ -235,9 +235,12 @@ class CodexAppServerConnection {
   async startTurn(inputText, outputSchema, options = {}) {
     if (!this._threadId) throw new Error('No active thread');
     const approvalPolicy = options.approvalPolicy || 'never';
+    const inputItems = Array.isArray(options.inputItems) && options.inputItems.length > 0
+      ? options.inputItems
+      : [{ type: 'text', text: inputText }];
     const params = {
       threadId: this._threadId,
-      input: [{ type: 'text', text: inputText }],
+      input: inputItems,
       approvalPolicy,
     };
     if (options.sandbox) params.sandbox = options.sandbox;

@@ -150,6 +150,56 @@ describe('transcript helpers', () => {
     assert.ok(messages.some((msg) => msg.type === 'claude' && msg.label === 'Developer'));
   });
 
+  it('rehydrates asset-backed user images for replay and display', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpanda-user-transcript-'));
+    const filePath = path.join(tempDir, 'clip.png');
+    fs.writeFileSync(filePath, Buffer.from('fake'));
+
+    const entries = [
+      createTranscriptRecord({
+        kind: 'user_message',
+        sessionKey: 'worker:default',
+        backend: 'user',
+        requestId: 'r-user-image',
+        loopIndex: 1,
+        text: '',
+        payload: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Check this screen' },
+            {
+              type: 'image_asset',
+              assetId: 'user:r-user-image:1',
+              fileName: 'clip.png',
+              mimeType: 'image/png',
+              width: 20,
+              height: 10,
+              size: 4,
+              filePath,
+            },
+          ],
+        },
+      }),
+    ];
+
+    const replay = buildSessionReplay(entries, 'worker:default');
+    assert.equal(replay.length, 1);
+    assert.ok(Array.isArray(replay[0].content), 'replay should preserve multimodal content');
+    assert.equal(replay[0].content[0].type, 'text');
+    assert.equal(replay[0].content[1].type, 'image_url');
+    assert.match(replay[0].content[1].image_url.url, /^data:image\/png;base64,/);
+
+    const display = buildTranscriptDisplayMessages(entries, manifestStub());
+    assert.equal(display.length, 1);
+    assert.equal(display[0].type, 'user');
+    assert.equal(display[0].attachments.length, 1);
+    assert.equal(display[0].attachments[0].fileName, 'clip.png');
+    assert.equal(display[0].attachments[0].width, 20);
+    assert.equal(display[0].attachments[0].height, 10);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it('restores browser screenshots alongside tool screenshots from the same session', () => {
     const entries = [
       createTranscriptRecord({

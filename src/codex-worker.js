@@ -13,6 +13,24 @@ const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
 const { getImportedCodexSessionId, isCodexCliBackend } = require('./external-chat-import');
 const { buildIsolatedCodexEnv } = require('./codex-home');
 
+function imageAssetPathsFromUserContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part && typeof part === 'object' && part.type === 'image_asset' && typeof part.filePath === 'string' && part.filePath)
+    .map((part) => String(part.filePath));
+}
+
+function buildCodexAppServerInput(inputText, userContent) {
+  const inputItems = [];
+  if (inputText) {
+    inputItems.push({ type: 'text', text: inputText });
+  }
+  for (const filePath of imageAssetPathsFromUserContent(userContent)) {
+    inputItems.push({ type: 'localImage', path: filePath });
+  }
+  return inputItems.length > 0 ? inputItems : [{ type: 'text', text: inputText || '' }];
+}
+
 /**
  * Build args for Codex used as a worker backend.
  * Mirrors src/codex.js buildCodexArgs but adapted for worker role:
@@ -21,7 +39,7 @@ const { buildIsolatedCodexEnv } = require('./codex-home');
  * - MCP config via -c TOML (same pattern as controller)
  * - System prompt is prepended to stdinText (Codex reads from stdin via '-')
  */
-function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession }) {
+function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession, userContent = null }) {
   const args = ['exec'];
   const isResume = agentSession ? agentSession.hasStarted : manifest.worker.hasStarted;
   const sessionId = agentSession ? agentSession.sessionId : manifest.worker.sessionId;
@@ -52,6 +70,10 @@ function buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSessio
   const thinking = agentConfig && agentConfig.thinking;
   if (thinking) {
     args.push('-c', `model_reasoning_effort="${thinking}"`);
+  }
+
+  for (const filePath of imageAssetPathsFromUserContent(userContent)) {
+    args.push('--image', filePath);
   }
 
   // Pass MCP servers via -c config overrides (merge agent-specific on top of base worker MCPs)
@@ -273,7 +295,7 @@ async function ensureWorkerAppServerThread({ conn, manifest, agentConfig, agentS
   return 'resumed';
 }
 
-async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, userContent = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config and session
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -346,7 +368,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
   }
 
   let spawnCommand = workerBin;
-  let args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession });
+  let args = buildCodexWorkerArgs(manifest, workerRecord, { agentConfig, agentSession, userContent });
   if (isRemoteCli(workerBin) && desktop) {
     const resolved = resolveRemoteCommand(workerBin, args, desktop);
     spawnCommand = resolved.command;
@@ -535,7 +557,7 @@ async function runCodexWorkerTurn({ manifest, request, loop, workerRecord, promp
  * Run a Codex worker turn using the app-server protocol.
  * Uses a persistent connection instead of spawning a new CLI process per turn.
  */
-async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, userContent = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   // Resolve agent config
   const isCustomAgent = agentId && agentId !== 'default';
   let agentConfig = null;
@@ -737,6 +759,7 @@ async function runCodexWorkerTurnAppServer({ manifest, request, loop, workerReco
     await conn.startTurn(stdinText, undefined, {
       approvalPolicy: DESIRED_APP_SERVER_APPROVAL_POLICY,
       sandbox: DESIRED_APP_SERVER_SANDBOX,
+      inputItems: buildCodexAppServerInput(stdinText, userContent),
     });
     await turnCompletePromise;
   } finally {

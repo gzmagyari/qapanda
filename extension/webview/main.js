@@ -43,6 +43,10 @@
   const appEl = document.getElementById('app');
   const messagesEl = document.getElementById('messages');
   const textarea = document.getElementById('user-input');
+  const inputBoxEl = document.getElementById('input-box');
+  const imageUploadInput = document.getElementById('image-upload-input');
+  const inputAttachmentsEl = document.getElementById('input-attachments');
+  const btnAttachImage = document.getElementById('btn-attach-image');
   const btnSend = document.getElementById('btn-send');
   const btnContinue = document.getElementById('btn-continue');
   const reviewSplit = document.getElementById('review-split');
@@ -3966,6 +3970,9 @@
   const VISIBLE_HISTORY_CARD_PLACEHOLDER = '[Card]';
   const TEST_CARD_CONFETTI_DEDUPE_MS = 10_000;
   let messageLog = [];
+  let pendingComposerAttachments = [];
+  let composerAttachmentSeq = 0;
+  let composerDragDepth = 0;
   let currentRunId = null;
   let currentUsageSummary = null;
   let currentWorkspace = null;
@@ -4210,6 +4217,7 @@
     reviewSplit.style.display = visible && !isRunning ? 'inline-flex' : 'none';
     if (!visible || isRunning) {
       hideReviewMenu();
+      applyAttachmentRestrictedActionState();
       return;
     }
 
@@ -4236,6 +4244,7 @@
         btn.disabled = !_reviewScopeAvailable(scope);
       });
     }
+    applyAttachmentRestrictedActionState();
   }
 
   function sendReviewRequest(scope) {
@@ -4942,6 +4951,7 @@
     const target = cfgChatTarget ? cfgChatTarget.value : 'controller';
     updateConfigBarForTarget(target);
     updateBrowserStatus();
+    applyAttachmentRestrictedActionState();
     const config = getConfig();
     vscode.postMessage({ type: 'configChanged', config });
     vscode.postMessage({ type: 'setPanelTitle', title: labelForTarget(target) });
@@ -6585,6 +6595,227 @@
     }
   }
 
+  function formatAttachmentSize(bytes) {
+    const numeric = Number(bytes || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return '';
+    if (numeric >= 1024 * 1024) return (numeric / (1024 * 1024)).toFixed(numeric >= 10 * 1024 * 1024 ? 0 : 1).replace(/\.0$/, '') + ' MB';
+    if (numeric >= 1024) return Math.round(numeric / 1024) + ' KB';
+    return numeric + ' B';
+  }
+
+  function formatAttachmentMeta(attachment) {
+    const parts = [];
+    if (Number.isFinite(attachment && attachment.width) && Number.isFinite(attachment && attachment.height)) {
+      parts.push(String(attachment.width) + 'x' + String(attachment.height));
+    }
+    const size = formatAttachmentSize(attachment && attachment.size);
+    if (size) parts.push(size);
+    return parts.join(' - ');
+  }
+
+  function renderAttachmentCollection(targetEl, attachments, options) {
+    if (!targetEl || !Array.isArray(attachments) || attachments.length === 0) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = options && options.composer ? 'input-attachment-list' : 'user-message-attachments';
+
+    attachments.forEach((attachment, index) => {
+      if (!attachment || !attachment.dataUrl) return;
+      if (options && options.composer) {
+        const card = document.createElement('div');
+        card.className = 'input-attachment-card';
+
+        const thumb = document.createElement('img');
+        thumb.className = 'input-attachment-thumb';
+        thumb.src = attachment.dataUrl;
+        thumb.alt = attachment.fileName || ('Attachment ' + String(index + 1));
+        card.appendChild(thumb);
+
+        const info = document.createElement('div');
+        info.className = 'input-attachment-info';
+        const name = document.createElement('div');
+        name.className = 'input-attachment-name';
+        name.textContent = attachment.fileName || ('Image ' + String(index + 1));
+        info.appendChild(name);
+        const meta = document.createElement('div');
+        meta.className = 'input-attachment-meta';
+        meta.textContent = formatAttachmentMeta(attachment);
+        info.appendChild(meta);
+        card.appendChild(info);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'input-attachment-remove';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+          pendingComposerAttachments = pendingComposerAttachments.filter((entry) => entry.id !== attachment.id);
+          renderComposerAttachments();
+        });
+        card.appendChild(removeBtn);
+        wrapper.appendChild(card);
+        return;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'user-message-attachment';
+      const image = document.createElement('img');
+      image.src = attachment.dataUrl;
+      image.alt = attachment.fileName || ('Attachment ' + String(index + 1));
+      card.appendChild(image);
+      const meta = document.createElement('div');
+      meta.className = 'user-message-attachment-meta';
+      meta.textContent = [attachment.fileName || ('Image ' + String(index + 1)), formatAttachmentMeta(attachment)].filter(Boolean).join(' - ');
+      card.appendChild(meta);
+      wrapper.appendChild(card);
+    });
+
+    if (wrapper.childElementCount > 0) {
+      targetEl.appendChild(wrapper);
+    }
+  }
+
+  function currentChatTargetValue() {
+    return cfgChatTarget ? cfgChatTarget.value : 'controller';
+  }
+
+  function isDirectSendTarget(target) {
+    return target === 'claude' || (typeof target === 'string' && target.startsWith('agent-'));
+  }
+
+  function applyAttachmentRestrictedActionState() {
+    const hasAttachments = pendingComposerAttachments.length > 0;
+    const directTarget = isDirectSendTarget(currentChatTargetValue());
+    const attachmentOnlyTitle = 'Image attachments are only supported with Send on a direct worker or agent target.';
+
+    if (btnSend) {
+      btnSend.disabled = hasAttachments && !directTarget;
+      btnSend.title = hasAttachments && !directTarget ? attachmentOnlyTitle : '';
+    }
+    if (btnContinue) {
+      btnContinue.disabled = hasAttachments;
+      btnContinue.title = hasAttachments ? attachmentOnlyTitle : 'Send to controller with optional guidance';
+    }
+    if (btnOrchestrate) {
+      btnOrchestrate.disabled = hasAttachments;
+      btnOrchestrate.title = hasAttachments ? attachmentOnlyTitle : 'Full controller orchestration';
+    }
+    if (btnReview) {
+      if (hasAttachments) {
+        btnReview.disabled = true;
+        btnReview.title = attachmentOnlyTitle;
+      }
+    }
+    if (btnReviewMenu) {
+      if (hasAttachments) {
+        btnReviewMenu.disabled = true;
+        btnReviewMenu.title = attachmentOnlyTitle;
+      }
+    }
+  }
+
+  function renderComposerAttachments() {
+    if (!inputAttachmentsEl) return;
+    inputAttachmentsEl.replaceChildren();
+    if (pendingComposerAttachments.length === 0) {
+      inputAttachmentsEl.classList.add('hidden');
+      applyAttachmentRestrictedActionState();
+      return;
+    }
+    inputAttachmentsEl.classList.remove('hidden');
+    renderAttachmentCollection(inputAttachmentsEl, pendingComposerAttachments, { composer: true });
+    applyAttachmentRestrictedActionState();
+  }
+
+  function clearComposerAttachments() {
+    pendingComposerAttachments = [];
+    if (imageUploadInput) imageUploadInput.value = '';
+    renderComposerAttachments();
+  }
+
+  function setComposerDropTarget(active) {
+    if (!inputBoxEl) return;
+    inputBoxEl.classList.toggle('is-drop-target', !!active);
+  }
+
+  function resetComposerDropTarget() {
+    composerDragDepth = 0;
+    setComposerDropTarget(false);
+  }
+
+  function insertTextAtCursor(value) {
+    if (!textarea || !value) return;
+    const start = textarea.selectionStart || 0;
+    const end = textarea.selectionEnd || 0;
+    textarea.setRangeText(value, start, end, 'end');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function readImageDimensions(dataUrl) {
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve({
+        width: Number.isFinite(image.naturalWidth) ? image.naturalWidth : null,
+        height: Number.isFinite(image.naturalHeight) ? image.naturalHeight : null,
+      });
+      image.onerror = () => resolve({ width: null, height: null });
+      image.src = dataUrl;
+    });
+  }
+
+  function extractImageFilesFromFileList(files) {
+    return Array.from(files || []).filter((file) =>
+      file &&
+      typeof file.type === 'string' &&
+      file.type.startsWith('image/')
+    );
+  }
+
+  function extractImageFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    const itemFiles = Array.from(dataTransfer.items || [])
+      .filter((item) =>
+        item &&
+        item.kind === 'file' &&
+        typeof item.type === 'string' &&
+        item.type.startsWith('image/')
+      )
+      .map((item) => item.getAsFile && item.getAsFile())
+      .filter(Boolean);
+    if (itemFiles.length > 0) return itemFiles;
+    return extractImageFilesFromFileList(dataTransfer.files);
+  }
+
+  async function queueImageFiles(files) {
+    const imageFiles = extractImageFilesFromFileList(files);
+    if (imageFiles.length === 0) {
+      throw new Error('Only image files can be attached.');
+    }
+    for (const file of imageFiles) {
+      if (!file) continue;
+      const dataUrl = await fileToDataUrl(file);
+      const dimensions = await readImageDimensions(dataUrl);
+      composerAttachmentSeq += 1;
+      pendingComposerAttachments.push({
+        id: 'attachment-' + String(composerAttachmentSeq),
+        fileName: file.name || ('pasted-image-' + String(composerAttachmentSeq) + '.png'),
+        mimeType: file.type || 'image/png',
+        width: dimensions.width,
+        height: dimensions.height,
+        size: Number.isFinite(file.size) ? file.size : null,
+        dataUrl,
+      });
+    }
+    renderComposerAttachments();
+  }
+
   function renderUserEntryContent(entry, msg) {
     if (!entry || !msg) return;
     const content = entry.querySelector('.entry-content');
@@ -6596,6 +6827,7 @@
     body.textContent = state.expanded ? state.fullText : state.previewText;
 
     content.replaceChildren(body);
+    renderAttachmentCollection(content, Array.isArray(msg.attachments) ? msg.attachments : [], { composer: false });
 
     if (!state.isLong) return;
 
@@ -6678,7 +6910,8 @@
   const handlers = {
     user(msg) {
       streamingEntry = null;
-      const entry = addEntry('User', '', '', msg.text);
+      const rawText = msg.text || ((Array.isArray(msg.attachments) && msg.attachments.length > 0) ? '[Image message]' : '');
+      const entry = addEntry('User', '', '', rawText);
       renderUserEntryContent(entry, msg);
     },
 
@@ -6975,6 +7208,7 @@
     clear() {
       resetChatView();
       messageLog = [];
+      clearComposerAttachments();
       pendingVisibleHistoryTrim = false;
       currentRunId = null;
       resetAgentBrowserOverrides();
@@ -7029,6 +7263,7 @@
           maybeTrimVisibleHistory();
         }
         textarea.focus();
+        applyAttachmentRestrictedActionState();
       }
     },
 
@@ -8001,12 +8236,25 @@
 
   function sendInput() {
     const text = textarea.value.trim();
-    if (!text) return;
+    const attachments = pendingComposerAttachments.map((attachment) => ({
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      width: attachment.width,
+      height: attachment.height,
+      size: attachment.size,
+      dataUrl: attachment.dataUrl,
+    }));
+    if (!text && attachments.length === 0) return;
+    if (attachments.length > 0 && !isDirectSendTarget(currentChatTargetValue())) {
+      addBanner('Images can only be sent with Send to a direct worker or agent target.');
+      return;
+    }
     _dbg('sendInput: text=' + text.slice(0, 120));
     textarea.value = '';
     textarea.style.height = 'auto';
     suggestionsEl.style.display = 'none';
-    vscode.postMessage({ type: 'userInput', text });
+    clearComposerAttachments();
+    vscode.postMessage({ type: 'userInput', text, attachments });
   }
 
   btnSend.addEventListener('click', sendInput);
@@ -8088,6 +8336,89 @@
     }
   });
 
+  textarea.addEventListener('paste', (event) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const imageItems = Array.from(clipboard.items || []).filter((item) =>
+      item && typeof item.type === 'string' && item.type.startsWith('image/')
+    );
+    if (imageItems.length === 0) return;
+
+    event.preventDefault();
+    const text = clipboard.getData('text/plain');
+    if (text) insertTextAtCursor(text);
+
+    const files = imageItems
+      .map((item) => item.getAsFile && item.getAsFile())
+      .filter(Boolean);
+    queueImageFiles(files).catch((error) => {
+      addBanner('Failed to paste image: ' + ((error && error.message) || String(error)));
+    });
+  });
+
+  if (btnAttachImage && imageUploadInput) {
+    btnAttachImage.addEventListener('click', () => {
+      imageUploadInput.click();
+    });
+    imageUploadInput.addEventListener('change', () => {
+      const files = extractImageFilesFromFileList(imageUploadInput.files);
+      if (files.length === 0) {
+        imageUploadInput.value = '';
+        return;
+      }
+      queueImageFiles(files).catch((error) => {
+        addBanner('Failed to attach image: ' + ((error && error.message) || String(error)));
+      }).finally(() => {
+        imageUploadInput.value = '';
+      });
+    });
+  }
+
+  if (inputBoxEl) {
+    inputBoxEl.addEventListener('dragenter', (event) => {
+      const files = extractImageFilesFromDataTransfer(event.dataTransfer);
+      if (files.length === 0) return;
+      event.preventDefault();
+      composerDragDepth += 1;
+      setComposerDropTarget(true);
+    });
+
+    inputBoxEl.addEventListener('dragover', (event) => {
+      const files = extractImageFilesFromDataTransfer(event.dataTransfer);
+      if (files.length === 0) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      setComposerDropTarget(true);
+    });
+
+    inputBoxEl.addEventListener('dragleave', (event) => {
+      if (!inputBoxEl.classList.contains('is-drop-target')) return;
+      if (event.relatedTarget && inputBoxEl.contains(event.relatedTarget)) return;
+      composerDragDepth = Math.max(0, composerDragDepth - 1);
+      if (composerDragDepth === 0) setComposerDropTarget(false);
+    });
+
+    inputBoxEl.addEventListener('drop', (event) => {
+      const files = extractImageFilesFromDataTransfer(event.dataTransfer);
+      if (files.length === 0) return;
+      event.preventDefault();
+      resetComposerDropTarget();
+      queueImageFiles(files).then(() => {
+        textarea.focus();
+      }).catch((error) => {
+        addBanner('Failed to attach image: ' + ((error && error.message) || String(error)));
+      });
+    });
+  }
+
+  window.addEventListener('dragend', () => {
+    resetComposerDropTarget();
+  });
+
+  window.addEventListener('drop', () => {
+    resetComposerDropTarget();
+  });
+
   // Auto-resize textarea + update suggestions
   textarea.addEventListener('input', () => {
     textarea.style.height = 'auto';
@@ -8110,6 +8441,7 @@
 
   // Initialize panda buddy
   initPandaBuddy();
+  applyAttachmentRestrictedActionState();
 
   // Focus input on load
   textarea.focus();

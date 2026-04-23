@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const { writeJson, writeText } = require('./utils');
 const { spawnStreamingProcess } = require('./process-utils');
@@ -54,6 +55,46 @@ function buildResolvedClaudeMcpConfig(manifest, agentConfig) {
   return { mcpServers, mcpConfig: JSON.parse(json) };
 }
 
+function imageAssetPartsFromUserContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter((part) =>
+    part &&
+    typeof part === 'object' &&
+    part.type === 'image_asset' &&
+    typeof part.filePath === 'string' &&
+    part.filePath
+  );
+}
+
+function hasClaudeStreamJsonInput(userContent) {
+  return imageAssetPartsFromUserContent(userContent).length > 0;
+}
+
+function buildClaudeStreamJsonInput(prompt, userContent) {
+  const content = [];
+  if (prompt) {
+    content.push({ type: 'text', text: prompt });
+  }
+  for (const part of imageAssetPartsFromUserContent(userContent)) {
+    const bytes = fs.readFileSync(part.filePath);
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: part.mimeType || 'image/png',
+        data: Buffer.from(bytes).toString('base64'),
+      },
+    });
+  }
+  return `${JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content,
+    },
+  })}\n`;
+}
+
 function buildClaudeWorkerPromptText(manifest, agentConfig) {
   const selfTestOpts = manifest.selfTesting ? { selfTesting: true, selfTestPrompts: manifest.selfTestPrompts } : undefined;
   const promptsDirs = buildPromptsDirs(manifest.repoRoot);
@@ -104,6 +145,7 @@ function buildClaudeArgs(manifest, options = {}) {
   const mcpConfigPath = options.mcpConfigPath || null;
   const systemPromptFile = options.systemPromptFile || null;
   const appendSystemPromptFile = options.appendSystemPromptFile || null;
+  const userContent = options.userContent || null;
 
   // Check if this is a remote agent (running inside a container)
   const isRemoteAgent = agentConfig && typeof agentConfig.cli === 'string' && agentConfig.cli.startsWith('qa-remote');
@@ -116,6 +158,10 @@ function buildClaudeArgs(manifest, options = {}) {
     '--include-partial-messages',
     '--dangerously-skip-permissions',
   ];
+
+  if (hasClaudeStreamJsonInput(userContent)) {
+    args.push('--input-format', 'stream-json');
+  }
 
   // For local agents: isolate from user/project MCP configs
   // For remote agents: let the container use its own MCP config (correct container paths)
@@ -214,7 +260,7 @@ function buildClaudeArgs(manifest, options = {}) {
   return args;
 }
 
-async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
+async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, visiblePrompt = null, userContent = null, renderer, emitEvent, abortSignal, agentId, turnTracker = null }) {
   await writeText(workerRecord.promptFile, `${redactHostedWorkflowValue(manifest, prompt)}\n`);
 
   // Resolve agent config and session
@@ -230,7 +276,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
   }
 
   const launchFiles = await materializeClaudeWorkerLaunchFiles(manifest, workerRecord, agentConfig);
-  let args = buildClaudeArgs(manifest, { agentConfig, agentSession, ...launchFiles });
+  let args = buildClaudeArgs(manifest, { agentConfig, agentSession, userContent, ...launchFiles });
 
   let accumulatedText = '';
   let lastAssistantMessage = '';
@@ -267,7 +313,7 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
         if (agentSession && agentSession.hasStarted) {
           agentSession.sessionId = crypto.randomUUID();
           agentSession.hasStarted = false;
-          args = buildClaudeArgs(manifest, { agentConfig, agentSession, ...launchFiles });
+          args = buildClaudeArgs(manifest, { agentConfig, agentSession, userContent, ...launchFiles });
         }
       }
       renderer.desktopReady(desktop.novncPort);
@@ -328,7 +374,9 @@ async function runWorkerTurn({ manifest, request, loop, workerRecord, prompt, vi
     command: workerBin,
     args,
     cwd: manifest.repoRoot,
-    stdinText: prompt,
+    stdinText: hasClaudeStreamJsonInput(userContent)
+      ? buildClaudeStreamJsonInput(prompt, userContent)
+      : prompt,
     env: spawnEnv,
     abortSignal,
     resolveOnResult: true,
@@ -687,6 +735,7 @@ function closeInteractiveSessions(manifest) {
 
 module.exports = {
   buildClaudeArgs,
+  buildClaudeStreamJsonInput,
   buildInteractiveArgs,
   runWorkerTurn,
   runWorkerTurnInteractive,

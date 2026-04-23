@@ -9,6 +9,11 @@ const { controllerLabelFor, workerLabelFor } = require('./render');
 const { CARD_MAP } = require('./mcp-cards');
 const { normalizeToolResultOutput } = require('./tool-result-normalizer');
 const { redactHostedWorkflowValue } = require('./cloud/workflow-hosted-runs');
+const {
+  buildProviderUserContent,
+  buildUserMessageDisplay,
+  IMAGE_PLACEHOLDER,
+} = require('./user-message-content');
 
 const TRANSCRIPT_V2 = 2;
 const CONTROLLER_SESSION_KEY = 'controller:main';
@@ -577,6 +582,11 @@ function visibleTextForDisplayMessage(message) {
   if (!message || typeof message !== 'object') return '';
   switch (message.type) {
     case 'user':
+      if (message.text) return String(message.text);
+      if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+        return IMAGE_PLACEHOLDER;
+      }
+      return '';
     case 'controller':
     case 'claude':
     case 'mdLine':
@@ -755,6 +765,7 @@ function extractTextContent(content) {
       if (!part || typeof part !== 'object') return '';
       if (part.type === 'text' && typeof part.text === 'string') return part.text;
       if (part.type === 'input_text' && typeof part.text === 'string') return part.text;
+      if (part.type === 'image_asset') return IMAGE_PLACEHOLDER;
       if (part.text && typeof part.text === 'string') return part.text;
       return '';
     }).filter(Boolean).join('');
@@ -957,7 +968,12 @@ function replayMessagesForEntry(entry) {
   if (!entry) return [];
   if (entry.kind === 'user_message') {
     if (entry.payload && entry.payload.role === 'user') {
-      return [clone(entry.payload)];
+      return [{
+        ...clone(entry.payload),
+        content: buildProviderUserContent(entry.payload.content, {
+          readFileSync: fs.readFileSync,
+        }),
+      }];
     }
     return [{ role: 'user', content: entry.text || '' }];
   }
@@ -1607,7 +1623,14 @@ function buildTranscriptDisplayMessages(entries, manifest, options = {}) {
     }
 
     if (entry.kind === 'user_message') {
-      messages.push({ type: 'user', text: entry.text != null ? entry.text : extractTextContent(entry.payload && entry.payload.content) });
+      const display = buildUserMessageDisplay(entry.payload && entry.payload.content, {
+        readFileSync: fs.readFileSync,
+      });
+      messages.push({
+        type: 'user',
+        text: entry.text != null ? entry.text : display.text,
+        attachments: display.attachments,
+      });
       continue;
     }
     if (entry.kind === 'controller_message') {

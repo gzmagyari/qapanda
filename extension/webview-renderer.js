@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const { truncate } = require('./src/utils');
 const { summarizeClaudeEvent, summarizeCodexEvent, formatToolCall } = require('./src/events');
 const { workerLabelFor } = require('./src/render');
+const { sanitizeUserAttachmentsForChatLog } = require('./src/user-message-content');
 
 // Message types to skip when logging to chat.jsonl (internal/transient only)
 const CHAT_LOG_SKIP = new Set([
@@ -80,6 +81,9 @@ class WebviewRenderer {
     if (CHAT_LOG_SKIP.has(msg.type)) return;
     try {
       const entry = { ts: new Date().toISOString(), ...msg };
+      if (entry.type === 'user' && Array.isArray(entry.attachments)) {
+        entry.attachments = sanitizeUserAttachmentsForChatLog(entry.attachments);
+      }
       fs.appendFileSync(this.chatLogPath, JSON.stringify(entry) + '\n');
     } catch {
       // File write may fail if run dir doesn't exist yet
@@ -99,9 +103,9 @@ class WebviewRenderer {
     this._post({ type: 'flushStream' });
   }
 
-  user(text) {
+  user(text, attachments = []) {
     this.flushStream();
-    this._post({ type: 'user', text });
+    this._post({ type: 'user', text, attachments });
   }
 
   controller(text) {

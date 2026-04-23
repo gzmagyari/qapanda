@@ -1064,6 +1064,35 @@ html, body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.user-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.user-message-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.user-message-attachment img {
+  width: 100%;
+  max-width: 220px;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.user-message-attachment-meta {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #9a9a9a);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .user-message-actions {
   display: flex;
   justify-content: flex-end;
@@ -1397,6 +1426,15 @@ html, body {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
+#input-box.is-drop-target {
+  border-color: var(--vscode-focusBorder, #0e639c);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #0e639c), 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+#input-box.is-drop-target textarea {
+  background: rgba(14, 99, 156, 0.08);
+}
+
 #input-box textarea {
   width: 100%;
   border: none;
@@ -1411,6 +1449,81 @@ html, body {
   max-height: 150px;
   outline: none;
   box-sizing: border-box;
+}
+
+.input-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.input-attachments.hidden {
+  display: none;
+}
+
+.input-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.input-attachment-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 250px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.input-attachment-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.input-attachment-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.input-attachment-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-editor-foreground, #ddd);
+  word-break: break-word;
+}
+
+.input-attachment-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #9a9a9a);
+  line-height: 1.35;
+}
+
+.input-attachment-remove {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--vscode-descriptionForeground, #a8a8a8);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.input-attachment-remove:hover {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  color: var(--vscode-editor-foreground, #ddd);
 }
 
 #input-toolbar {
@@ -1521,6 +1634,19 @@ html, body {
 }
 #input-toolbar button:hover {
   background: var(--vscode-button-secondaryHoverBackground, #3a3a3a);
+}
+#btn-attach-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
 }
 #btn-send {
   background: #0e639c;

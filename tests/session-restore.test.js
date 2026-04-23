@@ -8,6 +8,11 @@ const path = require('node:path');
 // We patch those cache entries just like session-manager-config.test.js does.
 
 const extDir = path.resolve(__dirname, '..', 'extension');
+const repoSrcDir = path.resolve(__dirname, '..', 'src');
+const generatedSrcDir = path.join(extDir, 'src');
+fs.mkdirSync(generatedSrcDir, { recursive: true });
+fs.cpSync(repoSrcDir, generatedSrcDir, { recursive: true, force: true });
+
 const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
 const orchPath = path.join(extDir, 'src', 'orchestrator.js');

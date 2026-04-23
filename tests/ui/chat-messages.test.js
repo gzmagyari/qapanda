@@ -8,6 +8,39 @@ function multiline(count, prefix = 'line') {
   return Array.from({ length: count }, (_, index) => `${prefix}-${index + 1}`).join('\n');
 }
 
+function installAttachmentReadStubs(window) {
+  window.FileReader = class {
+    constructor() {
+      this.onload = null;
+      this.onerror = null;
+      this.result = null;
+      this.error = null;
+    }
+
+    readAsDataURL(file) {
+      this.result = `data:${file.type || 'image/png'};base64,ZmFrZQ==`;
+      if (typeof this.onload === 'function') {
+        this.onload();
+      }
+    }
+  };
+
+  window.Image = class {
+    constructor() {
+      this.onload = null;
+      this.onerror = null;
+      this.naturalWidth = 48;
+      this.naturalHeight = 32;
+    }
+
+    set src(_value) {
+      if (typeof this.onload === 'function') {
+        this.onload();
+      }
+    }
+  };
+}
+
 function passingTestCard(title = 'Passing test', overrides = {}) {
   return {
     type: 'testCard',
@@ -88,6 +121,73 @@ describe('Chat messages', () => {
     assert.ok(wv.clipboardWrites[0].includes('line-60'));
   });
 
+  it('user message renders inline pasted image attachments', () => {
+    wv.postMessage({
+      type: 'user',
+      text: 'See attached',
+      attachments: [{
+        dataUrl: 'data:image/png;base64,ZmFrZQ==',
+        fileName: 'clip.png',
+        mimeType: 'image/png',
+        width: 12,
+        height: 8,
+        size: 4,
+      }],
+    });
+
+    const image = wv.document.querySelector('.user-message-attachment img');
+    assert.ok(image, 'should render attachment thumbnail');
+    assert.equal(image.getAttribute('src'), 'data:image/png;base64,ZmFrZQ==');
+    assert.ok(wv.document.getElementById('messages').textContent.includes('clip.png'));
+  });
+
+  it('manual image picker queues attachment previews above the composer', async () => {
+    installAttachmentReadStubs(wv.window);
+    const input = wv.document.getElementById('image-upload-input');
+    const file = new wv.window.File([Uint8Array.from([1, 2, 3, 4])], 'picked.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [file],
+    });
+
+    input.dispatchEvent(new wv.window.Event('change', { bubbles: true }));
+    await wv.flush();
+    await wv.flush();
+
+    const cards = wv.document.querySelectorAll('.input-attachment-card');
+    assert.equal(cards.length, 1);
+    assert.ok(wv.document.getElementById('input-box').textContent.includes('picked.png'));
+  });
+
+  it('dragging an image onto the input box queues it and clears the drop state on drop', async () => {
+    installAttachmentReadStubs(wv.window);
+    const inputBox = wv.document.getElementById('input-box');
+    const file = new wv.window.File([Uint8Array.from([5, 6, 7, 8])], 'dropped.png', { type: 'image/png' });
+    const dataTransfer = {
+      items: [{
+        kind: 'file',
+        type: 'image/png',
+        getAsFile: () => file,
+      }],
+      files: [file],
+      dropEffect: 'none',
+    };
+
+    const dragEnter = new wv.window.Event('dragenter', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnter, 'dataTransfer', { value: dataTransfer });
+    inputBox.dispatchEvent(dragEnter);
+    assert.ok(inputBox.classList.contains('is-drop-target'));
+
+    const drop = new wv.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
+    inputBox.dispatchEvent(drop);
+    await wv.flush();
+    await wv.flush();
+
+    assert.ok(!inputBox.classList.contains('is-drop-target'));
+    assert.ok(wv.document.getElementById('input-box').textContent.includes('dropped.png'));
+  });
+
   it('claude message renders with label', () => {
     wv.postMessage({ type: 'claude', text: 'Hi there!', label: 'Developer' });
     const msgs = wv.document.getElementById('messages');
@@ -150,6 +250,31 @@ describe('Chat messages', () => {
     assert.ok(!msgs.textContent.includes('line-51'));
     assert.ok(msgs.textContent.includes('Acknowledged'));
     assert.ok(wv.document.querySelector('.user-message-toggle'));
+  });
+
+  it('transcriptHistory replays user image attachments under the original user message', () => {
+    wv.postMessage({
+      type: 'transcriptHistory',
+      messages: [
+        {
+          type: 'user',
+          text: '',
+          attachments: [{
+            dataUrl: 'data:image/png;base64,ZmFrZQ==',
+            fileName: 'replay.png',
+            mimeType: 'image/png',
+            width: 18,
+            height: 9,
+            size: 4,
+          }],
+        },
+      ],
+    });
+
+    const image = wv.document.querySelector('.user-message-attachment img');
+    assert.ok(image, 'should replay attachment thumbnail');
+    assert.equal(image.getAttribute('src'), 'data:image/png;base64,ZmFrZQ==');
+    assert.ok(wv.document.getElementById('messages').textContent.includes('replay.png'));
   });
 
   it('does not collapse long non-user messages', () => {

@@ -52,6 +52,7 @@ const {
   transcriptBackend,
   workerSessionKey,
 } = require('./transcript');
+const { buildProviderUserContent } = require('./user-message-content');
 const http = require('node:http');
 
 const _apiBrowserDebugLog = require('node:path').join(require('node:os').tmpdir(), 'cc-appserver-debug.log');
@@ -66,6 +67,15 @@ function parseToolInput(argumentsValue) {
     return JSON.parse(argumentsValue);
   } catch {
     return {};
+  }
+}
+
+function comparableUserContent(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value == null ? null : value);
+  } catch {
+    return String(value || '');
   }
 }
 
@@ -309,6 +319,7 @@ async function runApiWorkerTurn({
   workerRecord,
   prompt,
   visiblePrompt = null,
+  userContent = undefined,
   renderer,
   emitEvent,
   abortSignal,
@@ -425,6 +436,7 @@ async function runApiWorkerTurn({
   }
   const recordedVisiblePrompt = visiblePrompt == null ? prompt : visiblePrompt;
   const recordedActualPrompt = prompt;
+  const recordedUserContent = userContent === undefined ? recordedActualPrompt : userContent;
 
   const transcriptEntries = manifest.files && manifest.files.transcript
     ? await readTranscriptEntries(manifest.files.transcript, { sessionKey: localSessionKey })
@@ -434,12 +446,12 @@ async function runApiWorkerTurn({
   const lastRecordedActualPrompt = lastSessionEntry &&
     lastSessionEntry.payload &&
     lastSessionEntry.payload.role === 'user'
-      ? String(lastSessionEntry.payload.content || '')
+      ? comparableUserContent(lastSessionEntry.payload.content)
       : String((lastSessionEntry && lastSessionEntry.text) || '');
   const promptAlreadyRecorded = !!lastSessionEntry &&
     lastSessionEntry.kind === 'user_message' &&
     lastSessionEntry.requestId === request.id &&
-    lastRecordedActualPrompt === recordedActualPrompt &&
+    lastRecordedActualPrompt === comparableUserContent(recordedUserContent) &&
     (
       lastSessionEntry.text === recordedVisiblePrompt ||
       lastSessionEntry.text === recordedActualPrompt
@@ -458,7 +470,7 @@ async function runApiWorkerTurn({
       agentId: isCustomAgent ? agentId : null,
       workerCli: 'api',
       text: recordedVisiblePrompt,
-      payload: { role: 'user', content: recordedActualPrompt },
+      payload: { role: 'user', content: recordedUserContent },
     });
     await appendTranscriptRecord(manifest, userEntry);
     replayEntries = [...transcriptEntries, userEntry];
@@ -480,12 +492,16 @@ async function runApiWorkerTurn({
     const legacyHistory = agentSession.apiMessages[0] && agentSession.apiMessages[0].role === 'system'
       ? agentSession.apiMessages.slice(1)
       : agentSession.apiMessages;
-    messages = [{ role: 'system', content: systemPrompt }, ...legacyHistory, { role: 'user', content: prompt }];
+    messages = [
+      { role: 'system', content: systemPrompt },
+      ...legacyHistory,
+      { role: 'user', content: buildProviderUserContent(recordedUserContent) },
+    ];
     fullMessages = messages;
   } else {
     messages = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: prompt },
+      { role: 'user', content: buildProviderUserContent(recordedUserContent) },
     ];
     fullMessages = messages;
   }

@@ -7,12 +7,8 @@ const path = require('node:path');
 const extDir = path.resolve(__dirname, '..', 'extension');
 const repoSrcDir = path.resolve(__dirname, '..', 'src');
 const generatedSrcDir = path.join(extDir, 'src');
-if (!fs.existsSync(generatedSrcDir)) {
-  fs.cpSync(repoSrcDir, generatedSrcDir, { recursive: true });
-  process.on('exit', () => {
-    try { fs.rmSync(generatedSrcDir, { recursive: true, force: true }); } catch {}
-  });
-}
+fs.mkdirSync(generatedSrcDir, { recursive: true });
+fs.cpSync(repoSrcDir, generatedSrcDir, { recursive: true, force: true });
 
 const smPath = path.join(extDir, 'session-manager.js');
 const statePath = path.join(extDir, 'src', 'state.js');
@@ -166,6 +162,26 @@ test('_runControllerContinue saves the restored controller state, not the tempor
     const saved = captured.saveManifestCalls[0];
     assert.equal(saved.controllerSystemPrompt, 'persistent prompt');
     assert.equal(saved.controller.sessionId, 'controller-session-42');
+  } finally {
+    cleanup();
+  }
+});
+
+test('_handleInput rejects image attachments for controller-target sends', async () => {
+  const { session, captured, cleanup } = buildSession();
+
+  try {
+    session._chatTarget = 'controller';
+    await session._handleInput('', [{
+      fileName: 'clip.png',
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,ZmFrZQ==',
+    }]);
+
+    const bannerCalls = session._renderer.__calls.filter((call) => call.method === 'banner');
+    assert.equal(bannerCalls.length, 1);
+    assert.match(String(bannerCalls[0].args[0] || ''), /Images can only be sent with Send to a direct worker or agent target/i);
+    assert.equal(captured.runManagerLoopCalls.length, 0);
   } finally {
     cleanup();
   }

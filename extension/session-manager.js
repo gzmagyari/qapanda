@@ -44,6 +44,7 @@ const {
   transcriptBackend,
   workerSessionKey,
 } = require('./src/transcript');
+const { normalizeAttachmentList, userMessageSummaryText } = require('./src/user-message-content');
 const { backfillUsageSummaryFromRun, usageSummaryMessage, usageSummaryNeedsBackfill } = require('./src/usage-summary');
 const { parseChromeCurrentPageToolResult, parseChromePagesToolResult } = require('./chrome-page-binding');
 
@@ -2007,7 +2008,7 @@ class SessionManager {
 
     if (msg.type === 'userInput') {
       this._clearLoopContinueTimer();
-      await this._handleInput(String(msg.text || '').trim());
+      await this._handleInput(String(msg.text || '').trim(), msg.attachments);
       return;
     }
 
@@ -2243,44 +2244,52 @@ class SessionManager {
     }
   }
 
-  async _handleInput(text) {
-    if (!text) return;
+  async _handleInput(text, attachments = []) {
+    const normalizedText = String(text || '').trim();
+    const normalizedAttachments = normalizeAttachmentList(attachments);
+    if (!normalizedText && normalizedAttachments.length === 0) return;
     if (this._running) {
       this._renderer.banner('A request is already running. Use the stop button to abort.');
       return;
     }
 
-    if (text.startsWith('/')) {
-      await this._handleCommand(text);
+    if (normalizedAttachments.length > 0 && this._chatTarget !== 'claude' && !(this._chatTarget && this._chatTarget.startsWith('agent-'))) {
+      this._renderer.banner('Images can only be sent with Send to a direct worker or agent target.');
+      return;
+    }
+
+    if (normalizedAttachments.length === 0 && normalizedText.startsWith('/')) {
+      await this._handleCommand(normalizedText);
       return;
     }
 
     // Plain text: start or continue a run — cancel any pending timer
     this._clearWaitTimer();
     try {
+      const messageSummary = userMessageSummaryText(normalizedText, normalizedAttachments);
 
       if (!this._activeManifest) {
-        await this._createRun(text);
+        await this._createRun(messageSummary);
       }
       this._applyWorkerThinking();
 
       if (this._chatTarget === 'claude') {
         // Direct-to-default-worker: skip controller, no auto-pass scheduling
-        await this._runDirectWorker(text);
+        await this._runDirectWorker(normalizedText, normalizedAttachments);
       } else if (this._chatTarget && this._chatTarget.startsWith('agent-')) {
         const agentId = this._chatTarget.slice('agent-'.length);
         const agents = this._enabledAgents();
         const agent = agents[agentId];
         this._renderer.workerLabel = workerLabelFor(agent && agent.cli, agent && agent.name);
         // Direct-to-agent: Send goes to agent, Loop auto-continues via controller after response
-        await this._runDirectAgent(text, agentId);
+        await this._runDirectAgent(normalizedText, agentId, normalizedAttachments);
         // If loop mode is on, auto-fire controller continue after agent responds
         if (this._loopMode && this._activeManifest && this._activeManifest.status === 'idle') {
           this._scheduleLoopContinue();
         }
       } else {
         // Controller mode (traditional)
-        await this._runLoop({ userMessage: text });
+        await this._runLoop({ userMessage: normalizedText });
         this._scheduleNextPass();
       }
     } catch (error) {
@@ -3285,7 +3294,7 @@ class SessionManager {
     this._traceBrowser('_startChromeDirect:done', { result: chrome });
   }
 
-  async _runDirectWorker(userMessage) {
+  async _runDirectWorker(userMessage, userAttachments = []) {
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest();
     await this._ensureChromeIfNeeded();
@@ -3299,6 +3308,7 @@ class SessionManager {
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
+        userAttachments,
         enableWorkerHandoff: true,
         abortSignal: this._abortController.signal,
         ...this._workerRunHooks(),
@@ -3315,7 +3325,7 @@ class SessionManager {
     }
   }
 
-  async _runDirectAgent(userMessage, agentId) {
+  async _runDirectAgent(userMessage, agentId, userAttachments = []) {
     await this._startAgentDelegateMcp();
     this._syncMcpToManifest(agentId);
     const endActivity = this._beginActivity('foreground');
@@ -3329,6 +3339,7 @@ class SessionManager {
     try {
       this._activeManifest = await runDirectWorkerTurn(this._activeManifest, this._renderer, {
         userMessage,
+        userAttachments,
         agentId,
         enableWorkerHandoff: true,
         abortSignal: this._abortController.signal,

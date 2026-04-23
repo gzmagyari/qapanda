@@ -65,6 +65,10 @@ function progressPath(runDir) {
   return path.join(runDir, 'progress.md');
 }
 
+function userAssetsDirPath(runDir) {
+  return path.join(runDir, 'assets', 'user-input');
+}
+
 // ── Wait delay options ──────────────────────────────────────────────────────
 
 const WAIT_OPTIONS = [
@@ -289,11 +293,13 @@ async function prepareNewRun(initialMessage, options = {}) {
     transcript: transcriptPath(runDir),
     chatLog: chatLogPath(runDir),
     progress: progressPath(runDir),
+    userAssetsDir: userAssetsDirPath(runDir),
     schema: defaultSchemaPath(runDir),
     requestsDir: path.join(runDir, 'requests'),
   };
 
   await ensureDir(files.requestsDir);
+  await ensureDir(files.userAssetsDir);
   ensureGitignore(normalized.repoRoot);
   await writeControllerSchema(files.schema);
 

@@ -25,6 +25,13 @@ const {
   transcriptBackend,
   workerSessionKey,
 } = require('./transcript');
+const {
+  buildUserMessageContent,
+  buildUserMessageDisplay,
+  normalizeAttachmentList,
+  persistUserMessageAttachments,
+  userMessageSummaryText,
+} = require('./user-message-content');
 
 /**
  * Create an activity log accumulator that captures tool calls and text
@@ -387,14 +394,24 @@ function markInterrupted(manifest, request, reason) {
 }
 
 async function startUserRequest(manifest, renderer, userMessage, options = {}) {
-  const request = createRequest(manifest, userMessage);
+  const normalizedUserMessage = userMessage == null ? '' : String(userMessage);
+  const userAttachments = normalizeAttachmentList(options.userAttachments);
+  const requestSummary = options.requestSummary || userMessageSummaryText(normalizedUserMessage, userAttachments);
+  const request = createRequest(manifest, requestSummary);
   manifest.status = 'running';
   manifest.phase = options.phase || 'controller';
   manifest.stopReason = null;
   manifest.error = null;
 
+  let userContent = options.userContent;
+  if (userContent === undefined) {
+    const attachmentParts = options.userAttachmentParts || await persistUserMessageAttachments(manifest, request.id, userAttachments);
+    userContent = buildUserMessageContent(normalizedUserMessage, attachmentParts);
+  }
+  const displayUser = buildUserMessageDisplay(userContent);
+
   if (options.render !== false) {
-    renderer.user(userMessage);
+    renderer.user(displayUser.text, displayUser.attachments);
   }
   await appendTranscript(manifest, {
     kind: 'user_message',
@@ -404,18 +421,18 @@ async function startUserRequest(manifest, renderer, userMessage, options = {}) {
     loopIndex: options.loopIndex == null ? null : options.loopIndex,
     agentId: options.agentId || null,
     workerCli: options.workerCli || null,
-    text: userMessage,
-    payload: { role: 'user', content: userMessage },
+    text: options.displayText !== undefined ? String(options.displayText || '') : displayUser.text,
+    payload: { role: 'user', content: userContent },
     display: options.display !== false,
   });
   await emitEvent(
     manifest,
-    { ts: nowIso(), source: 'user-message', requestId: request.id, text: userMessage },
+    { ts: nowIso(), source: 'user-message', requestId: request.id, text: requestSummary },
     renderer,
     options.onEvent,
   );
   await saveManifest(manifest);
-  return request;
+  return { request, userContent };
 }
 
 function getRunnableRequest(manifest) {
@@ -448,7 +465,7 @@ async function runManagerLoop(manifest, renderer, options = {}) {
   let request = null;
 
   if (userMessage) {
-    request = await startUserRequest(manifest, renderer, userMessage);
+    request = (await startUserRequest(manifest, renderer, userMessage)).request;
     appendManifestDebug('orchestrator', manifest, 'runManagerLoop:request-started', {
       requestId: request && request.id || null,
       userMessage,
@@ -891,8 +908,11 @@ async function printEventTail(manifest, tail = 40, out = process.stdout) {
 }
 
 async function runDirectWorkerTurn(manifest, renderer, options = {}) {
-  const userMessage = options.userMessage == null ? null : String(options.userMessage).trim();
-  if (!userMessage) throw new Error('No message provided for direct worker turn.');
+  const userMessage = options.userMessage == null ? '' : String(options.userMessage).trim();
+  const userAttachments = normalizeAttachmentList(options.userAttachments);
+  if (!userMessage && userAttachments.length === 0) {
+    throw new Error('No message provided for direct worker turn.');
+  }
 
   const agentId = options.agentId || null;
   const agentConfig = agentId ? lookupAgentConfig(manifest.agents, agentId) : null;
@@ -911,13 +931,19 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
           ? (await buildDirectWorkerPrompt(manifest, agentId, workerPromptBase, {
               maxChars: options.chatTailMaxChars,
             })).prompt
-          : workerPromptBase
+      : workerPromptBase
       );
   const sameSession = agentId && agentId !== 'default'
     ? !!((manifest.worker.agentSessions || {})[agentId] || {}).hasStarted
     : !!(manifest.worker && manifest.worker.hasStarted);
+  const runWorker = getWorkerRunner(manifest, agentConfig);
+
+  if (userAttachments.length > 0 && runWorker === runWorkerTurnInteractive) {
+    throw new Error('Image attachments are not supported in Claude interactive mode. Switch the agent run mode to Default (stream-json).');
+  }
 
   let request;
+  let directUserContent = buildUserMessageContent(visibleUserMessage, []);
   if (options.isDelegation) {
     // Agent-to-agent delegation: create request record and show launch message with "Agent delegation" label
     request = createRequest(manifest, visibleUserMessage);
@@ -964,12 +990,15 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     );
     await saveManifest(manifest);
   } else {
-    request = await startUserRequest(manifest, renderer, visibleUserMessage, {
+    const started = await startUserRequest(manifest, renderer, visibleUserMessage, {
       phase: 'worker',
       sessionKey: workerMeta.sessionKey,
       agentId: workerMeta.agentId,
       workerCli: workerMeta.workerCli,
+      userAttachments,
     });
+    request = started.request;
+    directUserContent = started.userContent;
   }
 
   const signalController = new AbortController();
@@ -1012,7 +1041,6 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
       options.onEvent,
     );
 
-    const runWorker = getWorkerRunner(manifest, agentConfig);
     const activityLog = createActivityLog();
     workerRecord.activityLog = activityLog.log; // Store reference before execution so interrupts don't lose data
 
@@ -1028,6 +1056,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
         workerRecord,
         prompt: actualWorkerPrompt,
         visiblePrompt: visibleUserMessage,
+        userContent: directUserContent,
         agentId,
         renderer,
         abortSignal: signalController.signal,
@@ -1093,7 +1122,7 @@ async function runDirectWorkerTurn(manifest, renderer, options = {}) {
     manifest.phase = 'idle';
     manifest.stopReason = request.stopReason;
     manifest.activeRequestId = null;
-    manifest.transcriptSummary = truncate(workerResult.resultText || visibleUserMessage, 120);
+    manifest.transcriptSummary = truncate(workerResult.resultText || request.userMessage || visibleUserMessage, 120);
     await emitFinalQaReport(manifest, request, renderer);
     await saveManifest(manifest);
     return manifest;
@@ -1161,7 +1190,10 @@ async function runCopilotLoop(manifest, renderer, options = {}) {
     // Step 2-4: Controller watches and sends follow-ups
     while (!signalController.signal.aborted) {
       // Create a new request for the controller turn
-      const request = manifest.requests[manifest.requests.length - 1] || await startUserRequest(manifest, renderer, '[copilot-auto]');
+      const started = manifest.requests[manifest.requests.length - 1]
+        ? null
+        : await startUserRequest(manifest, renderer, '[copilot-auto]');
+      const request = manifest.requests[manifest.requests.length - 1] || (started && started.request);
       const loop = await createLoopRecord(manifest, request);
       await saveManifest(manifest);
 

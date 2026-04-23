@@ -128,6 +128,8 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
         <div id="panda-buddy" class="panda-buddy panda-buddy--idle" title="Click me!"></div>
         <div id="input-box">
           <textarea id="user-input" rows="1" placeholder="Type a message or /help for commands..."></textarea>
+          <input id="image-upload-input" type="file" accept="image/*" multiple hidden />
+          <div id="input-attachments" class="input-attachments hidden"></div>
           <div id="input-toolbar">
           <div id="input-toolbar-left">
             <span class="toolbar-label">TARGET</span>
@@ -151,6 +153,7 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             </span>
           </div>
           <div id="input-toolbar-right">
+            <button id="btn-attach-image" type="button" title="Attach one or more images" aria-label="Attach images">+</button>
             <button id="btn-send">Send</button>
             <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
             <div id="review-split" class="split-action" style="display:none;">
