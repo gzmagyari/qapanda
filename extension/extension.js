@@ -18,6 +18,7 @@ let startTasksMcpServer, stopTasksMcpServer;
 let startTestsMcpServer, stopTestsMcpServer;
 let startMemoryMcpServer, stopMemoryMcpServer;
 let startQaDesktopMcpServer, stopQaDesktopMcpServer;
+let listRunManifests;
 let loadOnboarding, isOnboardingComplete, runFullDetection, completeOnboarding, runAutoFix;
 let loadSettings, saveSettings, listLearnedApiTools, removeLearnedApiTool, updateLearnedApiToolPin, clearExpiredLearnedApiTools;
 let buildSelfTestingPrompt;
@@ -32,6 +33,7 @@ let cleanupPanelSession, shutdownExtensionResources;
 let createReadyGate;
 let ensureRootMcpPorts;
 let ensureNamedWorkspace, listNamedWorkspaces, createRepoRootDescriptor, normalizeWorkspaceName;
+let PanelRegistry, LauncherSidebarProvider;
 let _cloudSyncRuntime = null;
 let _cloudSyncStartPromise = null;
 let _cloudStatusBarItem = null;
@@ -91,6 +93,8 @@ try {
     clearExpiredLearnedApiTools,
   } = require('./settings-store'));
   _aDbg('require OK: settings-store');
+  ({ listRunManifests } = require('./src/state'));
+  _aDbg('require OK: state');
   ({ buildSelfTestingPrompt } = require('./src/prompts'));
   _aDbg('require OK: prompts');
   ({ buildApiCatalogPayload } = require('./src/model-catalog'));
@@ -104,17 +108,20 @@ try {
   ({ createReadyGate } = require('./ready-gate'));
   ({ ensureRootMcpPorts } = require('./root-mcp-ports'));
   ({ ensureNamedWorkspace, listNamedWorkspaces, createRepoRootDescriptor, normalizeWorkspaceName } = require('./src/named-workspaces'));
+  ({ PanelRegistry } = require('./panel-registry'));
+  ({ LauncherSidebarProvider } = require('./launcher-sidebar'));
   _aDbg('All top-level requires succeeded');
 } catch (e) {
   _aDbg(`TOP-LEVEL REQUIRE FAILED: ${e.message}\n${e.stack}`);
   throw e;
 }
 
-const activePanels = new Set();
+const panelRegistry = new PanelRegistry();
 let _tasksMcpPort = null;
 let _testsMcpPort = null;
 let _memoryMcpPort = null;
 let _qaDesktopMcpPort = null;
+let _launcherSidebarProvider = null;
 
 async function handleQaReportExportMessage(msg, repoRoot) {
   if (!msg || msg.type !== 'qaReportExportPdf') return false;
@@ -343,7 +350,68 @@ function buildPanelTitle(rootDescriptor) {
   if (rootDescriptor && rootDescriptor.workspaceName) {
     return `QA Panda: ${rootDescriptor.workspaceName}`;
   }
-  return activePanels.size === 0 ? 'QA Panda' : `QA Panda (${activePanels.size + 1})`;
+  return panelRegistry.count() === 0 ? 'QA Panda' : `QA Panda (${panelRegistry.count() + 1})`;
+}
+
+function registerPanelEntry(panel, rootDescriptor, title) {
+  panelRegistry.add(panel, {
+    rootIdentity: rootDescriptor && rootDescriptor.rootIdentity ? rootDescriptor.rootIdentity : null,
+    title: title || panel.title || '',
+    visible: panel.visible !== false,
+  });
+}
+
+function refreshLauncherSidebar() {
+  if (_launcherSidebarProvider) {
+    void _launcherSidebarProvider.refresh();
+  }
+}
+
+function syncPanelRegistryFromHostMessage(panel, rootDescriptor, msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'setRunId') {
+    panelRegistry.update(panel, {
+      rootIdentity: rootDescriptor.rootIdentity,
+      runId: msg.runId || null,
+    });
+    refreshLauncherSidebar();
+    return;
+  }
+  if (msg.type === 'clearRunId') {
+    panelRegistry.update(panel, {
+      rootIdentity: rootDescriptor.rootIdentity,
+      runId: null,
+    });
+    refreshLauncherSidebar();
+    return;
+  }
+  if (msg.type === 'setPanelTitle' && typeof msg.title === 'string') {
+    panelRegistry.update(panel, { title: msg.title });
+  }
+}
+
+async function buildLauncherRuns(rootDescriptor) {
+  const manifests = await listRunManifests(rootDescriptor.stateRoot);
+  return manifests.map((manifest) => ({
+    runId: manifest.runId,
+    title: manifest.transcriptSummary || manifest.runId,
+    status: manifest.status || 'idle',
+    updatedAt: manifest.updatedAt || manifest.createdAt || null,
+    isOpen: panelRegistry.hasOpenRun(rootDescriptor.rootIdentity, manifest.runId),
+  }));
+}
+
+async function focusOrOpenRunPanel(rootDescriptor, runId) {
+  const existing = panelRegistry.findMostRecentByRun(rootDescriptor.rootIdentity, runId);
+  if (existing && existing.panel) {
+    try {
+      existing.panel.reveal(existing.panel.viewColumn, false);
+      panelRegistry.markFocused(existing.panel);
+      refreshLauncherSidebar();
+      return;
+    } catch {}
+  }
+  await vscode.commands.executeCommand('qapanda.open', { resume: runId });
 }
 
 function normalizeStartupAgent(agent) {
@@ -614,9 +682,9 @@ function updateCloudStatusBar(payload) {
 async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtimeStatus = null) {
   const payload = await buildCloudStatusPayload(cloudBoundary, context, runtimeStatus);
   updateCloudStatusBar(payload);
-  for (const panel of activePanels) {
+  for (const entry of panelRegistry.values()) {
     try {
-      panel.webview.postMessage({ type: 'cloudStatusData', cloudStatus: payload });
+      entry.panel.webview.postMessage({ type: 'cloudStatusData', cloudStatus: payload });
     } catch {}
   }
   return payload;
@@ -822,6 +890,34 @@ function _activateInner(context) {
     _qaDesktopMcpPort = ports.qaDesktopPort;
   }).catch(e => console.error('[ext] Failed to start root MCP servers:', e));
 
+  const launcherRootDescriptor = createRepoRootDescriptor(defaultRepoRoot);
+  _launcherSidebarProvider = new LauncherSidebarProvider(context, {
+    getNonce,
+    getData: async () => ({
+      runs: await buildLauncherRuns(launcherRootDescriptor),
+      namedWorkspacesEnabled: namedWorkspacesEnabled(context, defaultRepoRoot),
+    }),
+    openNewSession: async () => {
+      await vscode.commands.executeCommand('qapanda.open');
+    },
+    resumeLatest: async () => {
+      const runs = await buildLauncherRuns(launcherRootDescriptor);
+      if (runs.length === 0) {
+        await vscode.window.showInformationMessage('No previous sessions found for this repository.');
+        return;
+      }
+      await focusOrOpenRunPanel(launcherRootDescriptor, runs[0].runId);
+    },
+    openRun: async (runId) => {
+      if (!runId) return;
+      await focusOrOpenRunPanel(launcherRootDescriptor, String(runId));
+    },
+    openWorkspace: async () => {
+      await vscode.commands.executeCommand('qapanda.openWorkspace');
+    },
+  });
+  const launcherViewRegistration = vscode.window.registerWebviewViewProvider('qapandaLauncherView', _launcherSidebarProvider);
+
   _aDbg('checkpoint: registering qapanda.open command');
   const openCommand = vscode.commands.registerCommand('qapanda.open', async (args = {}) => {
     _aDbg('qapanda.open invoked');
@@ -868,6 +964,7 @@ function _activateInner(context) {
       if (msg && msg.type === 'syncConfig' && msg.config) {
         Object.assign(panelConfig, msg.config);
       }
+      syncPanelRegistryFromHostMessage(panel, rootDescriptor, msg);
       try {
         panel.webview.postMessage(msg);
       } catch {
@@ -965,6 +1062,7 @@ function _activateInner(context) {
         }
         if (msg.type === 'setPanelTitle') {
           panel.title = msg.title;
+          panelRegistry.update(panel, { title: msg.title });
           return;
         }
         if (msg.type === 'ready') {
@@ -1156,10 +1254,15 @@ function _activateInner(context) {
 
     panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
-    activePanels.add(panel);
+    registerPanelEntry(panel, rootDescriptor, title);
+    refreshLauncherSidebar();
 
     panel.onDidChangeViewState(
       (event) => {
+        panelRegistry.update(panel, { visible: event.webviewPanel.visible });
+        if (event.webviewPanel.visible) {
+          panelRegistry.markFocused(panel);
+        }
         session.setWebviewVisible(event.webviewPanel.visible).catch((error) => {
           appendPanelDebugLog(repoRoot, `EXT-HOST view-state ERROR message=${error && error.message ? error.message : String(error)}`);
         });
@@ -1170,7 +1273,8 @@ function _activateInner(context) {
 
     panel.onDidDispose(
       () => {
-        activePanels.delete(panel);
+        panelRegistry.remove(panel);
+        refreshLauncherSidebar();
         void cleanupPanelSession({
           repoRoot,
           panelId: session.panelId,
@@ -1212,7 +1316,7 @@ function _activateInner(context) {
   });
 
   _aDbg('checkpoint: command registered, pushing to subscriptions');
-  context.subscriptions.push(openCommand, openWorkspaceCommand);
+  context.subscriptions.push(openCommand, openWorkspaceCommand, launcherViewRegistration);
 
   // Register serializer for panel restoration
   _aDbg('checkpoint: registering deserializer');
@@ -1262,6 +1366,7 @@ async function _deserializeInner(panel, state, context) {
         if (msg && msg.type === 'syncConfig' && msg.config) {
           Object.assign(panelConfig, msg.config);
         }
+        syncPanelRegistryFromHostMessage(panel, rootDescriptor, msg);
         try {
           panel.webview.postMessage(msg);
         } catch {}
@@ -1352,6 +1457,7 @@ async function _deserializeInner(panel, state, context) {
           }
           if (msg.type === 'setPanelTitle') {
             panel.title = msg.title;
+            panelRegistry.update(panel, { title: msg.title });
             return;
           }
           if (msg.type === 'mcpServersChanged') {
@@ -1541,10 +1647,15 @@ async function _deserializeInner(panel, state, context) {
 
       panel.webview.html = getWebviewHtml(panel, context.extensionUri);
 
-      activePanels.add(panel);
+      registerPanelEntry(panel, rootDescriptor, panel.title);
+      refreshLauncherSidebar();
 
       panel.onDidChangeViewState(
         (event) => {
+          panelRegistry.update(panel, { visible: event.webviewPanel.visible });
+          if (event.webviewPanel.visible) {
+            panelRegistry.markFocused(panel);
+          }
           session.setWebviewVisible(event.webviewPanel.visible).catch((error) => {
             appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized) view-state ERROR message=${error && error.message ? error.message : String(error)}`);
           });
@@ -1555,7 +1666,8 @@ async function _deserializeInner(panel, state, context) {
 
       panel.onDidDispose(
         () => {
-          activePanels.delete(panel);
+          panelRegistry.remove(panel);
+          refreshLauncherSidebar();
           void cleanupPanelSession({
             repoRoot,
             panelId: session.panelId,

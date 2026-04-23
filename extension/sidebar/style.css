@@ -1,0 +1,175 @@
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+  color: var(--vscode-sideBar-foreground, var(--vscode-editor-foreground, #ddd));
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: 13px;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.launcher-root {
+  padding: 14px 12px 16px;
+}
+
+.launcher-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.launcher-eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.launcher-title {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--vscode-editor-foreground, #fff);
+}
+
+.launcher-icon-btn,
+.launcher-btn {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.launcher-icon-btn:hover,
+.launcher-btn:hover,
+.launcher-run:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.launcher-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.launcher-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.launcher-btn {
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.launcher-btn-primary {
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.launcher-btn-primary:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.launcher-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.launcher-search {
+  margin-bottom: 12px;
+}
+
+.launcher-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.launcher-search-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.launcher-empty {
+  display: none;
+  padding: 12px 4px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.launcher-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.launcher-run {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  cursor: pointer;
+}
+
+.launcher-run-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.launcher-run-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.launcher-run-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.launcher-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.launcher-pill-open {
+  color: #7bd88f;
+  background: rgba(123, 216, 143, 0.14);
+}

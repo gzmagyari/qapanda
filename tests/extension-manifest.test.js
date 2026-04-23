@@ -14,3 +14,25 @@ test('extension manifest includes onWebviewPanel activation event for panel rest
     'activationEvents must include onWebviewPanel:qapandaPanel for reload-restore'
   );
 });
+
+test('extension manifest contributes the QA Panda activity bar launcher view', () => {
+  assert.ok(
+    manifest.activationEvents.includes('onView:qapandaLauncherView'),
+    'activationEvents must include onView:qapandaLauncherView for the launcher sidebar'
+  );
+  assert.equal(
+    manifest.contributes.viewsContainers.activitybar.some((item) => item.id === 'qapandaActivity'),
+    true,
+    'viewsContainers.activitybar must declare qapandaActivity'
+  );
+  assert.equal(
+    manifest.contributes.views.qapandaActivity.some((item) => item.id === 'qapandaLauncherView'),
+    true,
+    'views.qapandaActivity must declare qapandaLauncherView'
+  );
+  assert.equal(
+    manifest.contributes.views.qapandaActivity.some((item) => item.id === 'qapandaLauncherView' && item.type === 'webview'),
+    true,
+    'qapandaLauncherView must be declared as a webview view'
+  );
+});

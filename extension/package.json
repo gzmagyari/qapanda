@@ -20,11 +20,30 @@
   "activationEvents": [
     "onCommand:qapanda.open",
     "onCommand:qapanda.openWorkspace",
+    "onView:qapandaLauncherView",
     "onStartupFinished",
     "onWebviewPanel:qapandaPanel"
   ],
   "main": "./extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "qapandaActivity",
+          "title": "QA Panda",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "qapandaActivity": [
+        {
+          "id": "qapandaLauncherView",
+          "name": "QA Panda",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "qapanda.open",
