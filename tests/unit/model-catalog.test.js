@@ -11,6 +11,7 @@ describe('model catalog', () => {
   it('includes refreshed direct OpenAI and Gemini models', () => {
     const openaiValues = API_PROVIDER_MODELS.openai.map((entry) => entry.value);
     const geminiValues = API_PROVIDER_MODELS.gemini.map((entry) => entry.value);
+    assert.ok(openaiValues.includes('gpt-5.5'));
     assert.ok(openaiValues.includes('gpt-5.4'));
     assert.ok(openaiValues.includes('gpt-5.1'));
     assert.ok(!openaiValues.includes('gpt-5.3-codex'));
@@ -21,6 +22,7 @@ describe('model catalog', () => {
 
   it('includes curated OpenRouter families', () => {
     const openrouterValues = API_PROVIDER_MODELS.openrouter.map((entry) => entry.value);
+    assert.ok(openrouterValues.includes('openai/gpt-5.5'));
     assert.ok(openrouterValues.includes('openai/gpt-5.3-codex'));
     assert.ok(openrouterValues.includes('x-ai/grok-4-fast'));
     assert.ok(openrouterValues.includes('moonshotai/kimi-k2.5'));
