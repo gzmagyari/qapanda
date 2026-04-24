@@ -36,6 +36,21 @@ Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal 
 
 ## Hot Updates
 
+**2026-04-24**  
+Latest updates. See the full history in the
+[GitHub changelog](https://github.com/gzmagyari/qapanda/blob/main/extension/CHANGELOG.md).
+
+- Added lower-cost **BYOK/API sessions** with **prompt caching**, native/manual compaction, and batched QA updates.
+- Added **custom API providers** with custom base URLs and API keys, including local/self-hosted models.
+- Added **Panda Tests** as repo-native markdown visual QA tests you run with `qapanda test run`, like unit/integration tests but for browser-driven QA.
+- Added a built-in **Review** flow for staged, unstaged, or combined git changes directly from the input bar.
+- Added **image attachments in chat** via paste, drag-and-drop, and file picker for Codex and API backends.
+- Added a per-agent **Browser** toggle so any agent can use the shared Chrome DevTools browser for the current run.
+- Added **external chat import** for Codex sessions so they can be continued inside QA Panda.
+- Added the **VS Code Activity Bar launcher** with recent sessions plus one-click new-session and restore entry points.
+- Added **GPT-5.5** to the supported Codex model list.
+- Shipped a broad stability pass across browser binding, screenshot replay, restore/resume, Continue routing, and extension UI reliability.
+
 **2026-04-03**  
 - 🧠 Added built-in **App Info** plus agent-maintained **Memory** so agents can start with your app facts, update what they learn automatically, and reuse that context in later sessions.
 
@@ -67,7 +82,7 @@ Latest updates. See the full history in the
 
 - **AI QA Engineer** — Creates test plans, executes them step by step, logs bugs with screenshot evidence, and tracks pass/fail results
 - **Browser Testing** — Headless Chrome with screenshots, DOM inspection, network monitoring, and full page interaction
-- **Test Case Management** — Create, run, and track repeatable test cases with pass/fail/skip status and full history
+- **Panda Tests** — Treat visual QA like unit tests: keep markdown test definitions in git and run them with `qapanda test run`
 - **Bug Tracking** — Built-in kanban board with task tracking, comments, and progress updates
 - **Agent Orchestration** — Chain agents together: QA finds bugs -> Developer fixes them -> QA re-tests -> repeat until done
 - **MCP Ecosystem** — Extensible with any MCP server (file system, databases, APIs, custom tools)
@@ -156,9 +171,13 @@ You: test the login page
 
 The Browser tab shows a live screencast of what the agent sees, with navigation controls.
 
-### Test Case Management
+### Panda Tests & Test Case Management
 
-Agents automatically create structured, repeatable test cases:
+QA Panda supports **Panda Tests** as repo-native markdown files under `qapanda-tests/**/*.md`. Think of them like unit or integration tests, but for automated visual QA through the `qapanda` CLI: you keep the test definitions in git, run them with `qapanda test run`, and agents reuse the same managed runtime records instead of inventing new one-off tests each time.
+
+- **Keep tests in git** as markdown files with stable ids, tags, environment, and prompt bodies
+- **Run them from the CLI** with `qapanda test list` and `qapanda test run <test-id>`
+- **Reuse the same runtime records** so agents update and rerun the existing managed tests instead of creating throwaway duplicates
 
 - **Create tests** with descriptions, tags, and steps
 - **Run tests** with pass/fail/skip results per step

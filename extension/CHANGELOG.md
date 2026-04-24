@@ -2,6 +2,20 @@
 
 All notable user-facing changes for the VS Code extension are documented here in the order they were added.
 
+## 2026-04-24
+
+- Added lower-cost **BYOK/API sessions** with **prompt caching**, native/manual compaction, compact tool replay, and batched QA/test/task updates.
+- Added **custom API providers** with custom base URLs and API keys for local or self-hosted models.
+- Added built-in **Git review** actions in the input bar for unstaged, staged, or combined diffs.
+- Added **image attachments** in chat via paste, drag-and-drop, and file picker, with backend support across Codex and API mode.
+- Added a per-agent **Browser** toggle so any agent can be given Chrome DevTools access for the current run.
+- Added **external chat import** for Codex sessions, plus replay/restore support for those imported chats.
+- Added a **VS Code Activity Bar launcher sidebar** with new session, resume latest, and recent session restore flows.
+- Added **GPT-5.5** to the supported Codex model catalog.
+- Added reusable **Panda Tests** and the new markdown-based test runner flow for structured QA coverage.
+- Added hosted/cloud sync, workflow, and workspace groundwork behind feature flags; the extension cloud UI is now hidden by default for the marketplace build.
+- Fixed major stability issues across browser page binding, screenshot replay symmetry, huge-run restore, compaction visibility, agent browser toggles, agent editing, and Continue controller target locking.
+
 ## 2026-04-03
 
 - 🧠 Added built-in **App Info** plus agent-maintained **Memory** so agents can start with your app facts, update what they learn automatically, and reuse that context in later sessions.
