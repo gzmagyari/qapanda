@@ -1,5 +1,6 @@
 {
   "enableRemoteDesktop": false,
   "enableClaudeCli": false,
-  "enablePersonalWorkspaces": false
+  "enablePersonalWorkspaces": false,
+  "enableExtensionCloud": false
 }

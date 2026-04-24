@@ -38,6 +38,17 @@ describe('Config bar', () => {
     assert.equal(wv.window.getComputedStyle(reviewMenu).position, 'absolute');
   });
 
+  it('keeps the review controls hidden by default on first open', async () => {
+    await wv.flush();
+    const reviewSplit = wv.document.getElementById('review-split');
+    const reviewMenu = wv.document.getElementById('review-menu');
+
+    assert.equal(reviewSplit.classList.contains('review-split-hidden'), true);
+    assert.equal(reviewMenu.classList.contains('split-action-menu-hidden'), true);
+    assert.equal(wv.window.getComputedStyle(reviewSplit).display, 'none');
+    assert.equal(wv.window.getComputedStyle(reviewMenu).display, 'none');
+  });
+
   it('shows browser toggle for browser-capable local agent targets and hides it for controller', async () => {
     const target = wv.document.getElementById('cfg-chat-target');
     const toggleWrap = wv.document.getElementById('agent-browser-toggle-wrap');

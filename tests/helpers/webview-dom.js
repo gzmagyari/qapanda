@@ -167,7 +167,7 @@ function sampleInitConfig(overrides = {}) {
     type: 'initConfig',
     config: {},
     apiCatalog: buildApiCatalogPayload(),
-    featureFlags: { enableRemoteDesktop: true, enableClaudeCli: true },
+    featureFlags: { enableRemoteDesktop: true, enableClaudeCli: true, enableExtensionCloud: true },
     mcpServers: { global: {}, project: {} },
     agents: {
       system: {

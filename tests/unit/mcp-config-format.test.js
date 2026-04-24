@@ -205,4 +205,25 @@ describe('Codex -c MCP TOML format', () => {
     const hasToolTimeout = cFlags.some((f) => f === 'mcp_servers.cc_agent_delegate.tool_timeout_sec=600');
     assert.ok(hasToolTimeout, 'should raise app-server tool timeout for agent delegation MCP');
   });
+
+  it('app-server config disables lazy MCP tool loading while preserving MCP registration', () => {
+    const flags = buildMcpConfigArgs({
+      'cc-tasks': { type: 'http', url: 'http://localhost:8080/mcp' },
+    }, baseManifest());
+    const cFlags = flags.filter((a, i) => i > 0 && flags[i - 1] === '-c');
+
+    assert.ok(cFlags.some((f) => f === 'mcp_servers.cc_tasks.url="http://localhost:8080/mcp"'), 'should keep MCP URL registration');
+    assert.ok(cFlags.some((f) => f === 'features.tool_search=false'), 'should disable Codex tool search');
+    assert.ok(cFlags.some((f) => f === 'features.search_tool=false'), 'should disable Codex search tool');
+    assert.ok(cFlags.some((f) => f === 'features.tool_search_always_defer_mcp_tools=false'), 'should prevent deferred MCP tool loading');
+  });
+
+  it('app-server config disables lazy MCP tool loading even before MCP servers are available', () => {
+    const flags = buildMcpConfigArgs(null, baseManifest());
+    const cFlags = flags.filter((a, i) => i > 0 && flags[i - 1] === '-c');
+
+    assert.ok(cFlags.some((f) => f === 'features.tool_search=false'), 'should disable Codex tool search');
+    assert.ok(cFlags.some((f) => f === 'features.search_tool=false'), 'should disable Codex search tool');
+    assert.ok(cFlags.some((f) => f === 'features.tool_search_always_defer_mcp_tools=false'), 'should prevent deferred MCP tool loading');
+  });
 });

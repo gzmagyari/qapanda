@@ -61,6 +61,18 @@ function remoteDesktopEnabled(context, repoRoot) {
   }
 }
 
+function extensionCloudEnabled(context, repoRoot) {
+  try {
+    return !!loadFeatureFlags(context.extensionUri.fsPath, repoRoot).enableExtensionCloud;
+  } catch {
+    return false;
+  }
+}
+
+function extensionCloudEnabledForBoundary(context, cloudBoundary) {
+  return extensionCloudEnabled(context, cloudBoundary && cloudBoundary.repoRoot ? cloudBoundary.repoRoot : null);
+}
+
 try {
   ({ WebviewRenderer } = require('./webview-renderer'));
   _aDbg('require OK: webview-renderer');
@@ -165,9 +177,10 @@ function createPanelReadyHandler({
   appendLogPrefix,
 }) {
   return createReadyGate(async (msg, readySessionId) => {
-    const initialCloudSession = buildFallbackCloudSessionPayload(cloudBoundary);
-    const initialCloudStatus = buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession);
-    const cloud = cloudBoundary.summarize();
+    const cloudEnabled = extensionCloudEnabled(context, repoRoot);
+    const initialCloudSession = cloudEnabled ? buildFallbackCloudSessionPayload(cloudBoundary) : null;
+    const initialCloudStatus = cloudEnabled ? buildFallbackCloudStatusPayload(cloudBoundary, initialCloudSession) : null;
+    const cloud = cloudEnabled ? cloudBoundary.summarize() : null;
 
     appendPanelDebugLog(
       repoRoot,
@@ -282,6 +295,7 @@ function createPanelReadyHandler({
     );
 
     void (async () => {
+      if (!cloudEnabled) return;
       const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
       const [latestCloud, cloudStatus] = await Promise.all([
         cloudSession && cloudSession.loggedIn ? loadCloudBootstrap() : Promise.resolve(cloudBoundary.summarize()),
@@ -680,6 +694,10 @@ function updateCloudStatusBar(payload) {
 }
 
 async function refreshExtensionCloudStatusSurface(cloudBoundary, context, runtimeStatus = null) {
+  if (!extensionCloudEnabledForBoundary(context, cloudBoundary)) {
+    if (_cloudStatusBarItem) _cloudStatusBarItem.hide();
+    return null;
+  }
   const payload = await buildCloudStatusPayload(cloudBoundary, context, runtimeStatus);
   updateCloudStatusBar(payload);
   for (const entry of panelRegistry.values()) {
@@ -696,9 +714,11 @@ function resolveNotificationToastHandler(item) {
   return vscode.window.showInformationMessage.bind(vscode.window);
 }
 
-async function showExtensionCloudNotificationBatch(cloudBoundary, batch) {
+async function showExtensionCloudNotificationBatch(cloudBoundary, context, batch) {
+  if (!extensionCloudEnabledForBoundary(context, cloudBoundary)) return;
   const items = Array.isArray(batch && batch.items) ? batch.items : [];
   if (!items.length) return;
+  const packages = await cloudBoundary.loadPackages();
   const actionable = packages.clientCloud.selectExtensionToastNotifications(items);
   if (!actionable.length) return;
   const links = packages.clientCloud.createNotificationWebLinks(cloudBoundary.config.appBaseUrl);
@@ -726,6 +746,9 @@ async function showExtensionCloudNotificationBatch(cloudBoundary, batch) {
 async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, context, msg) {
   if (!msg || (msg.type !== 'cloudSyncRefreshConflicts' && msg.type !== 'cloudSyncResolveConflict')) {
     return false;
+  }
+  if (!extensionCloudEnabledForBoundary(context, cloudBoundary)) {
+    return true;
   }
   const runtime = _cloudSyncRuntime || await ensureExtensionCloudSyncRuntime(cloudBoundary, context);
   if (!runtime) {
@@ -772,7 +795,8 @@ async function handleCloudSyncConflictMessage(panel, session, cloudBoundary, con
 }
 
 async function postSettingsData(panel, session, cloudBoundary, context) {
-  const cloudSession = await buildCloudSessionPayload(cloudBoundary, context);
+  const cloudEnabled = extensionCloudEnabledForBoundary(context, cloudBoundary);
+  const cloudSession = cloudEnabled ? await buildCloudSessionPayload(cloudBoundary, context) : null;
   const settings = loadSettings();
   const payload = {
     type: 'settingsData',
@@ -781,12 +805,16 @@ async function postSettingsData(panel, session, cloudBoundary, context) {
     apiCatalog: buildApiCatalogPayload(settings),
     defaults: buildSelfTestingPrompt.DEFAULTS,
     cloudSession,
-    cloudStatus: await buildCloudStatusPayload(cloudBoundary, context, null, cloudSession),
+    cloudStatus: cloudEnabled ? await buildCloudStatusPayload(cloudBoundary, context, null, cloudSession) : null,
   };
   try { panel.webview.postMessage(payload); } catch {}
 }
 
 async function ensureExtensionCloudSyncRuntime(cloudBoundary, context) {
+  if (!extensionCloudEnabledForBoundary(context, cloudBoundary)) {
+    await stopExtensionCloudSyncRuntime();
+    return null;
+  }
   if (_cloudSyncRuntime) return _cloudSyncRuntime;
   if (_cloudSyncStartPromise) return _cloudSyncStartPromise;
   _cloudSyncStartPromise = (async () => {
@@ -807,7 +835,7 @@ async function ensureExtensionCloudSyncRuntime(cloudBoundary, context) {
         void refreshExtensionCloudStatusSurface(cloudBoundary, context, status);
       },
       onNotifications(batch) {
-        void showExtensionCloudNotificationBatch(cloudBoundary, batch);
+        void showExtensionCloudNotificationBatch(cloudBoundary, context, batch);
       },
     });
     const started = await runtime.start();
@@ -834,6 +862,18 @@ async function stopExtensionCloudSyncRuntime() {
     await _cloudSyncRuntime.stop();
     _cloudSyncRuntime = null;
   }
+}
+
+function isExtensionCloudMessageType(type) {
+  return type === 'cloudSessionLogin'
+    || type === 'cloudSessionLogout'
+    || type === 'cloudSessionRefresh'
+    || type === 'cloudSessionSwitchWorkspace'
+    || type === 'cloudSessionOpen'
+    || type === 'cloudContextSave'
+    || type === 'cloudContextOpen'
+    || type === 'cloudSyncRefreshConflicts'
+    || type === 'cloudSyncResolveConflict';
 }
 
 function activate(context) {
@@ -865,17 +905,25 @@ function _activateInner(context) {
   _aDbg('checkpoint: starting MCP servers');
   const defaultRepoRoot = getRepoRoot(context.extensionUri);
   const workspacesEnabled = namedWorkspacesEnabled(context, defaultRepoRoot);
+  const cloudEnabled = extensionCloudEnabled(context, defaultRepoRoot);
   void vscode.commands.executeCommand('setContext', 'qapanda.namedWorkspacesEnabled', workspacesEnabled);
   const cloudBoundary = createCloudBoundary({ target: 'extension', repoRoot: defaultRepoRoot });
   const loadCloudBootstrap = () => cloudBoundary.preload().catch((error) => cloudBoundary.summarize(error));
-  if (!_cloudStatusBarItem) {
+  if (cloudEnabled && !_cloudStatusBarItem) {
     _cloudStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
     _cloudStatusBarItem.name = 'QA Panda Cloud';
     _cloudStatusBarItem.command = 'qapanda.open';
     context.subscriptions.push(_cloudStatusBarItem);
   }
-  void refreshExtensionCloudStatusSurface(cloudBoundary, context);
-  void ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+  if (!cloudEnabled && _cloudStatusBarItem) {
+    _cloudStatusBarItem.hide();
+  }
+  if (cloudEnabled) {
+    void refreshExtensionCloudStatusSurface(cloudBoundary, context);
+    void ensureExtensionCloudSyncRuntime(cloudBoundary, context);
+  } else {
+    void stopExtensionCloudSyncRuntime();
+  }
   ensureRootMcpPorts(defaultRepoRoot, {
     startTasksMcpServer,
     startTestsMcpServer,
@@ -1071,6 +1119,9 @@ function _activateInner(context) {
         }
         if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput' || msg.type === 'reviewRequest') {
           appendPanelDebugLog(repoRoot, `EXT-HOST: incoming ${msg.type}${msg.text ? ` text=${String(msg.text).slice(0, 120)}` : ''}`);
+        }
+        if (isExtensionCloudMessageType(msg.type) && !extensionCloudEnabledForBoundary(context, cloudBoundary)) {
+          return;
         }
         if (msg.type === 'cloudSessionLogin') {
           const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));
@@ -1475,6 +1526,9 @@ async function _deserializeInner(panel, state, context) {
           }
           if (msg.type === 'tasksLoad' || msg.type === 'testsLoad' || msg.type === 'userInput' || msg.type === 'continueInput' || msg.type === 'orchestrateInput') {
             appendPanelDebugLog(repoRoot, `EXT-HOST(deserialized): incoming ${msg.type}${msg.text ? ` text=${String(msg.text).slice(0, 120)}` : ''}`);
+          }
+          if (isExtensionCloudMessageType(msg.type) && !extensionCloudEnabledForBoundary(context, cloudBoundary)) {
+            return;
           }
           if (msg.type === 'cloudSessionLogin') {
             const result = await loginExtensionCloud(cloudBoundary, createExtensionCloudOptions(context));

@@ -107,4 +107,23 @@ describe('cloud entry screen', () => {
       wv.cleanup();
     }
   });
+
+  it('stays hidden when extension cloud is disabled by feature flag', async () => {
+    const wv = createWebviewDom();
+    try {
+      wv.postMessage(sampleInitConfig({
+        featureFlags: { enableRemoteDesktop: true, enableClaudeCli: true, enableExtensionCloud: false },
+        cloud: { target: 'extension' },
+        cloudSession: { loggedIn: false, authMode: 'pkce' },
+      }));
+      await wv.flush();
+
+      const entry = wv.document.getElementById('cloud-entry-screen');
+      const section = wv.document.getElementById('cloud-account-section');
+      assert.equal(entry.classList.contains('visible'), false);
+      assert.equal(section.style.display, 'none');
+    } finally {
+      wv.cleanup();
+    }
+  });
 });

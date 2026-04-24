@@ -1664,6 +1664,10 @@ html, body {
   z-index: 5;
 }
 
+#review-split.review-split-hidden {
+  display: none !important;
+}
+
 #review-split > button {
   border-radius: 0;
 }
@@ -1692,6 +1696,10 @@ html, body {
   background: var(--vscode-editorWidget-background, #252526);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   z-index: 2000;
+}
+
+.split-action-menu.split-action-menu-hidden {
+  display: none !important;
 }
 
 .split-action-item {

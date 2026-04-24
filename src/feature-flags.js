@@ -11,6 +11,7 @@ const DEFAULTS = {
   enableRemoteDesktop: false,
   enableClaudeCli: false,
   enablePersonalWorkspaces: false,
+  enableExtensionCloud: false,
 };
 
 let _cached = new Map();

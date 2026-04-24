@@ -46,7 +46,10 @@ describe('feature flag secret overrides', () => {
     const flags = srcFlags.loadFeatureFlags(null, repoRoot);
     assert.equal(flags.enableRemoteDesktop, true);
     assert.equal(flags.enableClaudeCli, true);
-    assert.deepEqual(Object.keys(flags).sort(), ['enableClaudeCli', 'enablePersonalWorkspaces', 'enableRemoteDesktop']);
+    assert.deepEqual(
+      Object.keys(flags).sort(),
+      ['enableClaudeCli', 'enableExtensionCloud', 'enablePersonalWorkspaces', 'enableRemoteDesktop']
+    );
   });
 
   it('project secret-features.json overrides global secret-features.json', () => {
@@ -75,6 +78,7 @@ describe('feature flag secret overrides', () => {
     writeJson(path.join(extensionDir, 'resources', 'feature-flags.json'), {
       enableRemoteDesktop: false,
       enableClaudeCli: false,
+      enableExtensionCloud: false,
     });
 
     let agents = loadMergedAgents(repoRoot, extensionDir);

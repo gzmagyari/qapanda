@@ -156,10 +156,10 @@ function getWebviewHtml({ styleHref, scriptSrc, nonce, cspSource }) {
             <button id="btn-attach-image" type="button" title="Attach one or more images" aria-label="Attach images">+</button>
             <button id="btn-send">Send</button>
             <button id="btn-continue" title="Send to controller with optional guidance">Continue ▶</button>
-            <div id="review-split" class="split-action" style="display:none;">
+            <div id="review-split" class="split-action review-split-hidden">
               <button id="btn-review" title="Review current git changes">Review</button>
               <button id="btn-review-menu" class="split-action-toggle" title="Review options" aria-haspopup="true" aria-expanded="false">▼</button>
-              <div id="review-menu" class="split-action-menu" style="display:none;">
+              <div id="review-menu" class="split-action-menu split-action-menu-hidden">
                 <button type="button" class="split-action-item" data-scope="unstaged">Review unstaged</button>
                 <button type="button" class="split-action-item" data-scope="staged">Review staged</button>
                 <button type="button" class="split-action-item" data-scope="both">Review both</button>

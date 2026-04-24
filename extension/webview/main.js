@@ -458,6 +458,7 @@
 
   function shouldShowCloudEntryScreen() {
     return Boolean(
+      isExtensionCloudEnabled() &&
       cloudEntryScreen &&
       getActiveTabKey() === 'agent' &&
       isExtensionCloudTarget() &&
@@ -692,6 +693,10 @@
   }
 
   function renderCloudAccount() {
+    if (!isExtensionCloudEnabled()) {
+      if (cloudAccountSection) cloudAccountSection.style.display = 'none';
+      return;
+    }
     const target = cloudBootstrap && cloudBootstrap.target;
     const isExtension = !target || target === 'extension';
     if (cloudAccountSection) cloudAccountSection.style.display = isExtension ? '' : 'none';
@@ -4206,7 +4211,7 @@
   }
 
   function hideReviewMenu() {
-    if (reviewMenu) reviewMenu.style.display = 'none';
+    if (reviewMenu) reviewMenu.classList.add('split-action-menu-hidden');
     if (reviewSplit) reviewSplit.classList.remove('menu-open');
     if (btnReviewMenu) btnReviewMenu.setAttribute('aria-expanded', 'false');
   }
@@ -4214,7 +4219,7 @@
   function renderReviewControls() {
     if (!reviewSplit) return;
     const visible = !!(reviewState && reviewState.visible);
-    reviewSplit.style.display = visible && !isRunning ? 'inline-flex' : 'none';
+    reviewSplit.classList.toggle('review-split-hidden', !(visible && !isRunning));
     if (!visible || isRunning) {
       hideReviewMenu();
       applyAttachmentRestrictedActionState();
@@ -6887,6 +6892,9 @@
 
   // ── Feature flags ──────────────────────────────────────────────────
   let _featureFlags = {};
+  function isExtensionCloudEnabled() {
+    return !!(_featureFlags && _featureFlags.enableExtensionCloud);
+  }
   function applyFeatureFlags(flags) {
     _featureFlags = flags || {};
     // Hide Instances and Computer tabs when remote desktop is disabled
@@ -6905,6 +6913,15 @@
     }
     // Hide Claude UI when the feature is disabled, but preserve active/imported Claude selections.
     syncClaudeUiVisibility();
+    if (!isExtensionCloudEnabled()) {
+      cloudBootstrap = null;
+      cloudSessionState = null;
+      cloudStatusState = null;
+      cloudPendingAction = '';
+      cloudNoticeText = '';
+    }
+    renderCloudAccount();
+    renderCloudEntryScreen();
   }
 
   const handlers = {
@@ -7238,7 +7255,7 @@
         hideReviewMenu();
         btnSend.style.display = 'none';
         if (btnContinue) btnContinue.style.display = 'none';
-        if (reviewSplit) reviewSplit.style.display = 'none';
+        if (reviewSplit) reviewSplit.classList.add('review-split-hidden');
         if (btnOrchestrate) btnOrchestrate.style.display = 'none';
         btnStop.style.display = msg.showStop === false ? 'none' : 'inline-block';
         textarea.disabled = true;
@@ -7277,10 +7294,16 @@
       if (msg.apiCatalog) {
         applyApiCatalog(msg.apiCatalog);
       }
-      cloudBootstrap = msg.cloud || cloudBootstrap;
-      cloudSessionState = msg.cloudSession || cloudSessionState;
-      cloudStatusState = msg.cloudStatus || cloudStatusState;
-      if (msg.cloudStatus) syncCloudContextDraftFromRuntime();
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloud')) {
+        cloudBootstrap = msg.cloud || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudSession')) {
+        cloudSessionState = msg.cloudSession || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudStatus')) {
+        cloudStatusState = msg.cloudStatus || null;
+      }
+      if (cloudStatusState) syncCloudContextDraftFromRuntime();
       cloudPendingAction = '';
       cloudNoticeText = '';
       renderCloudAccount();
@@ -7880,11 +7903,11 @@
 
     settingsData(msg) {
       if (!msg.settings) return;
-      if (msg.cloudStatus) {
-        cloudStatusState = msg.cloudStatus;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudStatus')) {
+        cloudStatusState = msg.cloudStatus || null;
       }
-      if (msg.cloudSession) {
-        cloudSessionState = msg.cloudSession;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudSession')) {
+        cloudSessionState = msg.cloudSession || null;
         cloudPendingAction = '';
         cloudNoticeText = '';
       }
@@ -7943,8 +7966,8 @@
     },
 
     cloudStatusData(msg) {
-      if (msg.cloudStatus) {
-        cloudStatusState = msg.cloudStatus;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudStatus')) {
+        cloudStatusState = msg.cloudStatus || null;
         syncCloudContextDraftFromRuntime();
       }
       renderCloudAccount();
@@ -7952,14 +7975,14 @@
     },
 
     cloudSessionData(msg) {
-      if (msg.cloud) {
-        cloudBootstrap = msg.cloud;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloud')) {
+        cloudBootstrap = msg.cloud || null;
       }
-      if (msg.cloudSession) {
-        cloudSessionState = msg.cloudSession;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudSession')) {
+        cloudSessionState = msg.cloudSession || null;
       }
-      if (msg.cloudStatus) {
-        cloudStatusState = msg.cloudStatus;
+      if (Object.prototype.hasOwnProperty.call(msg, 'cloudStatus')) {
+        cloudStatusState = msg.cloudStatus || null;
         syncCloudContextDraftFromRuntime();
       }
       renderCloudAccount();
@@ -8286,8 +8309,8 @@
       e.preventDefault();
       e.stopPropagation();
       if (btnReviewMenu.disabled || !reviewMenu) return;
-      const open = reviewMenu.style.display !== 'block';
-      reviewMenu.style.display = open ? 'block' : 'none';
+      const open = reviewMenu.classList.contains('split-action-menu-hidden');
+      reviewMenu.classList.toggle('split-action-menu-hidden', !open);
       if (reviewSplit) reviewSplit.classList.toggle('menu-open', open);
       btnReviewMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
     });

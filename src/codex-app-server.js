@@ -17,6 +17,11 @@ const { appendWizardDebug, summarizeForDebug } = require('./debug-log');
 const { buildIsolatedCodexEnv } = require('./codex-home');
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const DISABLE_LAZY_MCP_TOOL_LOADING_CONFIG = [
+  'features.tool_search=false',
+  'features.search_tool=false',
+  'features.tool_search_always_defer_mcp_tools=false',
+];
 
 class CodexAppServerConnection {
   constructor({ bin, cwd, env, model, configArgs }) {
@@ -364,7 +369,7 @@ const _connections = new Map(); // runId → CodexAppServerConnection
  */
 function buildMcpConfigArgs(mcpServers, manifest) {
   const args = [];
-  if (!mcpServers) return args;
+  mcpServers = mcpServers || {};
   const tomlEsc = (s) => s.replace(/\\/g, '\\\\');
   for (const [name, server] of Object.entries(mcpServers)) {
     if (!server) continue;
@@ -406,6 +411,9 @@ function buildMcpConfigArgs(mcpServers, manifest) {
   // Disable built-in shell when detached-command MCP is available
   if (mcpServers['detached-command']) {
     args.push('-c', 'features.shell_tool=false');
+  }
+  for (const flag of DISABLE_LAZY_MCP_TOOL_LOADING_CONFIG) {
+    args.push('-c', flag);
   }
   return args;
 }
