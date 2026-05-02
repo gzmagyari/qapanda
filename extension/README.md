@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://qapanda.ai">Website</a> •
   <a href="https://github.com/gzmagyari/qapanda">GitHub Repository</a> •
   <a href="https://github.com/gzmagyari/qapanda/issues">Report Issues</a> •
   <a href="#features">Features</a> •
@@ -32,6 +33,18 @@ finds bugs, takes screenshots, and gives you a <strong>professional QA report</s
 It can even delegate to a Developer agent to <strong>fix bugs and re-test automatically</strong>.<br>
 Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</strong> to fix.<br>
 Also available as a <a href="https://github.com/gzmagyari/qapanda#cli">terminal CLI</a>.
+</p>
+
+<p align="center">
+  Official website: <a href="https://qapanda.ai">qapanda.ai</a>
+</p>
+
+<p align="center">
+  Hosted platform, product overview, and official links live at <a href="https://qapanda.ai">https://qapanda.ai</a>
+</p>
+
+<p align="center">
+  Note: <strong>qapanda.ai</strong> is the only official QA Panda website. Similar or misleading domain names are not owned by, affiliated with, or endorsed by QA Panda.
 </p>
 
 ## Hot Updates
@@ -74,6 +87,7 @@ Latest updates. See the full history in the
 - **Built-in test & bug tracking.** Test cases, run history, kanban board, screenshots — no external tools needed.
 - **Copy the report, paste to Claude Code / Codex / Cursor.** Use QA Panda for testing, then hand the bug report to your favorite coding tool to fix.
 - **Works with your ChatGPT subscription.** Powered by [Codex CLI](https://github.com/openai/codex) — no expensive API tokens. Just use your existing ChatGPT Plus/Pro subscription.
+- **Official home is qapanda.ai.** Product site, hosted platform direction, and canonical project links.
 - **Free and open source.** MIT licensed. [Star us on GitHub!](https://github.com/gzmagyari/qapanda)
 
 ---
@@ -104,11 +118,16 @@ Or install from the command line:
 code --install-extension qapandaapp.qapanda-vscode
 ```
 
+Website: [qapanda.ai](https://qapanda.ai)
+Official homepage: **https://qapanda.ai**
+
 ### Terminal CLI
 
 ```bash
 npm install -g qapanda
 ```
+
+CLI + product home: [qapanda.ai](https://qapanda.ai)
 
 ### Prerequisites
 
@@ -126,6 +145,8 @@ The setup wizard checks all dependencies and helps you install anything missing.
 2. Click the **QA Panda** icon in the editor title bar (or `Ctrl+Shift+P` → "QA Panda: Open")
 3. The setup wizard runs on first launch — it checks your environment and gets you ready
 4. Start chatting: **"test my app"**, **"test the login page for bugs"**, or **"run a full QA pass on the signup flow"**
+
+Official website and product entry point: [qapanda.ai](https://qapanda.ai)
 
 ### Terminal CLI
 
@@ -145,6 +166,8 @@ qapanda run "do a full QA pass on this app"
 # Check your setup
 qapanda doctor
 ```
+
+More product context and official links: [qapanda.ai](https://qapanda.ai)
 
 ## Features
 

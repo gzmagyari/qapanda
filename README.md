@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://qapanda.ai">Website</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
@@ -46,6 +47,18 @@ It launches a <strong>real browser</strong>, navigates your app, clicks through 
 finds bugs, takes screenshots, and gives you a <strong>professional QA report</strong>.<br><br>
 It can even delegate to a Developer agent to <strong>fix bugs and re-test automatically</strong>.<br>
 Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</strong> to fix.
+</p>
+
+<p align="center">
+  Official website: <a href="https://qapanda.ai">qapanda.ai</a>
+</p>
+
+<p align="center">
+  Hosted platform, product overview, and official links live at <a href="https://qapanda.ai">https://qapanda.ai</a>
+</p>
+
+<p align="center">
+  Note: <strong>qapanda.ai</strong> is the only official QA Panda website. Similar or misleading domain names are not owned by, affiliated with, or endorsed by QA Panda.
 </p>
 
 ## Hot Updates
@@ -87,6 +100,7 @@ Latest updates. See the full history in [CHANGELOG.md](./CHANGELOG.md).
 - **Works with your stack.** Extend with any MCP server. Add your own agents. Customize everything.
 - **Copy the report, paste to Claude Code / Codex / Cursor.** Use QA Panda for testing, then hand the bug report to your favorite coding tool to fix.
 - **Works with your ChatGPT subscription.** Powered by [Codex CLI](https://github.com/openai/codex) — no expensive API tokens needed. Just use your existing ChatGPT Plus/Pro subscription.
+- **Official home is qapanda.ai.** Product site, hosted platform direction, and canonical project links.
 - **Free and open source.** MIT licensed.
 
 ---
@@ -117,11 +131,16 @@ Or install from the command line:
 code --install-extension qapandaapp.qapanda-vscode
 ```
 
+Website: [qapanda.ai](https://qapanda.ai)
+Official homepage: **https://qapanda.ai**
+
 ### Terminal CLI
 
 ```bash
 npm install -g qapanda
 ```
+
+CLI + product home: [qapanda.ai](https://qapanda.ai)
 
 ### Hosted Platform Client Packages
 
@@ -145,6 +164,8 @@ The setup wizard checks all dependencies and helps you install anything missing.
 3. The setup wizard runs on first launch — it checks your environment and gets you ready
 4. Start chatting: **"test my app"**, **"test the login page for bugs"**, or **"run a full QA pass on the signup flow"**
 
+Official website and product entry point: [qapanda.ai](https://qapanda.ai)
+
 ### Terminal CLI
 
 ```bash
@@ -163,6 +184,8 @@ qapanda run "do a full QA pass on this app"
 # Check your setup
 qapanda doctor
 ```
+
+More product context and official links: [qapanda.ai](https://qapanda.ai)
 
 ## Features
 
