@@ -57,9 +57,9 @@ Or just copy the report and hand it to <strong>Claude Code / Codex / Cursor</str
   Hosted platform, product overview, and official links live at <a href="https://qapanda.ai">https://qapanda.ai</a>
 </p>
 
-<p align="center">
-  Note: <strong>qapanda.ai</strong> is the only official QA Panda website. Similar or misleading domain names are not owned by, affiliated with, or endorsed by QA Panda.
-</p>
+> [!WARNING]
+> **Official website:** **qapanda.ai**  
+> Any other site or domain with a similar or misleading QA Panda name is **not** owned by, affiliated with, or endorsed by QA Panda.
 
 ## Hot Updates
 
